@@ -25,6 +25,7 @@ import scipy.sparse
 import scipy.stats
 
 from ipie.hamiltonians import Generic as HamGeneric
+from ipie.hamiltonians.sparse import Sparse as HamSparse
 from ipie.propagation.phaseless_generic import PhaselessBase, PhaselessGeneric
 from ipie.qmc.afqmc import AFQMC
 from ipie.qmc.options import QMCOpts
@@ -46,7 +47,7 @@ from ipie.walkers.pop_controller import PopController
 from ipie.walkers.walkers_dispatch import UHFWalkersTrial
 
 
-def generate_hamiltonian(nmo, nelec, cplx=False, sym=8, sparse=False, tol=1e-3):
+def generate_hamiltonian(nmo, nelec, cplx=False, sym=8, sparse=False, tol=1e-8):
     h1e, eri = None, None
     if sparse:
         h1e = scipy.sparse.random(nmo, nmo).toarray()
@@ -294,6 +295,24 @@ def get_random_sys_ham(nalpha, nbeta, nmo, naux, cmplx=False):
     )
     return sys, ham
 
+def get_random_sys_ham_sparsenH(nalpha, nbeta, nmo, naux, cmplx=True):
+    sys = Generic(nelec=(nalpha, nbeta))
+    A = shaped_normal((naux, nmo, nmo), cmplx=cmplx)
+    B = shaped_normal((naux, nmo, nmo), cmplx=cmplx)
+    h1e = shaped_normal((nmo, nmo), cmplx=cmplx)
+    A = A.reshape((naux, nmo * nmo)).T.copy()
+    B = B.reshape((naux, nmo * nmo)).T.copy()
+    Asp = scipy.sparse.csc_matrix(A)
+    Bsp = scipy.sparse.csc_matrix(B)
+    ham = HamSparse(
+        h1e=numpy.array([h1e, h1e]),
+        chol=None,
+        ecore=0.,
+        A=Asp,
+        B=Bsp,
+        verbose=False,
+    )
+    return sys, ham
 
 def gen_random_test_instances(nmo, nocc, naux, nwalkers, seed=7, ndets=1):
     assert ndets == 1

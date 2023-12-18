@@ -11,12 +11,13 @@ from ipie.estimators.greens_function_single_det import (
 )
 from ipie.estimators.utils import gab_spin
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
+from ipie.hamiltonians.sparse import SparseRealChol, SparseComplexChol, SparseNonHermitian
 from ipie.propagation.force_bias import (
     construct_force_bias_batch_single_det,
     construct_force_bias_batch_single_det_chunked,
 )
 from ipie.propagation.overlap import calc_overlap_single_det_uhf
-from ipie.trial_wavefunction.half_rotate import half_rotate_generic
+from ipie.trial_wavefunction.half_rotate import half_rotate_generic, half_rotate_sparse
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.mpi import MPIHandler
@@ -136,6 +137,34 @@ class SingleDet(TrialWavefunctionBase):
         self._rBb = rot_chol[1][3][0]
         self.half_rotated = True
 
+    @plum.dispatch
+    def half_rotate(
+        self: "SingleDet",
+        hamiltonian: SparseNonHermitian,
+        comm=None,
+    ):
+        num_dets = 1
+        orbsa = self.psi0a.reshape((num_dets, self.nbasis, self.nalpha))
+        orbsb = self.psi0b.reshape((num_dets, self.nbasis, self.nbeta))
+        rot_1body, rot_chol = half_rotate_sparse(
+            self,
+            hamiltonian,
+            comm,
+            orbsa,
+            orbsb,
+            ndets=num_dets,
+            verbose=self.verbose,
+        )
+        # Single determinant functions do not expect determinant index, so just
+        # grab zeroth element.
+        self._rH1a = rot_1body[0][0] #the second [0] is to take the single det, resulting rH1a has shape (na, M)
+        self._rH1b = rot_1body[1][0]
+        self._rAa = rot_chol[0][0][0] # the three indices are a/b, A/B and det, respectively
+        self._rAb = rot_chol[1][0][0]
+        self._rBa = rot_chol[0][1][0]
+        self._rBb = rot_chol[1][1][0]
+        self.half_rotated = True
+
     def calc_overlap(self, walkers) -> numpy.ndarray:
         return calc_overlap_single_det_uhf(walkers, self)
 
@@ -163,6 +192,22 @@ class SingleDet(TrialWavefunctionBase):
     def calc_force_bias(
         self,
         hamiltonian: GenericComplexChol,
+        walkers: UHFWalkers,
+        mpi_handler: MPIHandler = None,
+    ) -> numpy.ndarray:
+        # return construct_force_bias_batch_single_det(hamiltonian, walkers, self)
+        Ghalfa = walkers.Ghalfa.reshape(walkers.nwalkers, walkers.nup * hamiltonian.nbasis)
+        Ghalfb = walkers.Ghalfb.reshape(walkers.nwalkers, walkers.ndown * hamiltonian.nbasis)
+        vbias = xp.zeros((hamiltonian.nfields, walkers.nwalkers), dtype=Ghalfa.dtype)
+        vbias[: hamiltonian.nchol, :] = self._rAa.dot(Ghalfa.T) + self._rAb.dot(Ghalfb.T)
+        vbias[hamiltonian.nchol :, :] = self._rBa.dot(Ghalfa.T) + self._rBb.dot(Ghalfb.T)
+        vbias = vbias.T.copy()
+        return vbias
+
+    @plum.dispatch
+    def calc_force_bias(
+        self,
+        hamiltonian: SparseNonHermitian,
         walkers: UHFWalkers,
         mpi_handler: MPIHandler = None,
     ) -> numpy.ndarray:

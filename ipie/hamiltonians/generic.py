@@ -41,6 +41,27 @@ def construct_h1e_mod(chol, h1e, h1e_mod):
     h1e_mod[0, :, :] = h1e[0] - v0
     h1e_mod[1, :, :] = h1e[1] - v0
 
+def construct_h1e_mod_cmplx(A, B, h1e, h1e_mod):
+    # Subtract one-body bit following reordering of 2-body operators.
+    # Eqn (17) of [Motta17].
+    nbasis = h1e.shape[-1]
+    nchol = A.shape[-1]
+    A_original = A.reshape(nbasis, nbasis, nchol)
+    B_original = B.reshape(nbasis, nbasis, nchol)
+    chol = A_original - 1j * B_original
+    A_view = A.reshape((nbasis, nbasis * nchol))
+    AT_view = A_original.transpose(1, 0, 2).reshape((nbasis, nbasis * nchol))
+    B_view = B.reshape((nbasis, nbasis * nchol))
+    BT_view = B_original.transpose(1, 0, 2).reshape((nbasis, nbasis * nchol))
+    # assert chol_view.__array_interface__['data'][0] == chol.__array_interface__['data'][0]
+    #v0 = 0.5 * (numpy.dot(A_view, AT_view.T) + numpy.dot(B_view, BT_view.T))
+    #assert numpy.allclose(numpy.einsum('ijn, kln -> ijkl', A_original, A_original) + numpy.einsum('ijn, kln -> ijkl', B_original, B_original), numpy.einsum('ijn, lkn -> ijkl', chol, chol.conj()))
+    for i in range(nchol):
+        assert numpy.allclose(A_original[:,:,i], A_original[:,:,i].T.conj())
+    v0 = 0.5 * (numpy.einsum('ijn,jkn->ik', A_original, A_original) + numpy.einsum('ijn,jkn->ik', B_original, B_original))
+    h1e_mod[0, :, :] = h1e[0] - v0
+    h1e_mod[1, :, :] = h1e[1] - v0
+
 
 class GenericRealChol(GenericBase):
     """Class for ab-initio Hamiltonian with 8-fold real symmetric integrals.
@@ -127,6 +148,10 @@ class GenericComplexChol(GenericBase):
         self.A = self.A.reshape((self.nbasis * self.nbasis, self.nchol))
         self.B = self.B.reshape((self.nbasis * self.nbasis, self.nchol))
 
+        h1e_mod_cmplx = numpy.zeros(self.H1.shape, dtype=self.H1.dtype)
+        construct_h1e_mod_cmplx(self.A, self.B, self.H1, h1e_mod_cmplx)
+        self.h1e_mod_cmplx = h1e_mod_cmplx
+
         if verbose:
             mem = self.A.nbytes / (1024.0**3) * 3
             print("# Number of orbitals: %d" % self.nbasis)
@@ -141,6 +166,17 @@ class GenericComplexChol(GenericBase):
         chol_ik = 0.5 * (self.A[ik] + self.B[ik] / 1.0j)
         chol_lj = 0.5 * (self.A[lj] + self.B[lj] / 1.0j)
         return numpy.dot(chol_ik, chol_lj.conj())
+
+    def hijkl_cmplx(self, i, j, k, l):  # (ik|jl) somehow physicist notation - terrible!!
+        ik = i * self.nbasis + k
+        lj = l * self.nbasis + j
+        jl = j * self.nbasis + l
+        ki = k * self.nbasis + i
+        chol_ik = 0.5 * (self.A[ik] + self.B[ik] / 1.0j)
+        chol_lj = 0.5 * (self.A[lj] + self.B[lj] / 1.0j)
+        chol_jl = 0.5 * (self.A[jl] + self.B[jl] / 1.0j)
+        chol_ki = 0.5 * (self.A[ki] + self.B[ki] / 1.0j)
+        return .5 * (numpy.dot(chol_ik, chol_lj.conj()) + numpy.dot(chol_jl, chol_ki.conj()))
 
 
 def Generic(h1e, chol, ecore=0.0, verbose=False):

@@ -18,4 +18,5 @@
 
 from .generic_base import GenericBase
 from .generic import Generic
+from .sparse import Sparse
 from .ueg import UEG

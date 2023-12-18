@@ -10,6 +10,7 @@ from ipie.utils.backend import synchronize
 import plum
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
 from ipie.hamiltonians.generic import GenericRealChol, GenericComplexChol
+from ipie.hamiltonians.sparse import SparseNonHermitian
 
 
 @plum.dispatch
@@ -88,6 +89,26 @@ def construct_mean_field_shift(hamiltonian: GenericComplexChol, trial: TrialWave
     mf_shift = numpy.zeros(nfields, dtype=hamiltonian.chol.dtype)
     mf_shift[:nchol] = 1j * numpy.dot(hamiltonian.A.T, Gcharge.ravel())
     mf_shift[nchol:] = 1j * numpy.dot(hamiltonian.B.T, Gcharge.ravel())
+    return mf_shift
+
+@plum.dispatch
+def construct_mean_field_shift(hamiltonian: SparseNonHermitian, trial: TrialWavefunctionBase):
+    r"""Compute mean field shift.
+
+    .. math::
+
+        \bar{v}_n = \sum_{ik\sigma} v_{(ik),n} G_{ik\sigma}
+
+    """
+    # hamiltonian.chol [X, M^2]
+    Gcharge = (trial.G[0] + trial.G[1]).ravel()
+
+    nchol = hamiltonian.nchol
+    nfields = hamiltonian.nfields
+
+    mf_shift = numpy.zeros(nfields, dtype=hamiltonian.chol.dtype)
+    mf_shift[:nchol] = 1j * hamiltonian.A.T.dot(Gcharge.ravel())
+    mf_shift[nchol:] = 1j * hamiltonian.B.T.dot(Gcharge.ravel())
     return mf_shift
 
 

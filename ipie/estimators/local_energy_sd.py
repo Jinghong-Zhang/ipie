@@ -28,6 +28,7 @@ from ipie.utils.backend import synchronize
 
 from ipie.systems.generic import Generic
 from ipie.hamiltonians.generic import GenericRealChol, GenericComplexChol
+from ipie.hamiltonians.sparse import SparseNonHermitian
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.trial_wavefunction.single_det import SingleDet
 
@@ -216,6 +217,49 @@ def ecoul_kernel_batch_complex_rchol_uhf(
     ecoul *= 0.5
     return ecoul
 
+@jit(nopython=True, fastmath=True)
+def ecoul_kernel_batch_complex_nonhermitian_uhf(
+    rAa, rAb, rBa, rBb, Ghalfa_batch, Ghalfb_batch
+):
+    # """Compute coulomb contribution for real rchol with UHF trial.
+
+    # Parameters
+    # ----------
+    # rchola : :class:`numpy.ndarray`
+    #     Half-rotated cholesky (alpha).
+    # rcholb : :class:`numpy.ndarray`
+    #     Half-rotated cholesky (beta).
+    # Ghalfa : :class:`numpy.ndarray`
+    #     Walker's half-rotated "green's function" shape is nalpha  x nbasis.
+    # Ghalfb : :class:`numpy.ndarray`
+    #     Walker's half-rotated "green's function" shape is nbeta x nbasis.
+
+    # Returns
+    # -------
+    # ecoul : :class:`numpy.ndarray`
+    #     coulomb contribution for all walkers.
+    # """
+    # sort out cupy later
+    zeros = numpy.zeros
+    dot = numpy.dot
+    nwalkers = Ghalfa_batch.shape[0]
+
+    X1a = rAa.dot(Ghalfa_batch.T)
+    X1b = rAb.dot(Ghalfb_batch.T)
+    X2a = rBa.dot(Ghalfa_batch.T)
+    X2b = rBb.dot(Ghalfb_batch.T)
+
+    ecoul = zeros(nwalkers, dtype=numpy.complex128)
+    X1a = X1a.T.copy()
+    X1b = X1b.T.copy()
+    X2a = X2a.T.copy()
+    X2b = X2b.T.copy()
+    for iw in range(nwalkers):
+        ecoul[iw] += dot(X1a[iw], X1a[iw]) + dot(X1b[iw], X1b[iw]) + dot(X2a[iw], X2a[iw]) + dot(X2b[iw], X2b[iw])
+    #TODO: check the coefficient
+    ecoul *= 0.5
+    return ecoul
+
 
 @jit(nopython=True, fastmath=True)
 def exx_kernel_batch_complex_rchol(rchol, rcholbar, Ghalf_batch):
@@ -254,6 +298,49 @@ def exx_kernel_batch_complex_rchol(rchol, rcholbar, Ghalf_batch):
             T1 = rcholx.dot(Ghalf.T)
             T2 = rcholbarx.dot(Ghalf.T)
             exx[iw] += dot(T1.ravel(), T2.T.ravel())
+    #TODO: check the coefficient
+    exx *= 0.5
+    return exx
+
+@jit(nopython=True, fastmath=True)
+def exx_kernel_batch_complex_rchol(rA, rB, Ghalf_batch):
+    """Compute exchange contribution for SparseNonhermitian cholesky vectors.
+
+    Parameters
+    ----------
+    rA : :class:`numpy.ndarray`
+        Half-rotated cholesky tensor A.
+    rB : :class:`numpy.ndarray`
+        Half-rotated cholesky tensor B.
+    Ghalf : :class:`numpy.ndarray`
+        Walker's half-rotated "green's function" shape is nalpha  x nbasis
+
+    Returns
+    -------
+    exx : :class:`numpy.ndarray`
+        exchange contribution for all walkers.
+    """
+    # sort out cupy later
+    zeros = numpy.zeros
+    dot = numpy.dot
+    nwalkers = Ghalf_batch.shape[0]
+
+    naux = rA.shape[0]
+    nwalkers = Ghalf_batch.shape[0]
+    nocc = Ghalf_batch.shape[1]
+    nbsf = Ghalf_batch.shape[2]
+
+    T1 = zeros((nocc, nocc), dtype=numpy.complex128)
+    T2 = zeros((nocc, nocc), dtype=numpy.complex128)
+    exx = zeros((nwalkers), dtype=numpy.complex128)
+    for iw in range(nwalkers):
+        Ghalf = Ghalf_batch[iw]
+        for jx in range(naux):
+            rAx = rA[jx].reshape(nocc, nbsf)
+            rBx = rB[jx].reshape(nocc, nbsf)
+            T1 = rA.dot(Ghalf.T)
+            T2 = rB.dot(Ghalf.T)
+            exx[iw] += dot(T1.ravel(), T1.T.ravel()) + dot(T2.ravel(), T2.T.ravel())
     exx *= 0.5
     return exx
 
@@ -304,6 +391,62 @@ def local_energy_single_det_uhf(
     exx = exx_kernel_batch_complex_rchol(
         trial._rchola, trial._rcholbara, walkers.Ghalfa
     ) + exx_kernel_batch_complex_rchol(trial._rcholb, trial._rcholbarb, walkers.Ghalfb)
+
+    e2b = ecoul - exx
+
+    energy = xp.zeros((nwalkers, 3), dtype=numpy.complex128)
+    energy[:, 0] = e1b + e2b
+    energy[:, 1] = e1b
+    energy[:, 2] = e2b
+
+    return energy
+
+@plum.dispatch
+def local_energy_single_det_uhf(
+    system: Generic,
+    hamiltonian: SparseNonHermitian,
+    walkers: UHFWalkers,
+    trial: SingleDet,
+):
+    """Compute local energy for walker batch (all walkers at once). Designed for Hamiltonian with sparse complex ERI, but with non-Hermitian A and B operators (as in the case of transcorrelated UEG). 
+
+    Single determinant UHF case.
+
+    Parameters
+    ----------
+    system : system object
+        System being studied.
+    hamiltonian : hamiltonian object
+        Hamiltonian being studied.
+    walkers : WalkerBatch
+        Walkers object.
+    trial : trial object
+        Trial wavefunctioni.
+
+    Returns
+    -------
+    local_energy : np.ndarray
+        Total, one-body and two-body energies.
+    """
+    nwalkers = walkers.Ghalfa.shape[0]
+    nalpha = walkers.Ghalfa.shape[1]
+    nbeta = walkers.Ghalfb.shape[1]
+    nbasis = hamiltonian.nbasis
+
+    Ghalfa = walkers.Ghalfa.reshape(nwalkers, nalpha * nbasis)
+    Ghalfb = walkers.Ghalfb.reshape(nwalkers, nbeta * nbasis)
+
+    e1b = Ghalfa.dot(trial._rH1a.ravel())
+    e1b += Ghalfb.dot(trial._rH1b.ravel())
+    e1b += hamiltonian.ecore
+
+    ecoul = ecoul_kernel_batch_complex_nonhermitian_uhf(
+        trial._rAa, trial._rAb, trial._rBa, trial._rBb, Ghalfa, Ghalfb
+    )
+
+    exx = exx_kernel_batch_complex_rchol(
+        trial._rAa, trial._rBa, walkers.Ghalfa
+    ) + exx_kernel_batch_complex_rchol(trial._rAb, trial._rBb, walkers.Ghalfb)
 
     e2b = ecoul - exx
 

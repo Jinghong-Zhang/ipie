@@ -14,6 +14,7 @@ import plum
 
 from ipie.config import config
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
+from ipie.hamiltonians.sparse import SparseRealChol, SparseComplexChol, SparseNonHermitian
 from ipie.hamiltonians.generic_base import GenericBase
 from ipie.propagation.operations import apply_exponential, apply_exponential_batch
 from ipie.propagation.phaseless_base import PhaselessBase
@@ -96,6 +97,21 @@ class PhaselessGeneric(PhaselessBase):
         VHS = self.isqrt_dt * (
             hamiltonian.A.dot(xshifted[:nchol]) + hamiltonian.B.dot(xshifted[nchol:])
         )
+        VHS = VHS.T.copy()
+        VHS = VHS.reshape(nwalkers, hamiltonian.nbasis, hamiltonian.nbasis)
+
+        return VHS
+    
+    @plum.dispatch
+    def construct_VHS(self, hamiltonian: SparseNonHermitian, xshifted: xp.ndarray) -> xp.ndarray:
+        nwalkers = xshifted.shape[-1]
+
+        nchol = hamiltonian.nchol
+
+        VHS = self.isqrt_dt * (
+            hamiltonian.A.dot(xshifted[:nchol]) + hamiltonian.B.dot(xshifted[nchol:])
+        )
+        assert isinstance(VHS, xp.ndarray)
         VHS = VHS.T.copy()
         VHS = VHS.reshape(nwalkers, hamiltonian.nbasis, hamiltonian.nbasis)
 
