@@ -54,7 +54,6 @@ def propagate_one_body(phi, bt2, H1diag=False):
 
     return phi
 
-
 def apply_exponential(phi, VHS, exp_nmax):
     """Apply exponential propagator of the HS transformation
     Parameters
@@ -80,7 +79,6 @@ def apply_exponential(phi, VHS, exp_nmax):
 
     synchronize()
     return phi
-
 
 def apply_exponential_batch(phi, VHS, exp_nmax):
     """Apply exponential propagator of the HS transformation

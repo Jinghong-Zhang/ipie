@@ -18,6 +18,7 @@
 
 import numpy
 
+from numba import jit
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 
@@ -118,6 +119,52 @@ def construct_force_bias_batch_single_det(
         synchronize()
         return vbias_batch
 
+def construct_force_bias_kpt_batch_single_det(
+    hamiltonian: "KptComplexChol", walkers: "UHFWalkers", trial: "KptSingleDet"
+):
+    """Compute optimal force bias.
+
+    Uses rotated Green's function.
+
+    Parameters
+    ----------
+    hamiltonian : class
+        hamiltonian object.
+
+    walkers : class
+        walkers object.
+
+    trial : class
+        Trial wavefunction object.
+
+    Returns
+    -------
+    xbar : :class:`numpy.ndarray`
+        Force bias.
+    """
+    if walkers.rhf:
+        vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
+        # ghalf shape: nwalkers, nk, nup, nk, nbsf
+        Ghalf_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
+        for iq in range(hamiltonian.nk):
+            for ik in range(hamiltonian.nk):
+                ikpq = hamiltonian.ikpq_mat[ik, iq]
+                vbias[:, :, iq] += 2.0 * numpy.einsum("gip, aip -> ga", trial._rchola[:, ik, :, iq, :], Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+        synchronize()
+
+        return vbias
+
+    else:
+        vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
+        # ghalf shape: nwalkers, nk, nup, nk, nbsf
+        Ghalfa_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
+        Ghalfb_reshape = walkers.Ghalfb.reshape(walkers.nwalkers, hamiltonian.nk, trial.nbeta, hamiltonian.nk, hamiltonian.nbasis)
+        for iq in range(hamiltonian.nk):
+            for ik in range(hamiltonian.nk):
+                ikpq = hamiltonian.ikpq_mat[ik, iq]
+                vbias[:, :, iq] += numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True)
+        synchronize()
+        return vbias
 
 def construct_force_bias_batch_single_det_chunked(hamiltonian, walkers, trial, handler):
     """Compute optimal force bias.

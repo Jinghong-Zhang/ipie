@@ -20,6 +20,7 @@ import itertools
 
 import numpy
 import scipy.linalg
+from numba import jit
 
 from ipie.estimators.kernels.cpu import wicks as wk
 from ipie.utils.backend import arraylib as xp
@@ -64,6 +65,58 @@ def calc_overlap_single_det_ghf(walkers: "GHFWalkers", trial: "SingleDet"):
     sign, log_ovlp = xp.linalg.slogdet(ovlp)
 
     ot = sign * xp.exp(log_ovlp - walkers.log_shift)
+
+    return ot
+
+def calc_overlap_single_det_kpt(walkers:"UHFWalkers", trial: "SingleDet"):
+    """Caculate overlap with single det k point trial wavefunction.
+
+    Parameters
+    ----------
+    walkers : object
+        WalkerBatch object (this stores some intermediates for the particular trial wfn).
+    trial : object
+        Trial wavefunction object.
+
+    Returns
+    -------
+    ot : float / complex
+        Overlap.
+    """
+    nwalkers = walkers.nwalkers
+    nup = trial.nalpha
+    ndown = trial.nbeta
+    nk = trial.nk
+    nbsf = trial.nbasis
+
+    phia = walkers.phia.reshape(nwalkers, nk, nbsf, nk, nup)
+    phib = walkers.phib.reshape(nwalkers, nk, nbsf, nk, ndown)
+    
+    ovlpa = numpy.zeros((nwalkers, nk, nup, nk, nup), dtype=numpy.complex128)
+    for iw in range(nwalkers):
+        for ik1 in range(nk):
+            for ik2 in range(nk):
+                ovlpa[iw, ik1, :, ik2, :] = numpy.dot(phia[iw, ik2, :, ik1, :].T, trial.psi0a[ik2].conj())
+
+    ovlpa_reshape = ovlpa.reshape((nwalkers, nk * nup, nk * nup))
+    sign_a, log_ovlp_a = numpy.linalg.slogdet(ovlpa_reshape)
+
+    if ndown > 0 and not walkers.rhf:
+        ovlpb = numpy.zeros((nwalkers, nk, ndown, nk, ndown), dtype=numpy.complex128)
+        for iw in range(nwalkers):
+            for ik1 in range(nk):
+                for ik2 in range(nk):
+                    ovlpb[iw, ik1, :, ik2, :] = numpy.dot(phib[iw, ik2, :, ik1, :].T, trial.psi0b[ik2].conj())
+
+        ovlpb_reshape = ovlpb.reshape((nwalkers, nk * ndown, nk * ndown))
+        sign_b, log_ovlp_b = numpy.linalg.slogdet(ovlpb_reshape)
+        ot = sign_a * sign_b * xp.exp(log_ovlp_a + log_ovlp_b - walkers.log_shift)
+    elif ndown > 0 and walkers.rhf:
+        ot = sign_a * sign_a * xp.exp(log_ovlp_a + log_ovlp_a - walkers.log_shift)
+    elif ndown == 0:
+        ot = sign_a * xp.exp(log_ovlp_a - walkers.log_shift)
+
+    synchronize()
 
     return ot
 

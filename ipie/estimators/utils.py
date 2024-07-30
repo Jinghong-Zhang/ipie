@@ -140,3 +140,25 @@ def gab_spin(A, B, na, nb):
         GB = numpy.zeros(GA.shape, dtype=GA.dtype)
         GBH = numpy.zeros((0, GAH.shape[1]), dtype=GAH.dtype)
     return numpy.array([GA, GB]), [GAH, GBH]
+
+def gabk_mod(A, B):
+    pass
+
+def gabk_spin(A, B, na, nb):
+    assert A.shape[0] == B.shape[0]
+    nk = A.shape[0]
+    nbasis = A.shape[1]
+    GA = numpy.zeros((nk, nbasis, nbasis), dtype=A.dtype)
+    GB = numpy.zeros((nk, nbasis, nbasis), dtype=A.dtype)
+    GAH = numpy.zeros((nk, na, nbasis), dtype=A.dtype)
+    GBH = numpy.zeros((nk, nb, nbasis), dtype=A.dtype)
+    for ik in range(nk):
+        GA[ik], GAH[ik] = gab_mod(A[ik, :, :na], B[ik, :, :na])
+    if nb > 0:
+        for ik in range(nk):
+            GB[ik], GBH[ik] = gab_mod(A[ik, :, na:], B[ik, :, na:])
+    return numpy.array([GA, GB]), [GAH, GBH]
+
+
+
+

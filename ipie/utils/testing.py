@@ -23,6 +23,7 @@ from typing import Tuple, Union
 import numpy
 
 from ipie.hamiltonians import Generic as HamGeneric
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
 from ipie.propagation.phaseless_generic import PhaselessBase, PhaselessGeneric
 from ipie.qmc.afqmc import AFQMC
 from ipie.qmc.options import QMCOpts
@@ -35,6 +36,7 @@ from ipie.trial_wavefunction.particle_hole import (
     ParticleHoleSlow,
 )
 from ipie.trial_wavefunction.single_det import SingleDet
+from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
 from ipie.utils.io import get_input_value
 from ipie.utils.linalg import modified_cholesky
@@ -42,6 +44,8 @@ from ipie.utils.mpi import MPIHandler
 from ipie.walkers.base_walkers import BaseWalkers
 from ipie.walkers.pop_controller import PopController
 from ipie.walkers.walkers_dispatch import UHFWalkersTrial
+
+from ipie.utils.kpt_conv import get_walker_from_trial
 
 
 def generate_hamiltonian(nmo, nelec, cplx=False, sym=8, tol=1e-3):
@@ -102,6 +106,26 @@ def get_random_nomsd(nup, ndown, nbasis, ndet=10, cplx=True, init=False):
             init_wfn = (a + 1j * b).reshape((nbasis, nup + ndown))
         else:
             init_wfn = a.reshape((nbasis, nup + ndown))
+        return (coeffs, wfn, init_wfn)
+    else:
+        return (coeffs, wfn)
+
+def get_random_kpt_trial(nk, nup, ndown, nbasis, ndet=1, cplx=True, init=False):
+    a = numpy.random.rand(ndet * nbasis * (nup + ndown) * nk)
+    b = numpy.random.rand(ndet * nbasis * (nup + ndown) * nk)
+    if cplx:
+        wfn = (a + 1j * b).reshape((ndet, nk, nbasis, nup + ndown))
+        coeffs = numpy.random.rand(ndet) + 1j * numpy.random.rand(ndet)
+    else:
+        wfn = a.reshape((ndet, nk, nbasis, nup + ndown))
+        coeffs = numpy.random.rand(ndet)
+    if init:
+        a = numpy.random.rand(nk, nbasis * (nup + ndown))
+        b = numpy.random.rand(nk, nbasis * (nup + ndown))
+        if cplx:
+            init_wfn = (a + 1j * b).reshape((nk, nbasis, nup + ndown))
+        else:
+            init_wfn = a.reshape((nk, nbasis, nup + ndown))
         return (coeffs, wfn, init_wfn)
     else:
         return (coeffs, wfn)
@@ -277,6 +301,18 @@ def get_random_sys_ham(nalpha, nbeta, nmo, naux, cmplx=False):
     )
     return sys, ham
 
+def get_random_sys_ham_kpt(nalpha, nbeta, nmo, naux, nk, cmplx=False):
+    sys = Generic(nelec=(nalpha, nbeta))
+    chol = shaped_normal((naux, nk, nmo, nk, nmo), cmplx=cmplx)
+    h1e = shaped_normal((nk, nmo, nmo), cmplx=cmplx)
+    ham = HamGeneric(
+        h1e=numpy.array([h1e, h1e]),
+        chol=chol,
+        ecore=0,
+        verbose=False,
+    )
+    return sys, ham
+
 
 def gen_random_test_instances(nmo, nocc, naux, nwalkers, seed=7, ndets=1):
     assert ndets == 1
@@ -316,6 +352,57 @@ def gen_random_test_instances(nmo, nocc, naux, nwalkers, seed=7, ndets=1):
     trial._rcholb = shaped_normal((naux, nocc * nmo))
     trial._rH1a = shaped_normal((nocc, nmo))
     trial._rH1b = shaped_normal((nocc, nmo))
+    return system, ham, walkers, trial
+
+def gen_random_test_instances_kpt(nk, nmo, nocc, naux, nwalkers, seed=7, ndets=1):
+    assert ndets == 1
+    numpy.random.seed(seed)
+    wfn = get_random_kpt_trial(nk, nocc, nocc, nmo, ndet=ndets)
+    h1e = shaped_normal((nk, nmo, nmo))
+
+    system = Generic(nelec=(nocc, nocc))
+    chol = shaped_normal((naux, nk, nmo, nk, nmo))
+    kpts = numpy.array([[0.,  0.,  0. ],
+    [0.,  0.5, 0. ],
+    [0.,  0.,  0.5],
+    [0.,  0.5, 0.5],
+    [0.5, 0.,  0. ],
+    [0.5, 0.,  0.5],
+    [0.5, 0.5, 0. ],
+    [0.5, 0.5, 0.5]])
+    ham = KptComplexChol(
+        h1e=numpy.array([h1e, h1e]),
+        chol=chol,
+        kpts=kpts,
+        ecore=0,
+        verbose=False,
+    )
+
+    if ndets == 1:
+        trial = KptSingleDet(wfn[1][0], nk, (nocc, nocc), nmo)
+    else:
+        raise NotImplementedError
+    initial_walker = get_walker_from_trial(wfn[1][0])
+    walkers = UHFWalkersTrial(
+        trial,
+        initial_walker,
+        system.nup,
+        system.ndown,
+        nk,
+        ham.nbasis,
+        nwalkers,
+        MPIHandler(),
+    )
+    walkers.build(trial)
+
+    Ghalfa = shaped_normal((nwalkers, nk, nocc, nk, nmo), cmplx=True)
+    Ghalfb = shaped_normal((nwalkers, nk, nocc, nk, nmo), cmplx=True)
+    walkers.Ghalfa = Ghalfa
+    walkers.Ghalfb = Ghalfb
+    trial._rchola = shaped_normal((naux, nk, nocc,nk, nmo))
+    trial._rcholb = shaped_normal((naux, nk, nocc,nk, nmo))
+    trial._rH1a = shaped_normal((nk, nocc, nmo))
+    trial._rH1b = shaped_normal((nk, nocc, nmo))
     return system, ham, walkers, trial
 
 
