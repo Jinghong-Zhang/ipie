@@ -117,7 +117,7 @@ def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
     return 0.5 * exx / nk**2
 
 @jit(nopython=True, fastmath=True)
-def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpts):
+def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq_vec):
     """Compute coulomb contribution for real rchol with UHF trial.
 
     Parameters
