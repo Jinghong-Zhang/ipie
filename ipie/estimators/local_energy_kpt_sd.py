@@ -64,7 +64,7 @@ def kpt_ecoul_kernel_rhf(rchola, Ghalfa_batch, kpq_mat, mq_vec):
 
     for iw in range(nwalkers):
         for q in range(nk):
-            i_mq = int(find_inverted_index(kpts[q], kpts))
+            i_mq = mq_vec[q]
             ecoul[iw] += 2. * dot(X[iw, :, q], X[iw, :, i_mq])
     return ecoul/nk**2
 
@@ -78,8 +78,10 @@ def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
         Half-rotated cholesky.
     Ghalf : :class:`numpy.ndarray`
         Walker's half-rotated "green's function" shape is nalpha  x nbasis
-    kpts : :class:`numpy.ndarray`
-        all k-points in fractional coordinates.
+    kpq_mat : :class:`numpy.ndarray`
+        all k + q in fractional coordinates.
+    mq_vec : :class:`numpy.ndarray`
+        all -q in fractional coordinates.
 
     Returns
     -------
@@ -162,7 +164,7 @@ def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq
 
     for iw in range(nwalkers):
         for q in range(nk):
-            i_mq = int(find_inverted_index(kpts[q], kpts))
+            i_mq = mq_vec[q]
             ecoul[iw] += dot(X[iw, :, q], X[iw, :, i_mq])
     return 0.5 * ecoul / nk**2
 
