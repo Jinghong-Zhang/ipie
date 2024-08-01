@@ -78,8 +78,10 @@ def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
         Half-rotated cholesky.
     Ghalf : :class:`numpy.ndarray`
         Walker's half-rotated "green's function" shape is nalpha  x nbasis
-    kpts : :class:`numpy.ndarray`
-        all k-points in fractional coordinates.
+    kpq_mat : :class:`numpy.ndarray`
+        all k + q in fractional coordinates.
+    mq_vec : :class:`numpy.ndarray`
+        all -q in fractional coordinates.
 
     Returns
     -------
