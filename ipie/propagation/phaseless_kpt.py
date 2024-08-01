@@ -70,8 +70,9 @@ class PhaselessKpt(PhaselessKptBase):
         for iq in range(hamiltonian.nk):
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[ik, iq]
-                xtildepiq = xshifted[0, :, :, iq]
-                xtildemiq = xshifted[1, :, :, iq]
+                imq = hamiltonian.imq_vec[iq]
+                xtildepiq = xshifted[0, :, :, iq] + xshifted[0, :, :, imq]
+                xtildemiq = xshifted[1, :, :, iq] - xshifted[1, :, :, imq]
                 xvhsiq = (1j * xtildepiq + xtildemiq) / 2
                 VHS[:, ik, :, ikpq, :] = self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', xvhsiq, hamiltonian.chol[:, ik, :, iq, :])
         VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)

@@ -118,6 +118,7 @@ class PhaselessKptBase(ContinuousBase):
 
     def propagate_walkers_one_body(self, walkers):
         start_time = time.time()
+        # print("norm of expH1", xp.linalg.norm(self.expH1))
         walkers.phia = propagate_one_body(walkers.phia, self.expH1[0])
         if walkers.ndown > 0 and not walkers.rhf:
             walkers.phib = propagate_one_body(walkers.phib, self.expH1[1])
@@ -145,10 +146,13 @@ class PhaselessKptBase(ContinuousBase):
         xbar = self.apply_bound_force_bias(xbar, self.fbbound)
 
         # Normally distrubted auxiliary fields.
-        xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.nk * walkers.nwalkers).reshape(
-            2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk
-        )
+        # xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.nk * walkers.nwalkers).reshape(
+        #     2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk
+        # )
+        xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.nk * walkers.nwalkers).reshape(walkers.nwalkers, 2, hamiltonian.nk, hamiltonian.nchol).transpose(1, 0, 3, 2)
         xshifted = xi - xbar
+        # print(f"xshifted = {xshifted}")
+        print(f"norm of xshifted = {xp.linalg.norm(xshifted)}")
 
         # Constant factor arising from force bias and mean field shift
         xshifted_plus_q0 = xshifted[0, :, :, hamiltonian.igamma]
@@ -176,9 +180,11 @@ class PhaselessKptBase(ContinuousBase):
 
         # 2.b Apply two-body
         (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, trial)
+        print("norm of phia after 2 body", xp.linalg.norm(walkers.phia))
 
         # 2.c Apply one-body
         self.propagate_walkers_one_body(walkers)
+        print("norm of phia after last 1 body", xp.linalg.norm(walkers.phia))
 
         # Now apply phaseless approximation
         start_time = time.time()

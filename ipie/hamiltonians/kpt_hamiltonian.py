@@ -31,7 +31,8 @@ def construct_h1e_mod(chol, h1e, ikpq_mat, imq_vec, h1e_mod):
             ikpq = ikpq_mat[ik, iq]
             imq = imq_vec[iq]
             self_int[ik] += .5 * numpy.einsum('gpr, grq -> pq', chol[:, ik, :, iq, :], chol[:, ikpq, :, imq, :])
-    h1e_mod = h1e - self_int
+    h1e_mod[0, :, :, :] = h1e[0, :, :, :] - self_int
+    h1e_mod[1, :, :, :] = h1e[1, :, :, :] - self_int
 
 
 class KptComplexChol(GenericBase):

@@ -182,7 +182,8 @@ class PhaselessBase(ContinuousBase):
     def build(self, hamiltonian, trial=None, walkers=None, mpi_handler=None, verbose=False):
         # dt/2 one-body propagator
         start = time.time()
-        self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
+        # self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
+        self.mf_shift = numpy.zeros(hamiltonian.nfields, dtype=numpy.complex128)
         if verbose:
             print(f"# Time to mean field shift: {time.time() - start} s")
             print(
@@ -199,6 +200,7 @@ class PhaselessBase(ContinuousBase):
 
     def propagate_walkers_one_body(self, walkers):
         start_time = time.time()
+        # print("norm of expH1", xp.linalg.norm(self.expH1))
         walkers.phia = propagate_one_body(walkers.phia, self.expH1[0])
         if walkers.ndown > 0 and not walkers.rhf:
             walkers.phib = propagate_one_body(walkers.phib, self.expH1[1])
@@ -210,7 +212,8 @@ class PhaselessBase(ContinuousBase):
         xbar = xp.zeros((walkers.nwalkers, hamiltonian.nfields))
 
         start_time = time.time()
-        self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+        # self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+        self.vbias = xp.zeros((walkers.nwalkers, hamiltonian.nfields), dtype=numpy.complex128)
         xbar = -self.sqrt_dt * (1j * self.vbias - self.mf_shift)
         synchronize()
         self.timer.tfbias += time.time() - start_time
@@ -223,6 +226,7 @@ class PhaselessBase(ContinuousBase):
             walkers.nwalkers, hamiltonian.nfields
         )
         xshifted = xi - xbar
+        print(f"norm of xshifted = {xp.linalg.norm(xshifted)}")
 
         # Constant factor arising from force bias and mean field shift
         cmf = -self.sqrt_dt * xp.einsum("wx,x->w", xshifted, self.mf_shift)
@@ -248,9 +252,11 @@ class PhaselessBase(ContinuousBase):
 
         # 2.b Apply two-body
         (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, trial)
+        print("norm of phia after 2 body", xp.linalg.norm(walkers.phia))
 
         # 2.c Apply one-body
         self.propagate_walkers_one_body(walkers)
+        print("norm of phia after last 1 body", xp.linalg.norm(walkers.phia))
 
         # Now apply phaseless approximation
         start_time = time.time()

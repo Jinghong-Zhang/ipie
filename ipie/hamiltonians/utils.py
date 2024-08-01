@@ -21,6 +21,7 @@ import time
 import numpy
 
 from ipie.hamiltonians.generic import construct_h1e_mod, Generic, read_integrals
+from ipie.hamiltonians.generic import GenericComplexChol
 from ipie.utils.mpi import get_shared_array, have_shared_mem
 from ipie.utils.pack_numba import pack_cholesky
 
@@ -96,6 +97,70 @@ def get_hamiltonian(filename, scomm, verbose=False, pack_chol=True):
 
     return ham
 
+def get_complex_hamiltonian(filename, scomm, verbose=False):
+    """Wrapper to complex hamiltonian class with integrals in shared memory.
+
+    Parameters
+    ----------
+    filename : str
+        Hamiltonian filename.
+    scomm : MPI.COMM_WORLD
+        MPI split communicator (shared memory).
+    pack_chol : bool
+        Only store minimum amount of information required by integrals.
+    verbose : bool
+        Output verbosity.
+
+    Returns
+    -------
+    ham : object
+        Hamiltonian class.
+    """
+    start = time.time()
+    hcore, chol, _, enuc = get_generic_integrals(filename, comm=scomm, verbose=verbose)
+    if verbose:
+        print(f"# Time to read integrals: {time.time() - start:.6f}")
+
+    start = time.time()
+
+    nbsf = hcore.shape[-1]
+    nchol = chol.shape[-1]
+    idx = numpy.triu_indices(nbsf)
+
+    chol = chol.reshape((nbsf, nbsf, nchol))
+    assert chol.dtype == numpy.complex128
+
+    shmem = have_shared_mem(scomm)
+    if shmem:
+        if scomm.rank == 0:
+            dtype = chol.dtype
+        else:
+            cp_shape = None
+            dtype = None
+
+        dtype = scomm.bcast(dtype, root=0)
+
+        A = get_shared_array(scomm, chol.shape, dtype)
+        B = get_shared_array(scomm, chol.shape, dtype)
+        if scomm.rank == 0:
+            for x in range(nchol):
+                A[:, :, x] = (chol[:, :, x] + chol[:, :, x].T.conj()) / 2.0
+                B[:, :, x] = 1.0j * (chol[:, :, x] - chol[:, :, x].T.conj()) / 2.0
+        scomm.Barrier()
+        A = A.reshape((nbsf * nbsf, nchol))
+        B = B.reshape((nbsf * nbsf, nchol))
+
+    chol = chol.reshape((nbsf * nbsf, nchol))
+
+    if verbose:
+        print(f"# Time to pack Cholesky vectors: {time.time() - start:.6f}")
+
+    if shmem:
+        ham = GenericComplexChol(h1e=hcore, chol=chol, ecore=enuc, shmem=True, A=A, B=B, verbose=verbose)
+    else:
+        ham = Generic(h1e=hcore, chol=chol, ecore=enuc, verbose=verbose)
+
+    return ham
 
 def get_generic_integrals(filename, comm=None, verbose=False):
     """Read generic integrals, potentially into shared memory.
