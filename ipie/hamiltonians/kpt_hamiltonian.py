@@ -4,6 +4,8 @@ from ipie.hamiltonians.generic_base import GenericBase
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.kpt_conv import find_gamma_pt, find_inverted_index_batched, find_translated_index_batched
 
+import h5py
+
 from ipie.utils.io import (
     from_qmcpack_dense,
     from_qmcpack_sparse,
@@ -25,14 +27,14 @@ def construct_mq(kpts_frac):
 
 def construct_h1e_mod(chol, h1e, ikpq_mat, imq_vec, h1e_mod):
     nk, nbasis = h1e.shape[1], h1e.shape[2]
-    self_int = numpy.zeros((nk, nbasis, nbasis), dtype=numpy.complex128)
+    v0 = numpy.zeros((nk, nbasis, nbasis), dtype=numpy.complex128)
     for ik in range(nk):
         for iq in range(nk):
             ikpq = ikpq_mat[ik, iq]
             imq = imq_vec[iq]
-            self_int[ik] += .5 * numpy.einsum('gpr, grq -> pq', chol[:, ik, :, iq, :], chol[:, ikpq, :, imq, :])
-    h1e_mod[0, :, :, :] = h1e[0, :, :, :] - self_int
-    h1e_mod[1, :, :, :] = h1e[1, :, :, :] - self_int
+            v0[ik] += .5 * numpy.einsum('gpr, grq -> pq', chol[:, ik, :, iq, :], chol[:, ikpq, :, imq, :])
+    h1e_mod[0, :, :, :] = h1e[0, :, :, :] - v0
+    h1e_mod[1, :, :, :] = h1e[1, :, :, :] - v0
 
 
 class KptComplexChol(GenericBase):
@@ -44,6 +46,14 @@ class KptComplexChol(GenericBase):
         assert h1e.shape[0] == 2
         assert len(h1e.shape) == 4 # shape = nspin, nk, nbasis, nbasis
         super().__init__(h1e, ecore, verbose)
+
+        nk, nbasis = h1e.shape[1], h1e.shape[2]
+        full_h1 = numpy.zeros((2, nk, nbasis, nk, nbasis), dtype=numpy.complex128)
+        for ik in range(nk):
+            full_h1[:, ik, :, ik, :] = h1e[:, ik, :, :]
+        full_h1 = full_h1.reshape((2, nk * nbasis, nk * nbasis))
+        fullh1norm = numpy.linalg.norm(full_h1.ravel())
+        print(f"norm of full h1 = {fullh1norm}")
 
         self.chol = numpy.array(chol, dtype=numpy.complex128)  # [nchol, Nk, M, Nk, M] (gamma, k, p, q, r)
         self.kpts = kpts

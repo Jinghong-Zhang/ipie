@@ -44,7 +44,7 @@ def construct_one_body_propagator(
         diagchol[:, ik, :, :] = hamiltonian.chol[:, ik, :, igamma, :]
             
     shift = xp.einsum("xkpr, x -> kpr", diagchol, mf_shift)
-    H1 = hamiltonian.h1e_mod - xp.array([shift, shift])
+    H1 = hamiltonian.h1e_mod + xp.array([shift, shift])
     if hasattr(H1, "get"):
         H1_numpy = H1.get()
     else:
@@ -55,6 +55,7 @@ def construct_one_body_propagator(
         full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
         full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
     full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
+    # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
     expH1 = xp.array(
         [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
     )
@@ -100,8 +101,10 @@ class PhaselessKptBase(ContinuousBase):
     def build(self, hamiltonian, trial=None, walkers=None, mpi_handler=None, verbose=False):
         # dt/2 one-body propagator
         start = time.time()
-        # self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
-        self.mf_shift = numpy.zeros(hamiltonian.nchol, dtype=numpy.complex128)
+        self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
+        # self.mf_shift = numpy.zeros(hamiltonian.nchol, dtype=numpy.complex128)
+        print(f"norm of mf_shift = {xp.linalg.norm(self.mf_shift.ravel())}")
+        print(f"sum of all elements of mf_shift = {xp.sum(self.mf_shift)}")
         if verbose:
             print(f"# Time to mean field shift: {time.time() - start} s")
             print(
@@ -130,13 +133,16 @@ class PhaselessKptBase(ContinuousBase):
         xbar = xp.zeros((2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
 
         start_time = time.time()
-        # self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
-        self.vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
+        self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+        # print(f"norm of vbias = {xp.linalg.norm(self.vbias.ravel())}")
+        # self.vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
         mq_vec = hamiltonian.imq_vec
         xbar_plus = numpy.zeros_like(self.vbias)
-        xbar_plus[:, :, 0] = -0.5 * 1j * self.sqrt_dt * (self.vbias[:, :, 0] + self.vbias[:, :, 0] - 2 * self.mf_shift[numpy.newaxis, :])
-        xbar_plus[:, :, 1:] = -0.5 * 1j * self.sqrt_dt * (self.vbias[:, :, 1:] + self.vbias[:, :, mq_vec[1:]])
-        xbar_minus = -0.5 * self.sqrt_dt * (self.vbias - self.vbias[:, :, mq_vec])
+        igamma = hamiltonian.igamma
+        xbar_plus = -0.5 * 1j * self.sqrt_dt * (self.vbias + self.vbias[:, :, mq_vec])
+        xbar_plus[:, :, igamma] = -1j * self.sqrt_dt * (self.vbias[:, :, igamma] - self.mf_shift[numpy.newaxis, :])
+        # print(f"xbar_plus at gamma = {numpy.sum(xbar_plus[0, :, igamma])}")
+        xbar_minus = - 0.5 * self.sqrt_dt * (self.vbias - self.vbias[:, :, mq_vec])
         xbar[0] = xbar_plus
         xbar[1] = xbar_minus
         synchronize()
@@ -150,9 +156,13 @@ class PhaselessKptBase(ContinuousBase):
         #     2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk
         # )
         xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.nk * walkers.nwalkers).reshape(walkers.nwalkers, 2, hamiltonian.nk, hamiltonian.nchol).transpose(1, 0, 3, 2)
+        # print(f"norm of xi = {xp.linalg.norm(xi.ravel())}")
+        with h5py.File("xbar_kpt.h5", "w") as f:
+            f.create_dataset("xbar", data=xbar)
         xshifted = xi - xbar
-        # print(f"xshifted = {xshifted}")
-        print(f"norm of xshifted = {xp.linalg.norm(xshifted)}")
+        # print(f"norm of xbar = {xp.linalg.norm(xbar.ravel())}")
+        # print(f"sum of all elements of xbar = {xp.sum(xbar)}")
+        # print(f"norm of xshifted = {xp.linalg.norm(xshifted.ravel())}")
 
         # Constant factor arising from force bias and mean field shift
         xshifted_plus_q0 = xshifted[0, :, :, hamiltonian.igamma]

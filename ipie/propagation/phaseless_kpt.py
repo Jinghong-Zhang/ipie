@@ -67,6 +67,11 @@ class PhaselessKpt(PhaselessKptBase):
         """
         nwalkers = xshifted.shape[1]
         VHS = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
+        xp = xshifted[0]
+        xm = xshifted[1]
+
+        # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
+
         for iq in range(hamiltonian.nk):
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[ik, iq]
@@ -75,6 +80,7 @@ class PhaselessKpt(PhaselessKptBase):
                 xtildemiq = xshifted[1, :, :, iq] - xshifted[1, :, :, imq]
                 xvhsiq = (1j * xtildepiq + xtildemiq) / 2
                 VHS[:, ik, :, ikpq, :] = self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', xvhsiq, hamiltonian.chol[:, ik, :, iq, :])
+        print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
         VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         if config.get_option("use_gpu"):
             raise NotImplementedError

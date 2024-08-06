@@ -77,6 +77,7 @@ def construct_one_body_propagator(hamiltonian: GenericComplexChol, mf_shift: xp.
     shift += 1j * numpy.einsum("mx,x->m", hamiltonian.B, mf_shift[nchol:]).reshape(nb, nb)
 
     H1 = hamiltonian.h1e_mod - numpy.array([shift, shift])
+    print(f"norm of H1 = {numpy.linalg.norm(H1.ravel())}")
     expH1 = numpy.array(
         [scipy.linalg.expm(-0.5 * dt * H1[0]), scipy.linalg.expm(-0.5 * dt * H1[1])]
     )
@@ -182,8 +183,10 @@ class PhaselessBase(ContinuousBase):
     def build(self, hamiltonian, trial=None, walkers=None, mpi_handler=None, verbose=False):
         # dt/2 one-body propagator
         start = time.time()
-        # self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
-        self.mf_shift = numpy.zeros(hamiltonian.nfields, dtype=numpy.complex128)
+        self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
+        # self.mf_shift = numpy.zeros(hamiltonian.nfields, dtype=numpy.complex128)
+        # print(f"norm of mf_shift = {xp.linalg.norm(self.mf_shift.ravel())}")
+        # print(f"sum of all elements of mf_shift = {xp.sum(self.mf_shift)}")
         if verbose:
             print(f"# Time to mean field shift: {time.time() - start} s")
             print(
@@ -200,7 +203,7 @@ class PhaselessBase(ContinuousBase):
 
     def propagate_walkers_one_body(self, walkers):
         start_time = time.time()
-        # print("norm of expH1", xp.linalg.norm(self.expH1))
+        print("norm of expH1", xp.linalg.norm(self.expH1))
         walkers.phia = propagate_one_body(walkers.phia, self.expH1[0])
         if walkers.ndown > 0 and not walkers.rhf:
             walkers.phib = propagate_one_body(walkers.phib, self.expH1[1])
@@ -212,9 +215,12 @@ class PhaselessBase(ContinuousBase):
         xbar = xp.zeros((walkers.nwalkers, hamiltonian.nfields))
 
         start_time = time.time()
-        # self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
-        self.vbias = xp.zeros((walkers.nwalkers, hamiltonian.nfields), dtype=numpy.complex128)
+        self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+        # print(f"norm of vbias = {xp.linalg.norm(self.vbias.ravel())}")
+        # self.vbias = xp.zeros((walkers.nwalkers, hamiltonian.nfields), dtype=numpy.complex128)
+        nchol = hamiltonian.nchol
         xbar = -self.sqrt_dt * (1j * self.vbias - self.mf_shift)
+        # print(f"xbar at gamma point = {numpy.sum(xbar[0, 2496:2688])}")
         synchronize()
         self.timer.tfbias += time.time() - start_time
 
@@ -225,8 +231,11 @@ class PhaselessBase(ContinuousBase):
         xi = xp.random.normal(0.0, 1.0, hamiltonian.nfields * walkers.nwalkers).reshape(
             walkers.nwalkers, hamiltonian.nfields
         )
+        # print(f"norm of xi = {xp.linalg.norm(xi.ravel())}")
         xshifted = xi - xbar
-        print(f"norm of xshifted = {xp.linalg.norm(xshifted)}")
+        # print(f"norm of xbar = {xp.linalg.norm(xbar.ravel())}")
+        # print(f"sum of all elements of xbar = {xp.sum(xbar)}")
+        # print(f"norm of xshifted = {xp.linalg.norm(xshifted.ravel())}")
 
         # Constant factor arising from force bias and mean field shift
         cmf = -self.sqrt_dt * xp.einsum("wx,x->w", xshifted, self.mf_shift)

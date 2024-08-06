@@ -66,7 +66,7 @@ def kpt_ecoul_kernel_rhf(rchola, Ghalfa_batch, kpq_mat, mq_vec):
         for q in range(nk):
             i_mq = mq_vec[q]
             ecoul[iw] += 2. * dot(X[iw, :, q], X[iw, :, i_mq])
-    return ecoul/nk**2
+    return ecoul / nk
 
 @jit(nopython=True, fastmath=True)
 def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
@@ -116,7 +116,7 @@ def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
                         T2[n, g] = dot(rchola[g, ikpr_pq, :, i_mq, :], GhalfaT[n, ikprime, :, ik, :])
                         exx[n] += -numpy.trace(dot(T1[n, g], T2[n, g]))
 
-    return 0.5 * exx / nk**2
+    return 0.5 * exx #/ nk
 
 @jit(nopython=True, fastmath=True)
 def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq_vec):
@@ -166,7 +166,7 @@ def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq
         for q in range(nk):
             i_mq = mq_vec[q]
             ecoul[iw] += dot(X[iw, :, q], X[iw, :, i_mq])
-    return 0.5 * ecoul / nk**2
+    return 0.5 * ecoul # / nk
 
 
 @plum.dispatch

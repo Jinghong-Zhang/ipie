@@ -21,7 +21,7 @@ from ipie.hamiltonians.generic_base import GenericBase
 from ipie.utils.pack_numba import pack_cholesky
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.mpi import get_shared_array, have_shared_mem
-
+import h5py
 from ipie.utils.io import (
     from_qmcpack_dense,
     from_qmcpack_sparse,
@@ -42,6 +42,7 @@ def construct_h1e_mod(chol, h1e, h1e_mod):
     )  # einsum('ikn,jkn->ij', chol_3, chol_3, optimize=True)
     h1e_mod[0, :, :] = h1e[0] - v0
     h1e_mod[1, :, :] = h1e[1] - v0
+
 
 
 class GenericRealChol(GenericBase):
@@ -107,7 +108,7 @@ class GenericComplexChol(GenericBase):
     def __init__(self, h1e, chol, A=None, B=None, ecore=0.0, shmem=False, verbose=False):
         assert h1e.shape[0] == 2
         super().__init__(h1e, ecore, verbose)
-
+        print(f"norm of h1e = {numpy.linalg.norm(h1e.ravel())}")
         self.chol = numpy.array(chol, dtype=numpy.complex128)  # [M^2, nchol]
         self.nchol = self.chol.shape[-1]
         self.nfields = 2 * self.nchol
@@ -132,7 +133,7 @@ class GenericComplexChol(GenericBase):
 
             for x in range(self.nchol):
                 self.A[:, :, x] = self.chol[:, :, x] + self.chol[:, :, x].T.conj()
-                self.B[:, :, x] = 1.0j * (self.chol[:, :, x] - self.chol[:, :, x].T.conj())
+                self.B[:, :, x] = - 1.0j * (self.chol[:, :, x] - self.chol[:, :, x].T.conj())
             self.A /= 2.0
             self.B /= 2.0
 
@@ -179,6 +180,6 @@ def read_integrals(integral_file):
         (h1e, chol_vecs, ecore) = read_hamiltonian(integral_file)
         naux = chol_vecs.shape[0]
         nbsf = chol_vecs.shape[-1]
-        return h1e, chol_vecs.T.reshape((nbsf, nbsf, naux)), ecore
+        return h1e, chol_vecs.transpose(1, 2, 0).reshape((nbsf, nbsf, naux)), ecore
     except KeyError:
         return None
