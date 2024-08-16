@@ -1,5 +1,5 @@
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy
 import plum
@@ -7,7 +7,7 @@ import plum
 from ipie.config import CommType, config, MPI
 from ipie.estimators.generic import half_rotated_cholesky_jk
 from ipie.estimators.utils import gabk_spin
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptISDF
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.propagation.force_bias import construct_force_bias_kpt_batch_single_det
 from ipie.trial_wavefunction.half_rotate import half_rotate_generic
@@ -121,10 +121,22 @@ class KptSingleDet(TrialWavefunctionBase):
         hamiltonian: KptComplexChol,
         walkers: UHFWalkers,
         mpi_handler: MPIHandler,
-    ) -> xp.ndarray:
+    ) -> Tuple[xp.ndarray, xp.ndarray]:
         if hamiltonian.chunked:
             raise NotImplementedError
         else:
             return construct_force_bias_kpt_batch_single_det(hamiltonian, walkers, self)
+
+    @plum.dispatch
+    def calc_force_bias(
+        self,
+        hamiltonian: KptISDF,
+        walkers: UHFWalkers,
+        mpi_handler: MPIHandler,
+    ) -> Tuple[xp.ndarray, xp.ndarray]:
+        if hamiltonian.chunked:
+            raise NotImplementedError
+        else:
+            return construct_force_bias_kptisdf_batch_single_det(hamiltonian, walkers, self)
 
 

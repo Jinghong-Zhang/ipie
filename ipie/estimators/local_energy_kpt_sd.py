@@ -9,11 +9,9 @@ from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 
 from ipie.systems.generic import Generic
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptISDF
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
-
-from ipie.utils.kpt_conv import find_translated_index, find_inverted_index
 
 import plum
 # Note specialisations occur to because:
@@ -23,7 +21,7 @@ import plum
 # Optimize for case when wavefunction is RHF (factor of 2 saving)
 
 @jit(nopython=True, fastmath=True)
-def kpt_ecoul_kernel_rhf(rchola, Ghalfa_batch, kpq_mat, mq_vec):
+def kpt_chol_ecoul_kernel_rhf(rchola, Ghalfa_batch, kpq_mat, mq_vec):
     """Compute coulomb contribution for complex rchol with RHF trial.
 
     Parameters
@@ -48,8 +46,6 @@ def kpt_ecoul_kernel_rhf(rchola, Ghalfa_batch, kpq_mat, mq_vec):
     # shape of rchola: (naux, nk, nocc, nk, nbsf) (gamma, k, i, q, p)
     # shape of Ghalf: (nw, nk, nocc, nk, nbsf)
     naux = rchola.shape[0]
-    nocc = rchola.shape[2]
-    nbsf = rchola.shape[4]
     nk = rchola.shape[1]
     ecoul = zeros(nwalkers, dtype=numpy.complex128)
     GhalfaT = Ghalfa_batch.transpose(0, 3, 4, 1, 2)
@@ -69,7 +65,7 @@ def kpt_ecoul_kernel_rhf(rchola, Ghalfa_batch, kpq_mat, mq_vec):
     return ecoul / nk
 
 @jit(nopython=True, fastmath=True)
-def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
+def kpt_chol_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
     """Compute coulomb contribution for complex rchol with RHF trial.
 
     Parameters
@@ -97,7 +93,6 @@ def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
     # shape of Ghalf: (nw, nk, nocc, nk, nbsf)
     naux = rchola.shape[0]
     nocc = rchola.shape[2]
-    nbsf = rchola.shape[4]
     nk = rchola.shape[1]
     exx = zeros(nwalkers, dtype=numpy.complex128)
     GhalfaT = Ghalfa_batch.transpose(0, 3, 4, 1, 2)
@@ -116,10 +111,10 @@ def kpt_exx_kernel(rchola, Ghalfa_batch, kpq_mat, mq_vec):
                         T2[n, g] = dot(rchola[g, ikpr_pq, :, i_mq, :], GhalfaT[n, ikprime, :, ik, :])
                         exx[n] += -numpy.trace(dot(T1[n, g], T2[n, g]))
 
-    return 0.5 * exx #/ nk
+    return 0.5 * exx / nk
 
 @jit(nopython=True, fastmath=True)
-def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq_vec):
+def kpt_chol_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq_vec):
     """Compute coulomb contribution for real rchol with UHF trial.
 
     Parameters
@@ -146,9 +141,6 @@ def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq
     # shape of rchola: (naux, nk, nocc, nk, nbsf) (gamma, k, i, q, p)
     # shape of Ghalf: (nw, nk, nocc, nk, nbsf)
     naux = rchola.shape[0]
-    nocca = rchola.shape[2]
-    noccb = rcholb.shape[2]
-    nbsf = rchola.shape[4]
     nk = rchola.shape[1]
     ecoul = zeros(nwalkers, dtype=numpy.complex128)
     GhalfaT = Ghalfa_batch.transpose(0, 3, 4, 1, 2)
@@ -166,8 +158,70 @@ def kpt_ecoul_kernel_uhf(rchola, rcholb, Ghalfa_batch, Ghalfb_batch, kpq_mat, mq
         for q in range(nk):
             i_mq = mq_vec[q]
             ecoul[iw] += dot(X[iw, :, q], X[iw, :, i_mq])
-    return 0.5 * ecoul # / nk
+    return 0.5 * ecoul  / nk
 
+@jit(nopython=True, fastmath=True)
+def kpt_isdf_exx_kernel(rcholM, rotweights, Ghalfa_batch, kpq_mat, q2G, qG2k):
+    zeros = numpy.zeros
+    dot = numpy.dot
+    nwalkers = Ghalfa_batch.shape[0]
+    naux = rcholM.shape[0]
+    nk = rcholM.shape[1]
+    nisdf = rcholM.shape[-1]
+    rotweightsocc, rotweightsfull = rotweights
+
+    GhalfaT = Ghalfa_batch.transpose(0, 3, 4, 1, 2)
+
+    for iq in range(nk):
+        Glis = q2G[iq]
+        for iG1 in range(len(Glis)):
+            for iG2 in range(len(Glis)):  
+                try:
+                    ik_lis = qG2k[(iq, iG1)]
+                    ikprime_lis = qG2k[(iq, iG2)]
+                    for ik in ik_lis:
+                        for ikprime in ikprime_lis:
+                            ikpq = kpq_mat[ik, iq]
+                            ikpr_pq = kpq_mat[ikprime, iq]
+                            T1PQ = numpy.einsum('Pi, Qq, wqi -> wPQ', rotweightsocc[:, :, ik].conj(), rotweightsfull[:, :, ikprime], GhalfaT[:, ikprime, :, ik, :], optimize=True)
+                            T2PQ = numpy.einsum('Qj, Pp, wjp -> wQP', rotweightsocc[:, :, ikpr_pq].conj(), rotweightsfull[:, :, ikpq], GhalfaT[:, ikpr_pq, :, ikpq, :], optimize=True)
+                            exx += numpy.einsum('XP, XQ, wPQ, wQP ->w', rcholM[:, iq, iG1, :], rcholM[:, iq, iG2, :].conj(), T1PQ, T2PQ, optimize=True)
+                except KeyError:
+                    continue
+    return .5 * exx / nk
+
+@jit(nopython=True, fastmath=True)
+def kpt_isdf_ecoul_kernel_rhf(rcholM, rotweights, Ghalfa_batch, kpq_mat, q2G, qG2k):
+    zeros = numpy.zeros
+    dot = numpy.dot
+    nwalkers = Ghalfa_batch.shape[0]
+    naux = rcholM.shape[0]
+    nk = rcholM.shape[1]
+    rotweightsocc, rotweightsfull = rotweights
+
+    GhalfaT = Ghalfa_batch.transpose(0, 3, 4, 1, 2)
+    X1 = zeros((nwalkers, naux, nk), dtype=numpy.complex128)
+    X2 = zeros((nwalkers, naux, nk), dtype=numpy.complex128)
+
+    for iq in range(nk):
+        Glis = q2G[iq]
+        for iG in range(len(Glis)):
+            try:
+                ik_lis = qG2k[(iq, iG)]
+                for ik in ik_lis:
+                    ikpq = kpq_mat[ik, iq]
+                    X1[:, :, iq] += 2.0 * numpy.einsum('XP, Pi, Pp, wpi -> wX', rcholM[:, iq, iG, :], rotweightsocc[:, :, ik].conj(), rotweightsfull[:, :, ikpq], GhalfaT[:, ikpq, :, ik, :], optimize=True)
+                    X2[:, :, iq] += 2.0 * numpy.einsum('XQ, Qj, Qq, wqj -> wX', rcholM[:, iq, iG, :].conj(), rotweightsocc[:, :, ikpq].conj(), rotweightsfull[:, :, ik], GhalfaT[:, ik, :, ikpq, :], optimize=True)
+            except KeyError:
+                continue
+
+    ecoul = numpy.einsum('wXq, wXq -> w', X1, X2)
+    return .5 * ecoul / nk
+    
+
+@jit(nopython=True, fastmath=True)
+def kpt_isdf_ecoul_kernel_uhf():
+    pass
 
 @plum.dispatch
 def local_energy_kpt_single_det_uhf(
@@ -215,13 +269,13 @@ def local_energy_kpt_single_det_uhf(
     e1b /= nk
     e1b += hamiltonian.ecore
 
-    ecoul = kpt_ecoul_kernel_uhf(
+    ecoul = kpt_chol_ecoul_kernel_uhf(
         trial._rchola, trial._rcholb, ghalfa, ghalfb, hamiltonian.ikpq_mat, hamiltonian.imq_vec
     )
 
-    exx = kpt_exx_kernel(
+    exx = kpt_chol_exx_kernel(
         trial._rchola, ghalfa, hamiltonian.ikpq_mat, hamiltonian.imq_vec
-    ) + kpt_exx_kernel(trial._rcholb, ghalfb, hamiltonian.ikpq_mat, hamiltonian.imq_vec)
+    ) + kpt_chol_exx_kernel(trial._rcholb, ghalfb, hamiltonian.ikpq_mat, hamiltonian.imq_vec)
 
     e2b = ecoul + exx
 
@@ -231,3 +285,32 @@ def local_energy_kpt_single_det_uhf(
     energy[:, 2] = e2b
 
     return energy
+
+@plum.dispatch
+def local_energy_kpt_single_det_uhf(
+    system: Generic,
+    hamiltonian: KptISDF,
+    walkers: UHFWalkers,
+    trial: KptSingleDet,
+):
+    """Compute local energy for walker batch (all walkers at once).
+
+    Single determinant RHF case.
+
+    Parameters
+    ----------
+    system : system object
+        System being studied.
+    hamiltonian : hamiltonian object
+        Hamiltonian being studied.
+    walkers : WalkerBatch
+        Walkers object.
+    trial : trial object
+        Trial wavefunctioni.
+
+    Returns
+    -------
+    local_energy : np.ndarray
+        Total, one-body and two-body energies.
+    """
+    pass

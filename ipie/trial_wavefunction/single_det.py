@@ -208,6 +208,6 @@ class SingleDet(TrialWavefunctionBase):
         Ghalfb = walkers.Ghalfb.reshape(walkers.nwalkers, walkers.ndown * hamiltonian.nbasis)
         vbias = xp.zeros((hamiltonian.nfields, walkers.nwalkers), dtype=Ghalfa.dtype)
         vbias[: hamiltonian.nchol, :] = self._rAa.dot(Ghalfa.T) + self._rAb.dot(Ghalfb.T)
-        vbias[hamiltonian.nchol :, :] = - self._rBa.dot(Ghalfa.T) - self._rBb.dot(Ghalfb.T)
+        vbias[hamiltonian.nchol :, :] = -self._rBa.dot(Ghalfa.T) - self._rBb.dot(Ghalfb.T)
         vbias = vbias.T.copy()
         return vbias

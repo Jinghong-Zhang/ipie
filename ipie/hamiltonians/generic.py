@@ -133,7 +133,7 @@ class GenericComplexChol(GenericBase):
 
             for x in range(self.nchol):
                 self.A[:, :, x] = self.chol[:, :, x] + self.chol[:, :, x].T.conj()
-                self.B[:, :, x] = - 1.0j * (self.chol[:, :, x] - self.chol[:, :, x].T.conj())
+                self.B[:, :, x] = 1.0j * (self.chol[:, :, x] - self.chol[:, :, x].T.conj())
             self.A /= 2.0
             self.B /= 2.0
 

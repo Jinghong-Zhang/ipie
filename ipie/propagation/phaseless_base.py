@@ -77,7 +77,7 @@ def construct_one_body_propagator(hamiltonian: GenericComplexChol, mf_shift: xp.
     shift += 1j * numpy.einsum("mx,x->m", hamiltonian.B, mf_shift[nchol:]).reshape(nb, nb)
 
     H1 = hamiltonian.h1e_mod - numpy.array([shift, shift])
-    print(f"norm of H1 = {numpy.linalg.norm(H1.ravel())}")
+    # print(f"norm of H1 = {numpy.linalg.norm(H1.ravel())}")
     expH1 = numpy.array(
         [scipy.linalg.expm(-0.5 * dt * H1[0]), scipy.linalg.expm(-0.5 * dt * H1[1])]
     )

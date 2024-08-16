@@ -6,10 +6,11 @@ from ipie.propagation.continuous_base import ContinuousBase
 from ipie.propagation.operations import propagate_one_body
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize, cast_to_device
+import h5py
 
 import plum
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptISDF
 from typing import Union
 
 try:
@@ -84,6 +85,93 @@ def construct_mean_field_shift(hamiltonian: KptComplexChol, trial: KptSingleDet)
     mf_shift = numpy.dot(diagchol, Gcharge)
     return xp.array(mf_shift)
 
+
+@plum.dispatch
+def construct_mean_field_shift(hamiltonian: KptISDF, trial: KptSingleDet):
+    r"""Compute mean field shift.
+
+    .. math::
+
+        \bar{v}_n = \sum_{ik\sigma} v_{(ik),n} G_{ik\sigma}
+
+    Remark: Here the convention is a little different because mf_shift without the 1j is more convenient.
+
+    """
+    # trial G [nk, nbsf, nbsf]
+    igamma = hamiltonian.igamma
+    diagcholM = hamiltonian.cholM[:, igamma, 0, :] # [nchol, nisdf]
+    Gcharge = (trial.G[0] + trial.G[1]).ravel()
+    cholpr = xp.einsum("XP, Ppk, Prk ->Xkpr", diagcholM, hamiltonian.weights.conj(), hamiltonian.weights)
+    cholpr = cholpr.reshape(hamiltonian.nchol, hamiltonian.nk * hamiltonian.nbasis * hamiltonian.nbasis)
+    mf_shift = xp.dot(cholpr, Gcharge)
+    return xp.array(mf_shift)
+
+@plum.dispatch
+def construct_one_body_propagator(
+    hamiltonian: KptISDF, mf_shift: xp.ndarray, dt: float
+):
+    r"""Construct mean-field shifted one-body propagator.
+
+    .. math::
+
+        H1 \rightarrow H1 - v0
+        v0_{ik} = \sum_n v_{(ik),n} \bar{v}_n
+
+    Parameters
+    ----------
+    hamiltonian : hamiltonian class.
+        Generic hamiltonian object.
+    dt : float
+        Timestep.
+    """
+    
+    diagchol = numpy.zeros((hamiltonian.nchol, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
+    igamma = hamiltonian.igamma
+    for ik in range(hamiltonian.nk):
+        diagchol[:, ik, :, :] = hamiltonian.chol[:, ik, :, igamma, :]
+            
+    shift = xp.einsum("xkpr, x -> kpr", diagchol, mf_shift)
+    H1 = hamiltonian.h1e_mod + xp.array([shift, shift])
+    if hasattr(H1, "get"):
+        H1_numpy = H1.get()
+    else:
+        H1_numpy = H1
+
+    full_h1 = numpy.zeros((2, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
+    for ik in range(hamiltonian.nk):
+        full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
+        full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
+    full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
+    # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
+    expH1 = xp.array(
+        [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
+    )
+    return expH1
+
+
+
+@plum.dispatch
+def construct_mean_field_shift(hamiltonian: KptISDF, trial: KptSingleDet):
+    r"""Compute mean field shift.
+
+    .. math::
+
+        \bar{v}_n = \sum_{ik\sigma} v_{(ik),n} G_{ik\sigma}
+
+    Remark: Here the convention is a little different because mf_shift without the 1j is more convenient.
+
+    """
+    # trial G [nk, nbsf, nbsf]
+    diagchol = numpy.zeros((hamiltonian.nchol, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
+    igamma = hamiltonian.igamma
+    for ik in range(hamiltonian.nk):
+        diagchol[:, ik, :, :] = hamiltonian.chol[:, ik, :, igamma, :]
+    diagchol = diagchol.reshape(hamiltonian.nchol, hamiltonian.nk * hamiltonian.nbasis * hamiltonian.nbasis)
+    Gcharge = (trial.G[0] + trial.G[1]).ravel()
+    mf_shift = numpy.dot(diagchol, Gcharge)
+    return xp.array(mf_shift)
+
+
 class PhaselessKptBase(ContinuousBase):
     """A base class for generic continuous HS transform AFQMC propagators."""
 
@@ -102,9 +190,8 @@ class PhaselessKptBase(ContinuousBase):
         # dt/2 one-body propagator
         start = time.time()
         self.mf_shift = construct_mean_field_shift(hamiltonian, trial)
-        # self.mf_shift = numpy.zeros(hamiltonian.nchol, dtype=numpy.complex128)
-        print(f"norm of mf_shift = {xp.linalg.norm(self.mf_shift.ravel())}")
-        print(f"sum of all elements of mf_shift = {xp.sum(self.mf_shift)}")
+        # print(f"norm of mf_shift = {xp.linalg.norm(self.mf_shift.ravel())}")
+        # print(f"sum of all elements of mf_shift = {xp.sum(self.mf_shift)}")
         if verbose:
             print(f"# Time to mean field shift: {time.time() - start} s")
             print(
@@ -133,16 +220,14 @@ class PhaselessKptBase(ContinuousBase):
         xbar = xp.zeros((2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
 
         start_time = time.time()
-        self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+        self.vbias_plus, self.vbias_minus = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+
         # print(f"norm of vbias = {xp.linalg.norm(self.vbias.ravel())}")
-        # self.vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
-        mq_vec = hamiltonian.imq_vec
         xbar_plus = numpy.zeros_like(self.vbias)
         igamma = hamiltonian.igamma
-        xbar_plus = -0.5 * 1j * self.sqrt_dt * (self.vbias + self.vbias[:, :, mq_vec])
-        xbar_plus[:, :, igamma] = -1j * self.sqrt_dt * (self.vbias[:, :, igamma] - self.mf_shift[numpy.newaxis, :])
-        # print(f"xbar_plus at gamma = {numpy.sum(xbar_plus[0, :, igamma])}")
-        xbar_minus = - 0.5 * self.sqrt_dt * (self.vbias - self.vbias[:, :, mq_vec])
+        xbar_plus = -self.sqrt_dt * self.vbias_plus
+        xbar_plus[:, :, igamma] = -self.sqrt_dt * (self.vbias_plus[:, :, igamma] - 1j * self.mf_shift[numpy.newaxis, :]) # mf_shift is the average of \hat{L}_{\gamma, q} operator so there is a 1j factor
+        xbar_minus = -self.sqrt_dt * self.vbias_minus
         xbar[0] = xbar_plus
         xbar[1] = xbar_minus
         synchronize()
@@ -157,8 +242,6 @@ class PhaselessKptBase(ContinuousBase):
         # )
         xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.nk * walkers.nwalkers).reshape(walkers.nwalkers, 2, hamiltonian.nk, hamiltonian.nchol).transpose(1, 0, 3, 2)
         # print(f"norm of xi = {xp.linalg.norm(xi.ravel())}")
-        with h5py.File("xbar_kpt.h5", "w") as f:
-            f.create_dataset("xbar", data=xbar)
         xshifted = xi - xbar
         # print(f"norm of xbar = {xp.linalg.norm(xbar.ravel())}")
         # print(f"sum of all elements of xbar = {xp.sum(xbar)}")
@@ -190,11 +273,11 @@ class PhaselessKptBase(ContinuousBase):
 
         # 2.b Apply two-body
         (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, trial)
-        print("norm of phia after 2 body", xp.linalg.norm(walkers.phia))
+        # print("norm of phia after 2 body", xp.linalg.norm(walkers.phia))
 
         # 2.c Apply one-body
         self.propagate_walkers_one_body(walkers)
-        print("norm of phia after last 1 body", xp.linalg.norm(walkers.phia))
+        # print("norm of phia after last 1 body", xp.linalg.norm(walkers.phia))
 
         # Now apply phaseless approximation
         start_time = time.time()

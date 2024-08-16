@@ -139,8 +139,10 @@ def construct_force_bias_kpt_batch_single_det(
 
     Returns
     -------
-    xbar : :class:`numpy.ndarray`
-        Force bias.
+    vbias_plus : :class:`numpy.ndarray`
+        Force bias for Lplus.
+    vbias_minus : :class:`numpy.ndarray`
+        Force bias for Lminus.
     """
     if walkers.rhf:
         vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
@@ -151,8 +153,10 @@ def construct_force_bias_kpt_batch_single_det(
                 ikpq = hamiltonian.ikpq_mat[ik, iq]
                 vbias[:, :, iq] += 2.0 * numpy.einsum("gip, aip -> ga", trial._rchola[:, ik, :, iq, :], Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
         synchronize()
-
-        return vbias
+        imq = hamiltonian.imq_vec
+        vbias_plus = .5 * 1j * (vbias + vbias[:, :, imq])
+        vbias_minus = .5 * (vbias - vbias[:, :, imq])
+        return vbias_plus, vbias_minus
 
     else:
         vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
@@ -164,7 +168,80 @@ def construct_force_bias_kpt_batch_single_det(
                 ikpq = hamiltonian.ikpq_mat[ik, iq]
                 vbias[:, :, iq] += numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True)
         synchronize()
-        return vbias
+        imq = hamiltonian.imq_vec
+        vbias_plus = .5 * 1j * (vbias + vbias[:, :, imq])
+        vbias_minus = .5 * (vbias - vbias[:, :, imq])
+        return vbias_plus, vbias_minus
+
+def construct_force_bias_kptisdf_batch_single_det(
+    hamiltonian: "KptISDF", walkers: "UHFWalkers", trial: "KptSingleDet"
+):
+    """Compute optimal force bias.
+
+    Uses rotated Green's function.
+
+    Parameters
+    ----------
+    hamiltonian : class
+        hamiltonian object.
+
+    walkers : class
+        walkers object.
+
+    trial : class
+        Trial wavefunction object.
+
+    Returns
+    -------
+    vbias_plus : :class:`numpy.ndarray`
+        Force bias for Lplus.
+    vbias_minus : :class:`numpy.ndarray`
+        Force bias for Lminus.
+    """
+    nisdf = hamiltonian.nisdf
+    rotweightsocc, rotweights = hamiltonian.rotweights
+    rcholM = hamiltonian.rcholM
+    Ghalfa_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
+    Ghalfb_reshape = walkers.Ghalfb.reshape(walkers.nwalkers, hamiltonian.nk, trial.nbeta, hamiltonian.nk, hamiltonian.nbasis)
+    if walkers.rhf:
+        AqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        BqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        for iq in range(hamiltonian.nk):
+            Glis = hamiltonian.q2G[iq]
+            for iG in range(len(Glis)):
+                try:
+                    ik_lis = hamiltonian.qG2k[(iq, iG)]
+                    for ik in ik_lis:
+                        ikpq = hamiltonian.ikpq_mat[ik, iq]
+                        AqPG[:, iq, :, iG] += 2.0 * numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfa_reshape[:, ik, :, ikpq, :])
+                        BqPG[:, iq, :, iG] += 2.0 * numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfa_reshape[:, ikpq, :, ik, :])
+                except KeyError:
+                    continue
+        vbias = numpy.einsum("XqPG, aqPG -> aXq", rcholM, AqPG)
+        vbiasconj = numpy.einsum("XqPG, aqPG -> aXq", rcholM, BqPG)
+        vbias_plus = .5 * 1j * (vbias + vbiasconj)
+        vbias_minus = .5 * (vbias - vbiasconj)
+        return vbias_plus, vbias_minus
+    else:
+        AqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        BqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        for iq in range(hamiltonian.nk):
+            Glis = hamiltonian.q2G[iq]
+            for iG in range(len(Glis)):
+                try:
+                    ik_lis = hamiltonian.qG2k[(iq, iG)]
+                    for ik in ik_lis:
+                        ikpq = hamiltonian.ikpq_mat[ik, iq]
+                        AqPG[:, iq, :, iG] += numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfa_reshape[:, ik, :, ikpq, :]) + numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfb_reshape[:, ik, :, ikpq, :])
+                        BqPG[:, iq, :, iG] += numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfa_reshape[:, ikpq, :, ik, :]) + numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfb_reshape[:, ikpq, :, ik, :])
+                except KeyError:
+                    continue
+        vbias = numpy.einsum("XqPG, aqPG -> aXq", rcholM, AqPG)
+        vbiasconj = numpy.einsum("XqPG, aqPG -> aXq", rcholM, BqPG)
+        vbias_plus = .5 * 1j * (vbias + vbiasconj)
+        vbias_minus = .5 * (vbias - vbiasconj)
+        return vbias_plus, vbias_minus
+    return
 
 def construct_force_bias_batch_single_det_chunked(hamiltonian, walkers, trial, handler):
     """Compute optimal force bias.
