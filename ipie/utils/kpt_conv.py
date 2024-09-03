@@ -1,5 +1,7 @@
 from numba import jit
+import math
 import numpy as np
+from itertools import product
 
 def cart2frac(reciprocal_vectors, kpts):
     """
@@ -103,6 +105,41 @@ def find_gamma_pt(kpt):
     for i in range(kpt.shape[0]):
         if np.allclose(kpt[i], 0.0):
             return i
+        
+@jit(nopython=True, fastmath=True)        
+def find_self_inverse_set(kpts):
+    """
+    Find the set of k-points that are self-inverse
+    kpts: (nk, 3) array of k-points in fractional coordinates
+    """
+    mq_vec = find_inverted_index_batched(kpts)
+    nk = kpts.shape[0]
+    self_inv_set = []
+    for ik in range(nk):
+        if mq_vec[ik] == ik:
+            self_inv_set.append(ik)
+    return np.array(self_inv_set)
+
+@jit(nopython=True, fastmath=True)
+def find_idx_k_mod_neg(mq):
+    """
+    Find the union of S and Q+ set
+    """
+    nk = mq.shape[0]
+    smaller_indices = np.where(np.arange(nk) < mq, np.arange(nk), mq)
+    unique_indices = np.unique(smaller_indices)
+    return unique_indices
+
+def find_Qplus(kpts):
+    """
+    Find the set of k-points that are not self-inverse mod inversion
+    """
+    mq_vec = find_inverted_index_batched(kpts)
+    nk = kpts.shape[0]
+    unique_indices = find_idx_k_mod_neg(mq_vec)
+    Sset = find_self_inverse_set(kpts)
+    Qplus = np.setdiff1d(unique_indices, Sset)
+    return Qplus
 
 @jit(nopython=True, fastmath=True)
 def get_walker_from_trial(trial_wfn):

@@ -13,7 +13,7 @@ except:
 import plum
 
 from ipie.config import config
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptISDF
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm, KptISDF
 from ipie.hamiltonians.generic_base import GenericBase
 from ipie.propagation.operations import apply_exponential, apply_exponential_batch
 from ipie.propagation.phaseless_kpt_base import PhaselessKptBase
@@ -77,6 +77,42 @@ class PhaselessKptChol(PhaselessKptBase):
                 xtildemiq = xshifted[1, :, :, iq] - xshifted[1, :, :, imq]
                 xvhsiq = (1j * xtildepiq + xtildemiq) / 2
                 VHS[:, ik, :, ikpq, :] = self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', xvhsiq, hamiltonian.chol[:, ik, :, iq, :])
+        # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
+        VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
+        if config.get_option("use_gpu"):
+            raise NotImplementedError
+        return VHS
+    
+    @plum.dispatch
+    def construct_VHS(self, hamiltonian: KptComplexCholSymm, xshifted: xp.ndarray) -> xp.ndarray:
+        """
+        Construct the VHS matrix for phaseless propagation.
+        
+        xshifted: [2, nwalkers, naux, unique_nk]
+        """
+        nwalkers = xshifted.shape[1]
+        VHS = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
+        # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
+
+        for iq in range(len(hamiltonian.Sset)):
+            iq_real = hamiltonian.Sset[iq]
+            for ik in range(hamiltonian.nk):
+                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+                x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+                xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+                VHS[:, ik, :, ikpq, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
+                VHS[:, ikpq, :, ik, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
+
+        for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
+            iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
+            for ik in range(hamiltonian.nk):
+                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+                x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+                xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+                VHS[:, ik, :, ikpq, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
+                # VHS[:, ik, :, ikpq, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
+                VHS[:, ikpq, :, ik, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
+                # VHS[:, ikpq, :, ik, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
         # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
         VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         if config.get_option("use_gpu"):

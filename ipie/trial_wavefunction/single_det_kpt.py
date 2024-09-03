@@ -7,9 +7,9 @@ import plum
 from ipie.config import CommType, config, MPI
 from ipie.estimators.generic import half_rotated_cholesky_jk
 from ipie.estimators.utils import gabk_spin
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptISDF
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm, KptISDF
 from ipie.walkers.uhf_walkers import UHFWalkers
-from ipie.propagation.force_bias import construct_force_bias_kpt_batch_single_det
+from ipie.propagation.force_bias import construct_force_bias_kpt_batch_single_det, construct_force_bias_kptsymm_batch_single_det,construct_force_bias_kptisdf_batch_single_det
 from ipie.trial_wavefunction.half_rotate import half_rotate_generic
 from ipie.propagation.overlap import calc_overlap_single_det_kpt
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
@@ -105,6 +105,34 @@ class KptSingleDet(TrialWavefunctionBase):
         self._rcholb = rot_chol[1][0]
         self.half_rotated = True
 
+    @plum.dispatch
+    def half_rotate(
+        self: "KptSingleDet",
+        hamiltonian: KptComplexCholSymm,
+        comm: Optional[CommType] = MPI.COMM_WORLD,
+    ):
+        num_dets = 1
+        orbsa = self.psi0a.reshape((num_dets, self.nk, self.nbasis, self.nalpha))
+        orbsb = self.psi0b.reshape((num_dets, self.nk, self.nbasis, self.nbeta))
+        rot_1body, rot_chol = half_rotate_generic(
+            self,
+            hamiltonian,
+            comm,
+            orbsa,
+            orbsb,
+            ndets=num_dets,
+            verbose=self.verbose,
+        )
+        # Single determinant functions do not expect determinant index, so just
+        # grab zeroth element.
+        self._rH1a = rot_1body[0][0]
+        self._rH1b = rot_1body[1][0]
+        self._rchola = rot_chol[0][0]
+        self._rcholb = rot_chol[1][0]
+        self._rcholbara = rot_chol[2][0]
+        self._rcholbarb = rot_chol[3][0]
+        self.half_rotated = True
+
     
     def calc_overlap(self, walkers: "UHFWalkers") -> numpy.ndarray:
         return calc_overlap_single_det_kpt(walkers, self)
@@ -126,6 +154,18 @@ class KptSingleDet(TrialWavefunctionBase):
             raise NotImplementedError
         else:
             return construct_force_bias_kpt_batch_single_det(hamiltonian, walkers, self)
+        
+    @plum.dispatch
+    def calc_force_bias(
+        self,
+        hamiltonian: KptComplexCholSymm,
+        walkers: UHFWalkers,
+        mpi_handler: MPIHandler,
+    ) -> Tuple[xp.ndarray, xp.ndarray]:
+        if hamiltonian.chunked:
+            raise NotImplementedError
+        else:
+            return construct_force_bias_kptsymm_batch_single_det(hamiltonian, walkers, self)
 
     @plum.dispatch
     def calc_force_bias(

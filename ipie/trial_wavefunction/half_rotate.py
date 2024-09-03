@@ -3,7 +3,7 @@ from typing import Tuple
 import numpy as np
 
 from ipie.hamiltonians.generic import Generic, GenericComplexChol, GenericRealChol
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
 from ipie.utils.mpi import get_shared_array
@@ -122,72 +122,161 @@ def half_rotate_generic(
         nk = orbsa.shape[1]
         na = orbsa.shape[-1]
         nb = orbsb.shape[-1]
-        if trial.verbose:
-            print(f"# Shape of alpha half-rotated Cholesky: {ndets, nchol, nk, na, nk, M}")
-            print(f"# Shape of beta half-rotated Cholesky: {ndets, nchol, nk, nb, nk, M}")
+        if isinstance(hamiltonian, KptComplexChol):
+            if trial.verbose:
+                print(f"# Shape of alpha half-rotated Cholesky: {ndets, nchol, nk, na, nk, M}")
+                print(f"# Shape of beta half-rotated Cholesky: {ndets, nchol, nk, nb, nk, M}")
 
-        chol = hamiltonian.chol
+            chol = hamiltonian.chol
 
-        shape_a = (ndets, nchol, nk, na, nk, M)
-        shape_b = (ndets, nchol, nk, nb, nk, M)
+            shape_a = (ndets, nchol, nk, na, nk, M)
+            shape_b = (ndets, nchol, nk, nb, nk, M)
 
-        ctype = hamiltonian.chol.dtype
-        ptype = orbsa.dtype
-        integral_type = ctype if ctype.itemsize > ptype.itemsize else ptype
+            ctype = hamiltonian.chol.dtype
+            ptype = orbsa.dtype
+            integral_type = ctype if ctype.itemsize > ptype.itemsize else ptype
 
-        assert isinstance(hamiltonian, KptComplexChol), "Hamiltonian must be k-point Hamiltonian if trial is k-point"
-        rchola = get_shared_array(comm, shape_a, integral_type)
-        rcholb = get_shared_array(comm, shape_b, integral_type)
+            rchola = get_shared_array(comm, shape_a, integral_type)
+            rcholb = get_shared_array(comm, shape_b, integral_type)
 
-        rH1a = get_shared_array(comm, (ndets, nk, na, M), integral_type)
-        rH1b = get_shared_array(comm, (ndets, nk, nb, M), integral_type)
+            rH1a = get_shared_array(comm, (ndets, nk, na, M), integral_type)
+            rH1b = get_shared_array(comm, (ndets, nk, nb, M), integral_type)
 
-        rH1a[:] = np.einsum("Jkpi,kpq->Jkiq", orbsa.conj(), hamiltonian.H1[0], optimize=True)
-        rH1b[:] = np.einsum("Jkpi,kpq->Jkiq", orbsb.conj(), hamiltonian.H1[1], optimize=True)
+            rH1a[:] = np.einsum("Jkpi,kpq->Jkiq", orbsa.conj(), hamiltonian.H1[0], optimize=True)
+            rH1b[:] = np.einsum("Jkpi,kpq->Jkiq", orbsb.conj(), hamiltonian.H1[1], optimize=True)
 
-        if verbose:
-            print("# Half-Rotating Cholesky for determinant.")
-        # start = i*M*(na+nb)
-        start_a = 0  # determinant loops
-        start_b = 0
-        compute = True
-        # Distribute amongst MPI tasks on this node.
-        if comm is not None:
-            nwork_per_thread = hamiltonian.nchol // comm.size
-            if nwork_per_thread == 0:
-                start_n = 0
-                end_n = nchol
-                if comm.rank != 0:
-                    # Just run on root processor if problem too small.
-                    compute = False
-            else:
-                start_n = comm.rank * nwork_per_thread
-                end_n = (comm.rank + 1) * nwork_per_thread
-                if comm.rank == comm.size - 1:
+            if verbose:
+                print("# Half-Rotating Cholesky for determinant.")
+            # start = i*M*(na+nb)
+            start_a = 0  # determinant loops
+            start_b = 0
+            compute = True
+            # Distribute amongst MPI tasks on this node.
+            if comm is not None:
+                nwork_per_thread = hamiltonian.nchol // comm.size
+                if nwork_per_thread == 0:
+                    start_n = 0
                     end_n = nchol
-        else:
-            start_n = 0
-            end_n = hamiltonian.nchol
+                    if comm.rank != 0:
+                        # Just run on root processor if problem too small.
+                        compute = False
+                else:
+                    start_n = comm.rank * nwork_per_thread
+                    end_n = (comm.rank + 1) * nwork_per_thread
+                    if comm.rank == comm.size - 1:
+                        end_n = nchol
+            else:
+                start_n = 0
+                end_n = hamiltonian.nchol
 
-        nchol_loc = end_n - start_n
-        if compute:
-            # Investigate whether these einsums are fast in the future
-            rup = np.einsum(
-                "Jkpi,Xkpqr->JXkiqr",
-                orbsa.conj(),
-                chol[start_n:end_n, :, :, :, :],
-                optimize=True,
-            )
-            rdn = np.einsum(
-                "Jkpi,Xkpqr->JXkiqr",
-                orbsb.conj(),
-                chol[start_n:end_n, :, :, :, :],
-                optimize=True,
-            )
-            rchola[:, start_n:end_n, :, :, :, :] = rup[:]
-            rcholb[:, start_n:end_n, :, :, :, :] = rdn[:]
-        if comm is not None:
-            comm.barrier()
+            nchol_loc = end_n - start_n
+            if compute:
+                # Investigate whether these einsums are fast in the future
+                rup = np.einsum(
+                    "Jkpi,Xkpqr->JXkiqr",
+                    orbsa.conj(),
+                    chol[start_n:end_n, :, :, :, :],
+                    optimize=True,
+                )
+                rdn = np.einsum(
+                    "Jkpi,Xkpqr->JXkiqr",
+                    orbsb.conj(),
+                    chol[start_n:end_n, :, :, :, :],
+                    optimize=True,
+                )
+                rchola[:, start_n:end_n, :, :, :, :] = rup[:]
+                rcholb[:, start_n:end_n, :, :, :, :] = rdn[:]
+            if comm is not None:
+                comm.barrier()
+        elif isinstance(hamiltonian, KptComplexCholSymm):
+            unique_nk = hamiltonian.unique_nk
+            if trial.verbose:
+                print(f"# Shape of alpha half-rotated Cholesky: {ndets, nchol, nk, na, unique_nk, M}")
+                print(f"# Shape of beta half-rotated Cholesky: {ndets, nchol, nk, nb, unique_nk, M}")
+
+            chol = hamiltonian.chol
+
+            shape_a = (ndets, nchol, nk, na, unique_nk, M)
+            shape_bara = (ndets, nchol, nk, M, unique_nk, na)
+            shape_b = (ndets, nchol, nk, nb, unique_nk, M)
+            shape_barb = (ndets, nchol, nk, M, unique_nk, nb)
+
+            ctype = hamiltonian.chol.dtype
+            ptype = orbsa.dtype
+            integral_type = ctype if ctype.itemsize > ptype.itemsize else ptype
+
+            rchola = get_shared_array(comm, shape_a, integral_type)
+            rcholbara = get_shared_array(comm, shape_bara, integral_type)
+            rcholb = get_shared_array(comm, shape_b, integral_type)
+            rcholbarb = get_shared_array(comm, shape_barb, integral_type)
+
+            rH1a = get_shared_array(comm, (ndets, nk, na, M), integral_type)
+            rH1b = get_shared_array(comm, (ndets, nk, nb, M), integral_type)
+
+            rH1a[:] = np.einsum("Jkpi,kpq->Jkiq", orbsa.conj(), hamiltonian.H1[0], optimize=True)
+            rH1b[:] = np.einsum("Jkpi,kpq->Jkiq", orbsb.conj(), hamiltonian.H1[1], optimize=True)
+
+            if verbose:
+                print("# Half-Rotating Cholesky for determinant.")
+            # start = i*M*(na+nb)
+            start_a = 0  # determinant loops
+            start_b = 0
+            compute = True
+            # Distribute amongst MPI tasks on this node.
+            if comm is not None:
+                nwork_per_thread = hamiltonian.nchol // comm.size
+                if nwork_per_thread == 0:
+                    start_n = 0
+                    end_n = nchol
+                    if comm.rank != 0:
+                        # Just run on root processor if problem too small.
+                        compute = False
+                else:
+                    start_n = comm.rank * nwork_per_thread
+                    end_n = (comm.rank + 1) * nwork_per_thread
+                    if comm.rank == comm.size - 1:
+                        end_n = nchol
+            else:
+                start_n = 0
+                end_n = hamiltonian.nchol
+
+            nchol_loc = end_n - start_n
+            if compute:
+                # Investigate whether these einsums are fast in the future
+                rup = np.einsum(
+                    "Jkpi,Xkpqr->JXkiqr",
+                    orbsa.conj(),
+                    chol[start_n:end_n, :, :, :, :],
+                    optimize=True,
+                )
+                rdn = np.einsum(
+                    "Jkpi,Xkpqr->JXkiqr",
+                    orbsb.conj(),
+                    chol[start_n:end_n, :, :, :, :],
+                    optimize=True,
+                )
+                rchola[:, start_n:end_n, :, :, :, :] = rup[:]
+                rcholb[:, start_n:end_n, :, :, :, :] = rdn[:]
+                for iq in range(hamiltonian.unique_nk):
+                    iq_real = hamiltonian.unique_k[iq]
+                    ikpq = hamiltonian.ikpq_mat[iq_real]
+                    rbarup = np.einsum(
+                        "Jkri, Xkpr -> Xkpi",
+                        orbsa[:, ikpq, :, :].conj(),
+                        chol[start_n:end_n, :, :, iq, :].conj(),
+                        optimize=True,
+                    )
+                    rbardn = np.einsum(
+                        "Jkri, Xkpr -> Xkpi",
+                        orbsb[:, ikpq, :, :].conj(),
+                        chol[start_n:end_n, :, :, iq, :].conj(),
+                    )
+                    rcholbara[:, start_n:end_n, :, :, iq, :] = rbarup[:]
+                    rcholbarb[:, start_n:end_n, :, :, iq, :] = rbardn[:]                    
+            if comm is not None:
+                comm.barrier()
+
+            return (rH1a, rH1b), (rchola, rcholb, rcholbara, rcholbarb)
 
     # storing intermediates for correlation energy
     return (rH1a, rH1b), (rchola, rcholb)

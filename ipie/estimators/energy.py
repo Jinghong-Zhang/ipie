@@ -43,7 +43,7 @@ from ipie.trial_wavefunction.particle_hole import (
     ParticleHoleSlow,
 )
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.trial_wavefunction.single_det import SingleDet
 from ipie.trial_wavefunction.single_det_ghf import SingleDetGHF
@@ -120,6 +120,9 @@ def local_energy(system: Generic, hamiltonian: GenericRealChol, walkers: UHFWalk
 def local_energy(system: Generic, hamiltonian: KptComplexChol, walkers: UHFWalkers, trial: KptSingleDet):
     return local_energy_kpt_single_det_uhf(system, hamiltonian, walkers, trial)
 
+@plum.dispatch
+def local_energy(system: Generic, hamiltonian: KptComplexCholSymm, walkers: UHFWalkers, trial: KptSingleDet):
+    return local_energy_kpt_single_det_uhf(system, hamiltonian, walkers, trial)
 
 @plum.dispatch
 def local_energy(
