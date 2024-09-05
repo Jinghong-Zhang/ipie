@@ -135,9 +135,9 @@ class KptComplexCholSymm(GenericBase):
         h1e_mod = numpy.zeros(self.H1.shape, dtype=self.H1.dtype)
         construct_h1e_mod_symm(self.chol, self.H1, self.ikmq_mat, self.Sset, self.Qplus, h1e_mod)
         self.h1e_mod = xp.array(h1e_mod)
-        print(f"index of gamma point: {self.igamma}")
-        print(f"norm of h1e symm: {xp.linalg.norm(h1e)}")
-        print(f"norm of h1e_mod symm: {xp.linalg.norm(h1e_mod)}")
+        # print(f"index of gamma point: {self.igamma}")
+        # print(f"norm of h1e symm: {xp.linalg.norm(h1e)}")
+        # print(f"norm of h1e_mod symm: {xp.linalg.norm(h1e_mod)}")
 
         if verbose:
             mem = self.A.nbytes / (1024.0**3) * 3
@@ -171,8 +171,8 @@ class KptComplexChol(GenericBase):
         h1e_mod = numpy.zeros(self.H1.shape, dtype=self.H1.dtype)
         construct_h1e_mod(self.chol, self.H1, self.ikpq_mat, self.imq_vec, h1e_mod)
         self.h1e_mod = xp.array(h1e_mod)
-        print(f"norm of h1e: {xp.linalg.norm(h1e)}")
-        print(f"norm of h1e_mod: {xp.linalg.norm(h1e_mod)}")
+        # print(f"norm of h1e: {xp.linalg.norm(h1e)}")
+        # print(f"norm of h1e_mod: {xp.linalg.norm(h1e_mod)}")
 
         if verbose:
             mem = self.A.nbytes / (1024.0**3) * 3

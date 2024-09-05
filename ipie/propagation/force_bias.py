@@ -238,17 +238,21 @@ def construct_force_bias_kptsymm_batch_single_det(
                 vbias_plus[:, :, iq] += .5j * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
 
                 vbias_minus[:, :, iq] += .5 * (numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_plus[:, :, iq] -= .5 * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_minus[:, :, iq] -= .5 * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
         
         for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
             iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
                 vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                # vbias_plus[:, :, iq] += .5j * (numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
                 vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                # vbias_plus[:, :, iq] += .5j * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
 
                 vbias_minus[:, :, iq] += .5 * math.sqrt(2) * (numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_plus[:, :, iq] -= .5 * math.sqrt(2) * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                # vbias_minus[:, :, iq] += .5 * (numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_minus[:, :, iq] -= .5 * math.sqrt(2) * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                # vbias_minus[:, :, iq] -= .5 * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[:, ik, :, iq, :], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[:, ik, :, iq, :], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
         synchronize()
         return vbias_plus, vbias_minus
 

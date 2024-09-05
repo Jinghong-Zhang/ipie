@@ -56,7 +56,7 @@ def construct_one_body_propagator(
         full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
         full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
     full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
-    print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
+    # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
     expH1 = xp.array(
         [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
     )
@@ -102,7 +102,7 @@ def construct_one_body_propagator(
         full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
         full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
     full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
-    print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
+    # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
     expH1 = xp.array(
         [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
     )
@@ -309,14 +309,16 @@ class PhaselessKptBase(ContinuousBase):
         xbar = xp.zeros((2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
 
         start_time = time.time()
-        # self.vbias_plus, self.vbias_minus = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
-        self.vbias_plus, self.vbias_minus = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128), numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
+        self.vbias_plus, self.vbias_minus = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
+        # print(f"norm of vbiasplus = {xp.linalg.norm(self.vbias_plus.ravel())}")
+        # print(f"norm of vbiasminus = {xp.linalg.norm(self.vbias_minus.ravel())}")
+        # self.vbias_plus, self.vbias_minus = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128), numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
 
         # print(f"norm of vbias = {xp.linalg.norm(self.vbias.ravel())}")
         xbar_plus = numpy.zeros_like(self.vbias)
         igamma = hamiltonian.igamma
-        # mf_xbarp, mf_xbarm = construct_mf_mod_xbar(hamiltonian, self.mf_shift)
-        mf_xbarp, mf_xbarm = numpy.zeros((hamiltonian.nchol), dtype=numpy.complex128), numpy.zeros((hamiltonian.nchol), dtype=numpy.complex128)
+        mf_xbarp, mf_xbarm = construct_mf_mod_xbar(hamiltonian, self.mf_shift)
+        # mf_xbarp, mf_xbarm = numpy.zeros((hamiltonian.nchol), dtype=numpy.complex128), numpy.zeros((hamiltonian.nchol), dtype=numpy.complex128)
         xbar_plus = -self.sqrt_dt * self.vbias_plus
         xbar_plus[:, :, igamma] = -self.sqrt_dt * (self.vbias_plus[:, :, igamma] - mf_xbarp[numpy.newaxis, :]) 
         xbar_minus = -self.sqrt_dt * self.vbias_minus
@@ -331,15 +333,13 @@ class PhaselessKptBase(ContinuousBase):
 
         # Normally distributed auxiliary fields.
 
-        xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.unique_nk * walkers.nwalkers).reshape(
-        2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk
-        )
+        xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.unique_nk * walkers.nwalkers).reshape(2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk)
         # a little tricky to compare the xi between symmchol and original
         # if isinstance(hamiltonian, KptComplexCholSymm):
         #     xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.unique_nk * walkers.nwalkers).reshape(
         #         2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk
         #     )
-        #     print(f"norm of xi symm = {xp.linalg.norm(xi.ravel())}")
+        #     # print(f"norm of xi symm = {xp.linalg.norm(xi.ravel())}")
         # elif isinstance(hamiltonian, KptComplexChol):
         #     xi = numpy.zeros((
         #         2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.float64
@@ -347,7 +347,7 @@ class PhaselessKptBase(ContinuousBase):
         #     xi_pq = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * (hamiltonian.nk // 2 + 1) * walkers.nwalkers).reshape(
         #         2, walkers.nwalkers, hamiltonian.nchol, (hamiltonian.nk // 2 + 1)
         #     )
-        #     print(f"norm of xi_pq = {xp.linalg.norm(xi_pq.ravel())}")
+        #     # print(f"norm of xi_pq = {xp.linalg.norm(xi_pq.ravel())}")
         #     Sset = numpy.array([13])
         #     Qplus = numpy.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
         #     unique_k = numpy.concatenate((Sset, Qplus))
@@ -368,11 +368,18 @@ class PhaselessKptBase(ContinuousBase):
         xshifted_plus_q0 = xshifted[0, :, :, hamiltonian.igamma]
         xshifted_minus_q0 = xshifted[1, :, :, hamiltonian.igamma]
         cmf = - self.sqrt_dt * xp.einsum("wx,x->w", xshifted_plus_q0, mf_xbarp) - self.sqrt_dt * xp.einsum("wx,x->w", xshifted_minus_q0, mf_xbarm)
-        print(f"cmf = {cmf}")
+        # print(f"cmf = {cmf}")
 
-        # Constant factor arising from shifting the propability distribution.sba
+        # Constant factor arising from shifting the propability distribution
+        # if isinstance(hamiltonian, KptComplexChol):
+        #     cfb = xp.einsum("swxq,swxq->w", xi, xbar) - 0.5 * xp.einsum("swxq,swxq->w", xbar, xbar)
+        #     print(f"cfb = {cfb}")
+        # elif isinstance(hamiltonian, KptComplexCholSymm):
+        #     sset_len = len(hamiltonian.Sset)
+        #     cfb = xp.einsum("swxq,swxq->w", xi[:, :, :, :sset_len], xbar[:, :, :, :sset_len]) - 0.5 * xp.einsum("swxq,swxq->w", xbar[:, :, :, :sset_len], xbar[:, :, :, :sset_len])
+        #     cfb += 2. * (xp.einsum("swxq,swxq->w", xi[:, :, :, sset_len:], xbar[:, :, :, sset_len:]) - 0.5 * xp.einsum("swxq,swxq->w", xbar[:, :, :, sset_len:], xbar[:, :, :, sset_len:]))
+
         cfb = xp.einsum("swxq,swxq->w", xi, xbar) - 0.5 * xp.einsum("swxq,swxq->w", xbar, xbar)
-        print(f"cfb = {cfb}")
 
         # xshifted = xshifted.T.copy()
         self.apply_VHS(walkers, hamiltonian, xshifted)
@@ -412,17 +419,21 @@ class PhaselessKptBase(ContinuousBase):
 
     def update_weight(self, walkers, ovlp, ovlp_new, cfb, cmf, eshift):
         ovlp_ratio = ovlp_new / ovlp
+        # print(f"ovlp_ratio = {ovlp_ratio}")
         hybrid_energy = -(xp.log(ovlp_ratio) + cfb + cmf) / self.dt
         hybrid_energy = self.apply_bound_hybrid(hybrid_energy, eshift)
         importance_function = xp.exp(
             -self.dt * (0.5 * (hybrid_energy + walkers.hybrid_energy) - eshift)
         )
+        # print(f"importance_function = {importance_function}")
         # splitting w_alpha = |I(x,\bar{x},|phi_alpha>)| e^{i theta_alpha}
         magn = xp.abs(importance_function)
+        # print(f"magn = {magn}")
         walkers.hybrid_energy = hybrid_energy
 
         dtheta = (-self.dt * hybrid_energy - cfb).imag
         cosine_fac = xp.cos(dtheta)
+        # print(f"cosine_fac = {cosine_fac}")
 
         xp.clip(
             cosine_fac, a_min=0.0, a_max=None, out=cosine_fac

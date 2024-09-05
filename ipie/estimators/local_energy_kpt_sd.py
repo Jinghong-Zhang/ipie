@@ -1,3 +1,4 @@
+from line_profiler import LineProfiler
 from math import ceil, sqrt
 
 import numpy
@@ -12,6 +13,8 @@ from ipie.systems.generic import Generic
 from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm, KptISDF
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
+
+from line_profiler import profile
 
 import plum
 # Note specialisations occur to because:
@@ -214,7 +217,7 @@ def kpt_symmchol_ecoul_kernel_rhf(rchola, rcholbara, Ghalfa_batch, kpq_mat, Sset
         ecoul[iw] += 2. * numpy.sum(multiply(X[iw], Xbar[iw]))
     return ecoul / nk
 
-@jit(nopython=True, fastmath=True)
+@jit(nopython=True, fastmath=True) #, parallel=True
 def kpt_symmchol_exx_kernel(rchola, rcholbara, Ghalfa_batch, kpq_mat, Sset, Qplus):
     """Compute coulomb contribution for complex rchol with RHF trial.
 
@@ -236,8 +239,6 @@ def kpt_symmchol_exx_kernel(rchola, rcholbara, Ghalfa_batch, kpq_mat, Sset, Qplu
     """
     # sort out cupy later
     zeros = numpy.zeros
-    dot = numpy.dot
-    multiply = numpy.multiply
     nwalkers = Ghalfa_batch.shape[0]
 
     # shape of rchola: (naux, nk, nocc, nk, nbsf) (gamma, k, i, q, p)
@@ -247,31 +248,72 @@ def kpt_symmchol_exx_kernel(rchola, rcholbara, Ghalfa_batch, kpq_mat, Sset, Qplu
     nk = rchola.shape[1]
     exx = zeros(nwalkers, dtype=numpy.complex128)
     GhalfaT = Ghalfa_batch.transpose(0, 3, 4, 1, 2)
-
-    T1 = zeros((nwalkers, naux, nocc, nocc), dtype=numpy.complex128)
-    T2 = zeros((nwalkers, naux, nocc, nocc), dtype=numpy.complex128)
+    GhalfaT = GhalfaT.transpose(1, 3, 0, 2, 4).copy()
+    GhalfaT2 = Ghalfa_batch.transpose(1, 3, 0, 2, 4).copy()
+    rcholaT = rchola.transpose(1, 3, 0, 2, 4).copy()
+    rcholbaraT = rcholbara.transpose(1, 3, 0, 2, 4).copy()
+    T1 = zeros((nocc, nocc), dtype=numpy.complex128)
+    T2 = zeros((nocc, nocc), dtype=numpy.complex128)
     for iq in range(len(Sset)):
         iq_real = Sset[iq]        
         for ik in range(nk):
             for ikprime in range(nk):
                 ikpr_pq = kpq_mat[iq_real, ikprime]
                 ik_pq = kpq_mat[iq_real, ik]
-                for n in range(nwalkers):
+                Lkq = rcholaT[ik, iq]
+                Lbarkpq = rcholbaraT[ikprime, iq]
+                for iw in range(nwalkers):
+                    Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq, iw]
+                    Ghalf_k_kp = GhalfaT2[ik,ikprime, iw]
                     for g in range(naux):
-                        T1[n, g] = dot(rchola[g, ik, :, iq, :], GhalfaT[n, ik_pq, :, ikpr_pq, :])
-                        T2[n, g] = dot(Ghalfa_batch[n, ik, :, ikprime, :], rcholbara[g, ikprime, :, iq, :])
-                        exx[n] += -numpy.sum(multiply(T1[n, g], T2[n, g]))
+                        T1 = Lkq[g] @ Ghalf_kpq_kprpq
+                        T2 = Ghalf_k_kp @ Lbarkpq[g]
+                        for i in range(nocc):
+                            for j in range(nocc):
+                                exx[iw] -= T1[i, j] * T2[i, j]
+
     for iq in range(len(Sset), len(Sset) + len(Qplus)):
         iq_real = Qplus[iq - len(Sset)]
         for ik in range(nk):
             for ikprime in range(nk):
                 ikpr_pq = kpq_mat[iq_real, ikprime]
                 ik_pq = kpq_mat[iq_real, ik]
-                for n in range(nwalkers):
+                Lkq = rcholaT[ik, iq]
+                Lbarkpq = rcholbaraT[ikprime, iq]
+                for iw in range(nwalkers):
+                    Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq, iw]
+                    Ghalf_k_kp = GhalfaT2[ik,ikprime, iw]
                     for g in range(naux):
-                        T1[n, g] = sqrt(2) * dot(rchola[g, ik, :, iq, :], GhalfaT[n, ik_pq, :, ikpr_pq, :])
-                        T2[n, g] = sqrt(2) * dot(Ghalfa_batch[n, ik, :, ikprime, :], rcholbara[g, ikprime, :, iq, :], )
-                        exx[n] += -numpy.sum(multiply(T1[n, g], T2[n, g]))
+                        T1 = Lkq[g] @ Ghalf_kpq_kprpq
+                        T2 = Ghalf_k_kp @ Lbarkpq[g]
+                        for i in range(nocc):
+                            for j in range(nocc):
+                                exx[iw] -= 2. * T1[i, j] * T2[i, j]
+                                
+    # T1 = zeros((nwalkers, naux, nocc, nocc), dtype=numpy.complex128)
+    # T2 = zeros((nwalkers, naux, nocc, nocc), dtype=numpy.complex128)
+    # for iq in range(len(Sset)):
+    #     iq_real = Sset[iq]        
+    #     for ik in range(nk):
+    #         for ikprime in range(nk):
+    #             ikpr_pq = kpq_mat[iq_real, ikprime]
+    #             ik_pq = kpq_mat[iq_real, ik]
+    #             for n in range(nwalkers):
+    #                 for g in range(naux):
+    #                     T1[n, g] = dot(rchola[g, ik, :, iq, :], GhalfaT[n, ik_pq, :, ikpr_pq, :])
+    #                     T2[n, g] = dot(Ghalfa_batch[n, ik, :, ikprime, :], rcholbara[g, ikprime, :, iq, :])
+    #                     exx[n] += -numpy.sum(multiply(T1[n, g], T2[n, g]))
+    # for iq in range(len(Sset), len(Sset) + len(Qplus)):
+    #     iq_real = Qplus[iq - len(Sset)]
+    #     for ik in range(nk):
+    #         for ikprime in range(nk):
+    #             ikpr_pq = kpq_mat[iq_real, ikprime]
+    #             ik_pq = kpq_mat[iq_real, ik]
+    #             for n in range(nwalkers):
+    #                 for g in range(naux):
+    #                     T1[n, g] = dot(rchola[g, ik, :, iq, :], GhalfaT[n, ik_pq, :, ikpr_pq, :])
+    #                     T2[n, g] = dot(Ghalfa_batch[n, ik, :, ikprime, :], rcholbara[g, ikprime, :, iq, :], )
+    #                     exx[n] += -2.*numpy.sum(multiply(T1[n, g], T2[n, g]))
 
     return 0.5 * exx / nk
 
@@ -459,6 +501,22 @@ def local_energy_kpt_single_det_uhf(
 
     return energy
 
+
+# @plum.dispatch
+# def local_energy_kpt_single_det_uhf(
+#     system: Generic,
+#     hamiltonian: KptComplexCholSymm,
+#     walkers: UHFWalkers,
+#     trial: KptSingleDet,
+# ):
+#     lp = LineProfiler()
+#     lp_wrapper = lp(_local_energy_kpt_single_det_uhf)
+#     lp_wrapper(system, hamiltonian, walkers, trial)
+#     lp.print_stats()
+#     energy = xp.zeros((walkers.nwalkers, 3), dtype=numpy.complex128)
+
+#     return energy
+
 @plum.dispatch
 def local_energy_kpt_single_det_uhf(
     system: Generic,
@@ -509,11 +567,10 @@ def local_energy_kpt_single_det_uhf(
         trial._rchola, trial._rcholb, trial._rcholbara, trial._rcholbarb, ghalfa, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus
     )
 
-    exx = kpt_symmchol_exx_kernel(
-        trial._rchola, trial._rcholbara, ghalfa, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus
-    ) + kpt_symmchol_exx_kernel(trial._rcholb, trial._rcholbarb, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+    exxa = kpt_symmchol_exx_kernel(trial._rchola, trial._rcholbara, ghalfa, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus) 
+    exxb = kpt_symmchol_exx_kernel(trial._rcholb, trial._rcholbarb, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
 
-    e2b = ecoul + exx
+    e2b = ecoul + exxa + exxb
 
     energy = xp.zeros((nwalkers, 3), dtype=numpy.complex128)
     energy[:, 0] = e1b + e2b
