@@ -13,16 +13,16 @@ def cart2frac(reciprocal_vectors, kpts):
     kpts_frac = np.dot(kpts, b_inv)
     return kpts_frac
 
-@jit(nopython=True, fastmath=True)
 def BZ_to_1BZ(kpts):
     """
     Map k-points to the first Brillouin zone.
     kpts: (nkpts, 3) array of k-points in fractional coordinates
     """
+    kpts = np.where(np.abs(kpts - 0.5) < 1e-8, 0.5 - 1e-12, kpts)
+    kpts = np.where(np.abs(kpts + 0.5) < 1e-8, -0.5 - 1e-12, kpts)
     kpts = np.floor(0.5 - kpts) + kpts
     return kpts
 
-@jit(nopython=True, fastmath=True)
 def find_translated_index(kpt, q_vec, kpts_list, tol=1e-6):
     """
     Find the index of the k-point that is translated by trs_vector for the whole k point lists
@@ -39,7 +39,6 @@ def find_translated_index(kpt, q_vec, kpts_list, tol=1e-6):
         if np.allclose(fbz_kpt_trs, kpts_list[j], atol=tol):
             return j
 
-@jit(nopython=True, fastmath=True)
 def find_translated_index_batched(kpts, q_vec, tol=1e-6):
     """
     Find the index of the k-point that is translated by trs_vector for the whole k point lists
@@ -61,7 +60,6 @@ def find_translated_index_batched(kpts, q_vec, tol=1e-6):
     idxlis = np.array(idxlis, dtype=np.int64)
     return idxlis
 
-@jit(nopython=True, fastmath=True)
 def find_inverted_index(kpt, kpts_list, tol=1e-6):
     """
     Find the index of the k-point that is transformed to -k for
@@ -76,7 +74,6 @@ def find_inverted_index(kpt, kpts_list, tol=1e-6):
         if np.allclose(fbz_mkpt, kpts_list[j], atol=tol):
             return j
 
-@jit(nopython=True, fastmath=True)
 def find_inverted_index_batched(kpts, tol=1e-6):
     """
     Find the index of the k-point that is transformed to -k for
@@ -105,8 +102,7 @@ def find_gamma_pt(kpt):
     for i in range(kpt.shape[0]):
         if np.allclose(kpt[i], 0.0):
             return i
-        
-@jit(nopython=True, fastmath=True)        
+    
 def find_self_inverse_set(kpts):
     """
     Find the set of k-points that are self-inverse
@@ -120,7 +116,6 @@ def find_self_inverse_set(kpts):
             self_inv_set.append(ik)
     return np.array(self_inv_set)
 
-@jit(nopython=True, fastmath=True)
 def find_idx_k_mod_neg(mq):
     """
     Find the union of S and Q+ set
@@ -141,7 +136,6 @@ def find_Qplus(kpts):
     Qplus = np.setdiff1d(unique_indices, Sset)
     return Qplus
 
-@jit(nopython=True, fastmath=True)
 def get_walker_from_trial(trial_wfn):
     """
     Get initial walker from trial wavefunction
@@ -170,7 +164,6 @@ def get_ni_from_idx(idx, meshsize):
 def get_possible_Gs(iq, kpts_frac, meshsize):
     pass #TODO: finish
 
-@jit(nopython=True, fastmath=True)
 def get_k_from_G_MPmesh(iq, G, meshsize):
     """
     Get the list of k point indices from the q vector, G vector and the mesh size for Monkhorst-Pack mesh

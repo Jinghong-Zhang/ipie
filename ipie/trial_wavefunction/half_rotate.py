@@ -191,15 +191,15 @@ def half_rotate_generic(
         elif isinstance(hamiltonian, KptComplexCholSymm):
             unique_nk = hamiltonian.unique_nk
             if trial.verbose:
-                print(f"# Shape of alpha half-rotated Cholesky: {ndets, nchol, nk, na, unique_nk, M}")
-                print(f"# Shape of beta half-rotated Cholesky: {ndets, nchol, nk, nb, unique_nk, M}")
+                print(f"# Shape of alpha half-rotated Cholesky: {ndets, unique_nk, nk, nchol, na, M}")
+                print(f"# Shape of beta half-rotated Cholesky: {ndets, unique_nk, nk, nchol, nb, M}")
 
             chol = hamiltonian.chol
 
-            shape_a = (ndets, nchol, nk, na, unique_nk, M)
-            shape_bara = (ndets, nchol, nk, M, unique_nk, na)
-            shape_b = (ndets, nchol, nk, nb, unique_nk, M)
-            shape_barb = (ndets, nchol, nk, M, unique_nk, nb)
+            shape_a = (ndets, unique_nk, nk, nchol, na, M)
+            shape_bara = (ndets, unique_nk, nk, nchol, M, na)
+            shape_b = (ndets, unique_nk, nk, nchol, nb, M)
+            shape_barb = (ndets, unique_nk, nk, nchol, M, nb)
 
             ctype = hamiltonian.chol.dtype
             ptype = orbsa.dtype
@@ -244,35 +244,35 @@ def half_rotate_generic(
             if compute:
                 # Investigate whether these einsums are fast in the future
                 rup = np.einsum(
-                    "Jkpi,Xkpqr->JXkiqr",
+                    "Jkpi,Xkpqr->JqkXir",
                     orbsa.conj(),
                     chol[start_n:end_n, :, :, :, :],
                     optimize=True,
                 )
                 rdn = np.einsum(
-                    "Jkpi,Xkpqr->JXkiqr",
+                    "Jkpi,Xkpqr->JqkXir",
                     orbsb.conj(),
                     chol[start_n:end_n, :, :, :, :],
                     optimize=True,
                 )
-                rchola[:, start_n:end_n, :, :, :, :] = rup[:]
-                rcholb[:, start_n:end_n, :, :, :, :] = rdn[:]
+                rchola[:, :, :, start_n:end_n, :, :] = rup[:]
+                rcholb[:, :, :, start_n:end_n, :, :] = rdn[:]
                 for iq in range(hamiltonian.unique_nk):
                     iq_real = hamiltonian.unique_k[iq]
                     ikpq = hamiltonian.ikpq_mat[iq_real]
                     rbarup = np.einsum(
-                        "Jkri, Xkpr -> Xkpi",
+                        "Jkri, Xkpr -> JkXpi",
                         orbsa[:, ikpq, :, :].conj(),
                         chol[start_n:end_n, :, :, iq, :].conj(),
                         optimize=True,
                     )
                     rbardn = np.einsum(
-                        "Jkri, Xkpr -> Xkpi",
+                        "Jkri, Xkpr -> JkXpi",
                         orbsb[:, ikpq, :, :].conj(),
                         chol[start_n:end_n, :, :, iq, :].conj(),
                     )
-                    rcholbara[:, start_n:end_n, :, :, iq, :] = rbarup[:]
-                    rcholbarb[:, start_n:end_n, :, :, iq, :] = rbardn[:]                    
+                    rcholbara[:, iq, :, start_n:end_n, :, :] = rbarup[:]
+                    rcholbarb[:, iq, :, start_n:end_n, :, :] = rbardn[:]                    
             if comm is not None:
                 comm.barrier()
 

@@ -380,6 +380,7 @@ class PhaselessKptBase(ContinuousBase):
         #     cfb += 2. * (xp.einsum("swxq,swxq->w", xi[:, :, :, sset_len:], xbar[:, :, :, sset_len:]) - 0.5 * xp.einsum("swxq,swxq->w", xbar[:, :, :, sset_len:], xbar[:, :, :, sset_len:]))
 
         cfb = xp.einsum("swxq,swxq->w", xi, xbar) - 0.5 * xp.einsum("swxq,swxq->w", xbar, xbar)
+        # print(f"cfb = {cfb}")
 
         # xshifted = xshifted.T.copy()
         self.apply_VHS(walkers, hamiltonian, xshifted)

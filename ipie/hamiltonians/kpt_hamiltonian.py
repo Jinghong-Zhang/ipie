@@ -115,7 +115,7 @@ class KptComplexCholSymm(GenericBase):
         super().__init__(h1e, ecore, verbose)
 
         self.chol = numpy.array(chol, dtype=numpy.complex128)  # [nchol, Nk, M, unique_nk, M] (gamma, k, p, q, r)
-        print(f"norm of chol: {xp.linalg.norm(chol)}")
+        # print(f"norm of chol: {xp.linalg.norm(chol)}")
         self.kpts = kpts
         self.Sset = find_self_inverse_set(self.kpts)
         self.Qplus = find_Qplus(self.kpts)
