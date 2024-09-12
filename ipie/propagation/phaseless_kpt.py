@@ -20,6 +20,43 @@ from ipie.propagation.phaseless_kpt_base import PhaselessKptBase
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 from ipie.walkers.uhf_walkers import UHFWalkers
+from numba import jit
+
+@jit(nopython=True, fastmath=True)
+def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
+    VHS = numpy.zeros((nwalkers, nk, nk, nbasis * nbasis), dtype=numpy.complex128)
+    for iq in range(len(Sset)):
+        iq_real = Sset[iq]
+        for ik in range(nk):
+            ikpq = ikpq_mat[iq_real, ik]
+            x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+            xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+            cholkq = chol[:, ik, :, iq, :].copy()
+            cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
+            cholkq = cholkq.reshape(-1, nbasis*nbasis)
+            cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
+            for iw in range(nwalkers):
+                # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
+                VHS[iw, ik, ikpq] += sqrt_dt * x_iq[iw] @ cholkq
+                VHS[iw, ikpq, ik] += sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
+
+    for iq in range(len(Sset), len(Sset) + len(Qplus)):
+        iq_real = Qplus[iq - len(Sset)]
+        for ik in range(nk):
+            ikpq = ikpq_mat[iq_real, ik]
+            x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+            xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+            cholkq = chol[:, ik, :, iq, :].copy()
+            cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
+            cholkq = cholkq.reshape(-1, nbasis*nbasis)
+            cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
+            for iw in range(nwalkers):
+                # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
+                VHS[iw, ik, ikpq] += sqrt_dt * math.sqrt(2) * x_iq[iw] @ cholkq
+                VHS[iw, ikpq, ik] += sqrt_dt * math.sqrt(2) * xconj_iq[iw] @ cholkqT.conj()
+    VHS = VHS.reshape(nwalkers, nk, nk, nbasis, nbasis).transpose(0, 1, 3, 2, 4).copy()
+    VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
+    return VHS
 
 
 class PhaselessKptChol(PhaselessKptBase):
@@ -91,30 +128,32 @@ class PhaselessKptChol(PhaselessKptBase):
         xshifted: [2, nwalkers, naux, unique_nk]
         """
         nwalkers = xshifted.shape[1]
-        VHS = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
-        # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
+        VHS = construct_VHS_kernel_symm(hamiltonian.chol, self.sqrt_dt, xshifted, hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        # VHS = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
+        # # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
 
-        for iq in range(len(hamiltonian.Sset)):
-            iq_real = hamiltonian.Sset[iq]
-            for ik in range(hamiltonian.nk):
-                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
-                xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
-                VHS[:, ik, :, ikpq, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
-                VHS[:, ikpq, :, ik, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
+        # for iq in range(len(hamiltonian.Sset)):
+        #     iq_real = hamiltonian.Sset[iq]
+        #     for ik in range(hamiltonian.nk):
+        #         ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+        #         x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+        #         xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+        #         VHS[:, ik, :, ikpq, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
+        #         VHS[:, ikpq, :, ik, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
 
-        for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
-            iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
-            for ik in range(hamiltonian.nk):
-                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
-                xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
-                VHS[:, ik, :, ikpq, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
-                # VHS[:, ik, :, ikpq, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
-                VHS[:, ikpq, :, ik, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
-                # VHS[:, ikpq, :, ik, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
+        # for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
+        #     iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
+        #     for ik in range(hamiltonian.nk):
+        #         ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+        #         x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+        #         xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+        #         VHS[:, ik, :, ikpq, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
+        #         # VHS[:, ik, :, ikpq, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
+        #         VHS[:, ikpq, :, ik, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
+        #         # VHS[:, ikpq, :, ik, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
+        # # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
+        # VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
-        VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         if config.get_option("use_gpu"):
             raise NotImplementedError
         return VHS

@@ -1,4 +1,4 @@
-from line_profiler import LineProfiler
+# from line_profiler import LineProfiler
 from math import ceil, sqrt
 
 import numpy
@@ -14,7 +14,7 @@ from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
 
-from line_profiler import profile
+# from line_profiler import profile
 
 import plum
 # Note specialisations occur to because:

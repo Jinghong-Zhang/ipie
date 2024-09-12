@@ -26,6 +26,7 @@ from ipie.utils.io import (
     from_qmcpack_dense,
     from_qmcpack_sparse,
     read_hamiltonian,
+    read_kpt_hamiltonian,
 )
 
 
@@ -181,5 +182,12 @@ def read_integrals(integral_file):
         naux = chol_vecs.shape[0]
         nbsf = chol_vecs.shape[-1]
         return h1e, chol_vecs.transpose(1, 2, 0).reshape((nbsf, nbsf, naux)), ecore
+    except KeyError:
+        return None
+
+def read_kpt_integrals(integral_file):
+    try:
+        (h1e, chol_vecs, kpts, ecore) = read_kpt_hamiltonian(integral_file)
+        return h1e, chol_vecs, kpts, ecore
     except KeyError:
         return None

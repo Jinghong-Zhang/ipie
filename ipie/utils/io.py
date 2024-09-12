@@ -56,6 +56,19 @@ def read_hamiltonian(filename: str) -> Tuple[numpy.ndarray, numpy.ndarray, float
     assert LXmn.shape[0] == naux, message
     return hcore, LXmn, e0
 
+def read_kpt_hamiltonian(filename: str) -> Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, float]:
+    with h5py.File(filename, "r") as fh5:
+        hcore = numpy.array(fh5["hcore"])
+        LXmn = numpy.array(fh5["chol"])
+        kpts = numpy.array(fh5["kpoints"])
+        e0 = float(fh5["e0"][()])
+    assert len(hcore.shape) == 3, "Incorrect shape for hcore, expected 3-dimensional array"
+    nmo = hcore.shape[-1]
+    naux = LXmn.shape[0] # gamma, k, mu, q, nu
+    assert len(LXmn.shape) == 5, "Incorrect shape for LXmn, expected 5-dimensional array"
+    assert len(kpts.shape) == 2, "Incorrect shape for kpts, expected 2-dimensional array"
+    return hcore, LXmn, kpts, e0
+
 
 def write_wavefunction(
     wfn: Union[tuple, numpy.ndarray, list],

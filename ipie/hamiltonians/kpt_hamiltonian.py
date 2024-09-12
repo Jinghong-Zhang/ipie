@@ -140,11 +140,11 @@ class KptComplexCholSymm(GenericBase):
         # print(f"norm of h1e_mod symm: {xp.linalg.norm(h1e_mod)}")
 
         if verbose:
-            mem = self.A.nbytes / (1024.0**3) * 3
+            mem = self.chol.nbytes / (1024.0**3)
             print("# Number of orbitals: %d" % self.nbasis)
-            print(f"# Approximate memory required by Cholesky + A&B vectors {mem:f} GB")
+            print(f"# Approximate memory required by Cholesky vectors {mem:f} GB")
             print("# Number of Cholesky vectors: %d" % (self.nchol))
-            print("# Finished setting up KptComplexChol object.")
+            print("# Finished setting up KptComplexCholSymm object.")
 
 class KptComplexChol(GenericBase):
     """Class for ab-initio k-point Hamiltonian with 4-fold complex symmetric integrals.
