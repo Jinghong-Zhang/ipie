@@ -22,9 +22,46 @@ from ipie.utils.backend import synchronize
 from ipie.walkers.uhf_walkers import UHFWalkers
 from numba import jit
 
+# @jit(nopython=True, fastmath=True)
+# def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
+#     VHS = numpy.zeros((nwalkers, nk, nk, nbasis * nbasis), dtype=numpy.complex128)
+#     for iq in range(len(Sset)):
+#         iq_real = Sset[iq]
+#         for ik in range(nk):
+#             ikpq = ikpq_mat[iq_real, ik]
+#             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+#             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+#             cholkq = chol[:, ik, :, iq, :].copy()
+#             cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
+#             cholkq = cholkq.reshape(-1, nbasis*nbasis)
+#             cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
+#             for iw in range(nwalkers):
+#                 # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
+#                 VHS[iw, ik, ikpq] += sqrt_dt * x_iq[iw] @ cholkq
+#                 VHS[iw, ikpq, ik] += sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
+
+#     for iq in range(len(Sset), len(Sset) + len(Qplus)):
+#         iq_real = Qplus[iq - len(Sset)]
+#         for ik in range(nk):
+#             ikpq = ikpq_mat[iq_real, ik]
+#             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
+#             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
+#             cholkq = chol[:, ik, :, iq, :].copy()
+#             cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
+#             cholkq = cholkq.reshape(-1, nbasis*nbasis)
+#             cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
+#             for iw in range(nwalkers):
+#                 # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
+#                 VHS[iw, ik, ikpq] += sqrt_dt * math.sqrt(2) * x_iq[iw] @ cholkq
+#                 VHS[iw, ikpq, ik] += sqrt_dt * math.sqrt(2) * xconj_iq[iw] @ cholkqT.conj()
+#     VHS = VHS.reshape(nwalkers, nk, nk, nbasis, nbasis).transpose(0, 1, 3, 2, 4).copy()
+#     VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
+#     return VHS
+
 @jit(nopython=True, fastmath=True)
 def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
-    VHS = numpy.zeros((nwalkers, nk, nk, nbasis * nbasis), dtype=numpy.complex128)
+    # VHS = numpy.zeros((nwalkers, nk, nk, nbasis * nbasis), dtype=numpy.complex128)
+    VHS = numpy.zeros((nk, nk, nwalkers, nbasis * nbasis), dtype=numpy.complex128)
     for iq in range(len(Sset)):
         iq_real = Sset[iq]
         for ik in range(nk):
@@ -32,13 +69,18 @@ def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikp
             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
             cholkq = chol[:, ik, :, iq, :].copy()
-            cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
+            # cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
             cholkq = cholkq.reshape(-1, nbasis*nbasis)
-            cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
-            for iw in range(nwalkers):
-                # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
-                VHS[iw, ik, ikpq] += sqrt_dt * x_iq[iw] @ cholkq
-                VHS[iw, ikpq, ik] += sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
+            # cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
+            # for iw in range(nwalkers):
+            #     # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
+            #     VHS[iw, ik, ikpq] += sqrt_dt * x_iq[iw] @ cholkq
+            #     sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
+            #     VHS[iw, ikpq, ik] += sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
+            VHS[ik, ikpq] += sqrt_dt * x_iq @ cholkq
+            XL = sqrt_dt * xconj_iq @ cholkq.conj()
+            XL = XL.reshape(nwalkers, nbasis, nbasis).transpose(0, 2, 1).copy()
+            VHS[ikpq, ik] += XL.reshape(nwalkers, nbasis * nbasis)
 
     for iq in range(len(Sset), len(Sset) + len(Qplus)):
         iq_real = Qplus[iq - len(Sset)]
@@ -47,17 +89,21 @@ def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikp
             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
             cholkq = chol[:, ik, :, iq, :].copy()
-            cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
+            # cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
             cholkq = cholkq.reshape(-1, nbasis*nbasis)
-            cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
-            for iw in range(nwalkers):
-                # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
-                VHS[iw, ik, ikpq] += sqrt_dt * math.sqrt(2) * x_iq[iw] @ cholkq
-                VHS[iw, ikpq, ik] += sqrt_dt * math.sqrt(2) * xconj_iq[iw] @ cholkqT.conj()
-    VHS = VHS.reshape(nwalkers, nk, nk, nbasis, nbasis).transpose(0, 1, 3, 2, 4).copy()
+            # cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
+            # for iw in range(nwalkers):
+            #     # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
+            #     VHS[iw, ik, ikpq] += sqrt_dt * math.sqrt(2) * x_iq[iw] @ cholkq
+            #     VHS[iw, ikpq, ik] += sqrt_dt * math.sqrt(2) * xconj_iq[iw] @ cholkqT.conj()
+            VHS[ik, ikpq] += math.sqrt(2) * sqrt_dt * x_iq @ cholkq
+            XL = sqrt_dt * xconj_iq @ cholkq.conj()
+            XL = XL.reshape(nwalkers, nbasis, nbasis).transpose(0, 2, 1).copy()
+            VHS[ikpq, ik] += math.sqrt(2) * XL.reshape(nwalkers, nbasis * nbasis)
+    # VHS = VHS.reshape(nwalkers, nk, nk, nbasis, nbasis).transpose(0, 1, 3, 2, 4).copy()
+    VHS = VHS.reshape(nk, nk, nwalkers, nbasis, nbasis).transpose(2, 0, 3, 1, 4).copy()
     VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
     return VHS
-
 
 class PhaselessKptChol(PhaselessKptBase):
     """A class for performing phaseless propagation with k-point Hamiltonian."""
