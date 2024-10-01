@@ -120,6 +120,7 @@ class PhaselessKptChol(PhaselessKptBase):
         self.timer.tvhs += time.time() - start_time
         assert len(VHS.shape) == 3  # shape = nwalkers, nk * nbasis, nk * nbasis
 
+        # print(f"shape of VHS = {VHS.shape}, shape of walkers.phia = {walkers.phia.shape}")
         start_time = time.time()
         if config.get_option("use_gpu"):
             # walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)

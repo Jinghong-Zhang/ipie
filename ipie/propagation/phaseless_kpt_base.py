@@ -3,7 +3,7 @@ import numpy
 import scipy.linalg
 from abc import abstractmethod
 from ipie.propagation.continuous_base import ContinuousBase
-from ipie.propagation.operations import propagate_one_body
+from ipie.propagation.operations import propagate_one_body, propagate_one_body_kpt
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize, cast_to_device
 import h5py
@@ -97,15 +97,21 @@ def construct_one_body_propagator(
     else:
         H1_numpy = H1
 
-    full_h1 = numpy.zeros((2, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
+    expH1_0 = xp.zeros((hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
+    expH1_1 = xp.zeros((hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
     for ik in range(hamiltonian.nk):
-        full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
-        full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
-    full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
-    # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
-    expH1 = xp.array(
-        [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
-    )
+        expH1_0[ik] = scipy.linalg.expm(-0.5 * dt * H1_numpy[0, ik])
+        expH1_1[ik] = scipy.linalg.expm(-0.5 * dt * H1_numpy[1, ik])
+    expH1 = xp.array([expH1_0, expH1_1])
+    # full_h1 = numpy.zeros((2, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
+    # for ik in range(hamiltonian.nk):
+    #     full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
+    #     full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
+    # full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
+    # # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
+    # expH1 = xp.array(
+    #     [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
+    # )
     return expH1
 
 @plum.dispatch
@@ -295,12 +301,16 @@ class PhaselessKptBase(ContinuousBase):
         # self.vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nfields),
         #                         dtype=numpy.complex128)
 
-    def propagate_walkers_one_body(self, walkers):
+    def propagate_walkers_one_body(self, walkers, hamiltonian):
         start_time = time.time()
         # print("norm of expH1", xp.linalg.norm(self.expH1))
-        walkers.phia = propagate_one_body(walkers.phia, self.expH1[0])
+        phia_reshaped = walkers.phia.reshape(walkers.nwalkers, hamiltonian.nk, hamiltonian.nbasis, -1)
+        phia = propagate_one_body_kpt(phia_reshaped, self.expH1[0])
+        walkers.phia = phia.reshape(walkers.nwalkers, hamiltonian.nk * hamiltonian.nbasis, -1)
         if walkers.ndown > 0 and not walkers.rhf:
-            walkers.phib = propagate_one_body(walkers.phib, self.expH1[1])
+            phib_reshaped = walkers.phib.reshape(walkers.nwalkers, hamiltonian.nk, hamiltonian.nbasis, -1)
+            phib = propagate_one_body_kpt(phib_reshaped, self.expH1[1])
+            walkers.phib = phib.reshape(walkers.nwalkers, hamiltonian.nk * hamiltonian.nbasis, -1)
         synchronize()
         self.timer.tgemm += time.time() - start_time
 
@@ -397,14 +407,14 @@ class PhaselessKptBase(ContinuousBase):
 
         # 2. Update Slater matrix
         # 2.a Apply one-body
-        self.propagate_walkers_one_body(walkers)
+        self.propagate_walkers_one_body(walkers, hamiltonian)
 
         # 2.b Apply two-body
         (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, trial)
         # print("norm of phia after 2 body", xp.linalg.norm(walkers.phia))
 
         # 2.c Apply one-body
-        self.propagate_walkers_one_body(walkers)
+        self.propagate_walkers_one_body(walkers, hamiltonian)
         # print("norm of phia after last 1 body", xp.linalg.norm(walkers.phia))
 
         # Now apply phaseless approximation

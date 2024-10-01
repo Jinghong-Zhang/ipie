@@ -210,8 +210,8 @@ def construct_force_bias_kptsymm_batch_single_det(
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
                 lpluslbar = trial._rchola[iq, ik] + trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
                 lminuslbar = trial._rchola[iq, ik] - trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
-                vbias_plus[:, :, iq] += 1j * numpy.einsum("gip, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
-                vbias_minus[:, :, iq] += numpy.einsum("gip, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_plus[:, :, iq] += 1j * numpy.einsum("igp, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_minus[:, :, iq] += numpy.einsum("igp, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
 
         for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
             iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
@@ -219,8 +219,8 @@ def construct_force_bias_kptsymm_batch_single_det(
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
                 lpluslbar = trial._rchola[iq, ik] + trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
                 lminuslbar = trial._rchola[iq, ik] - trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
-                vbias_plus[:, :, iq] += 1j * math.sqrt(2) * numpy.einsum("gip, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
-                vbias_minus[:, :, iq] += math.sqrt(2) * numpy.einsum("gip, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_plus[:, :, iq] += 1j * math.sqrt(2) * numpy.einsum("igp, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_minus[:, :, iq] += math.sqrt(2) * numpy.einsum("igp, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
         synchronize()
         return vbias_plus, vbias_minus
 
@@ -234,21 +234,21 @@ def construct_force_bias_kptsymm_batch_single_det(
             iq_real = hamiltonian.Sset[iq]
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_plus[:, :, iq] += .5j * (numpy.einsum("gip, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_plus[:, :, iq] += .5j * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
 
-                vbias_minus[:, :, iq] += .5 * (numpy.einsum("gip, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_minus[:, :, iq] -= .5 * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_minus[:, :, iq] += .5 * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_minus[:, :, iq] -= .5 * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
         
         for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
             iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("gip, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
 
-                vbias_minus[:, :, iq] += .5 * math.sqrt(2) * (numpy.einsum("gip, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_minus[:, :, iq] -= .5 * math.sqrt(2) * (numpy.einsum("gpi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("gpi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_minus[:, :, iq] += .5 * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_minus[:, :, iq] -= .5 * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
         synchronize()
         return vbias_plus, vbias_minus
 

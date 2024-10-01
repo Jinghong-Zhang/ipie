@@ -19,6 +19,7 @@ from ipie.config import config
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 from ipie.utils.misc import is_cupy
+from numba import jit
 
 # TODO: Rename this
 
@@ -52,6 +53,18 @@ def propagate_one_body(phi, bt2, H1diag=False):
             for iw in range(phi.shape[0]):
                 phi[iw] = xp.dot(bt2, phi[iw])
 
+    return phi
+
+@jit(nopython=True, fastmath=True)
+def propagate_one_body_kpt(phi, bt2):
+    # if is_cupy(bt2):
+    #     # phi = xp.einsum("ik,wkj->wij", bt2, phi, optimize=True)
+    #     raise NotImplementedError
+    # else:
+    for iw in range(phi.shape[0]):
+        for ik1 in range(bt2.shape[0]):
+            phi[iw][ik1] = xp.dot(bt2[ik1], phi[iw][ik1])
+        # phi[iw] = xp.dot(bt2, phi[iw])
     return phi
 
 def apply_exponential(phi, VHS, exp_nmax):
