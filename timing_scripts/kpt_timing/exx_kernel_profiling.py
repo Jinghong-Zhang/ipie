@@ -7,7 +7,7 @@ import time
 
 nk = 27
 nchol = 250
-nbsf = 32
+nbsf = 26
 nocc = 4
 nwalkers = 10
 

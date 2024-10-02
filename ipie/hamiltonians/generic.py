@@ -109,7 +109,6 @@ class GenericComplexChol(GenericBase):
     def __init__(self, h1e, chol, A=None, B=None, ecore=0.0, shmem=False, verbose=False):
         assert h1e.shape[0] == 2
         super().__init__(h1e, ecore, verbose)
-        print(f"norm of h1e = {numpy.linalg.norm(h1e.ravel())}")
         self.chol = numpy.array(chol, dtype=numpy.complex128)  # [M^2, nchol]
         self.nchol = self.chol.shape[-1]
         self.nfields = 2 * self.nchol

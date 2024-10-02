@@ -14,6 +14,7 @@ import plum
 
 from ipie.config import config
 from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm, KptISDF
+from ipie.hamiltonians.kpt_chunked import KptComplexCholChunked
 from ipie.hamiltonians.generic_base import GenericBase
 from ipie.propagation.operations import apply_exponential, apply_exponential_batch
 from ipie.propagation.phaseless_kpt_base import PhaselessKptBase
@@ -22,45 +23,8 @@ from ipie.utils.backend import synchronize
 from ipie.walkers.uhf_walkers import UHFWalkers
 from numba import jit
 
-# @jit(nopython=True, fastmath=True)
-# def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
-#     VHS = numpy.zeros((nwalkers, nk, nk, nbasis * nbasis), dtype=numpy.complex128)
-#     for iq in range(len(Sset)):
-#         iq_real = Sset[iq]
-#         for ik in range(nk):
-#             ikpq = ikpq_mat[iq_real, ik]
-#             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
-#             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
-#             cholkq = chol[:, ik, :, iq, :].copy()
-#             cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
-#             cholkq = cholkq.reshape(-1, nbasis*nbasis)
-#             cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
-#             for iw in range(nwalkers):
-#                 # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
-#                 VHS[iw, ik, ikpq] += sqrt_dt * x_iq[iw] @ cholkq
-#                 VHS[iw, ikpq, ik] += sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
-
-#     for iq in range(len(Sset), len(Sset) + len(Qplus)):
-#         iq_real = Qplus[iq - len(Sset)]
-#         for ik in range(nk):
-#             ikpq = ikpq_mat[iq_real, ik]
-#             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
-#             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
-#             cholkq = chol[:, ik, :, iq, :].copy()
-#             cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
-#             cholkq = cholkq.reshape(-1, nbasis*nbasis)
-#             cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
-#             for iw in range(nwalkers):
-#                 # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
-#                 VHS[iw, ik, ikpq] += sqrt_dt * math.sqrt(2) * x_iq[iw] @ cholkq
-#                 VHS[iw, ikpq, ik] += sqrt_dt * math.sqrt(2) * xconj_iq[iw] @ cholkqT.conj()
-#     VHS = VHS.reshape(nwalkers, nk, nk, nbasis, nbasis).transpose(0, 1, 3, 2, 4).copy()
-#     VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
-#     return VHS
-
 @jit(nopython=True, fastmath=True)
 def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
-    # VHS = numpy.zeros((nwalkers, nk, nk, nbasis * nbasis), dtype=numpy.complex128)
     VHS = numpy.zeros((nk, nk, nwalkers, nbasis * nbasis), dtype=numpy.complex128)
     for iq in range(len(Sset)):
         iq_real = Sset[iq]
@@ -69,14 +33,7 @@ def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikp
             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
             cholkq = chol[:, ik, :, iq, :].copy()
-            # cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
             cholkq = cholkq.reshape(-1, nbasis*nbasis)
-            # cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
-            # for iw in range(nwalkers):
-            #     # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
-            #     VHS[iw, ik, ikpq] += sqrt_dt * x_iq[iw] @ cholkq
-            #     sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
-            #     VHS[iw, ikpq, ik] += sqrt_dt * xconj_iq[iw] @ cholkqT.conj()
             VHS[ik, ikpq] += sqrt_dt * x_iq @ cholkq
             XL = sqrt_dt * xconj_iq @ cholkq.conj()
             XL = XL.reshape(nwalkers, nbasis, nbasis).transpose(0, 2, 1).copy()
@@ -89,18 +46,11 @@ def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikp
             x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
             xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
             cholkq = chol[:, ik, :, iq, :].copy()
-            # cholkqT = chol[:, ik, :, iq, :].transpose(0, 2, 1).copy()
             cholkq = cholkq.reshape(-1, nbasis*nbasis)
-            # cholkqT = cholkqT.reshape(-1, nbasis*nbasis)
-            # for iw in range(nwalkers):
-            #     # VHS[iw, ik, ikpq] += numpy.einsum('wx, xpr -> wpr', x_iq[iw], chol[:, ik, :, iq, :])
-            #     VHS[iw, ik, ikpq] += sqrt_dt * math.sqrt(2) * x_iq[iw] @ cholkq
-            #     VHS[iw, ikpq, ik] += sqrt_dt * math.sqrt(2) * xconj_iq[iw] @ cholkqT.conj()
             VHS[ik, ikpq] += math.sqrt(2) * sqrt_dt * x_iq @ cholkq
             XL = sqrt_dt * xconj_iq @ cholkq.conj()
             XL = XL.reshape(nwalkers, nbasis, nbasis).transpose(0, 2, 1).copy()
             VHS[ikpq, ik] += math.sqrt(2) * XL.reshape(nwalkers, nbasis * nbasis)
-    # VHS = VHS.reshape(nwalkers, nk, nk, nbasis, nbasis).transpose(0, 1, 3, 2, 4).copy()
     VHS = VHS.reshape(nk, nk, nwalkers, nbasis, nbasis).transpose(2, 0, 3, 1, 4).copy()
     VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
     return VHS
@@ -119,14 +69,12 @@ class PhaselessKptChol(PhaselessKptBase):
         synchronize()
         self.timer.tvhs += time.time() - start_time
         assert len(VHS.shape) == 3  # shape = nwalkers, nk * nbasis, nk * nbasis
-
-        # print(f"shape of VHS = {VHS.shape}, shape of walkers.phia = {walkers.phia.shape}")
         start_time = time.time()
         if config.get_option("use_gpu"):
-            # walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)
-            # if walkers.ndown > 0 and not walkers.rhf:
-            #     walkers.phib = apply_exponential_batch(walkers.phib, VHS, self.exp_nmax)
-            raise NotImplementedError
+            walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)
+            if walkers.ndown > 0 and not walkers.rhf:
+                walkers.phib = apply_exponential_batch(walkers.phib, VHS, self.exp_nmax)
+
         else:
             for iw in range(walkers.nwalkers):
                 # 2.b Apply two-body
@@ -151,7 +99,6 @@ class PhaselessKptChol(PhaselessKptBase):
         """
         nwalkers = xshifted.shape[1]
         VHS = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
-        # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
 
         for iq in range(hamiltonian.nk):
             for ik in range(hamiltonian.nk):
@@ -161,7 +108,6 @@ class PhaselessKptChol(PhaselessKptBase):
                 xtildemiq = xshifted[1, :, :, iq] - xshifted[1, :, :, imq]
                 xvhsiq = (1j * xtildepiq + xtildemiq) / 2
                 VHS[:, ik, :, ikpq, :] = self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', xvhsiq, hamiltonian.chol[:, ik, :, iq, :])
-        # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
         VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         if config.get_option("use_gpu"):
             raise NotImplementedError
@@ -176,34 +122,66 @@ class PhaselessKptChol(PhaselessKptBase):
         """
         nwalkers = xshifted.shape[1]
         VHS = construct_VHS_kernel_symm(hamiltonian.chol, self.sqrt_dt, xshifted, hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
-        # VHS = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
-        # # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
-
-        # for iq in range(len(hamiltonian.Sset)):
-        #     iq_real = hamiltonian.Sset[iq]
-        #     for ik in range(hamiltonian.nk):
-        #         ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-        #         x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
-        #         xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
-        #         VHS[:, ik, :, ikpq, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
-        #         VHS[:, ikpq, :, ik, :] += self.sqrt_dt * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
-
-        # for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
-        #     iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
-        #     for ik in range(hamiltonian.nk):
-        #         ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-        #         x_iq = .5 * (1j * xshifted[0, :, :, iq] + xshifted[1, :, :, iq])
-        #         xconj_iq = .5 * (1j * xshifted[0, :, :, iq] - xshifted[1, :, :, iq])
-        #         VHS[:, ik, :, ikpq, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
-        #         # VHS[:, ik, :, ikpq, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wpr', x_iq, hamiltonian.chol[:, ik, :, iq, :])
-        #         VHS[:, ikpq, :, ik, :] += self.sqrt_dt * math.sqrt(2) * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
-        #         # VHS[:, ikpq, :, ik, :] += self.sqrt_dt * 2. * numpy.einsum('wx, xpr -> wrp', xconj_iq, hamiltonian.chol[:, ik, :, iq, :].conj())
-        # # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
-        # VHS = VHS.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
-        # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
         if config.get_option("use_gpu"):
             raise NotImplementedError
         return VHS
+
+class PhaselessKptCholChunked(PhaselessKptChol):
+    """A class for performing phaseless propagation with complex hamiltonian with k point symmetry."""
+
+    def __init__(self, time_step, exp_nmax=6, verbose=False):
+        super().__init__(time_step, exp_nmax=exp_nmax, verbose=verbose)
+
+    def build(self, hamiltonian, trial=None, walkers=None, mpi_handler=None, verbose=False):
+        super().build(hamiltonian, trial, walkers, mpi_handler, verbose)
+        self.mpi_handler = mpi_handler
+
+    @plum.dispatch
+    def construct_VHS(
+        self, hamiltonian: KptComplexCholChunked, xshifted: xp.ndarray
+    ) -> xp.ndarray:
+        assert hamiltonian.chunked
+        nwalkers = xshifted.shape[1]
+
+        xshifted_send = xshifted.copy()
+        xshifted_recv = xp.zeros_like(xshifted)
+
+        idxs = hamiltonian.chol_idxs_chunk
+        chol_chunk = hamiltonian.chol_chunk.reshape(-1, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.unique_nk, hamiltonian.nbasis)
+
+        VHS_send = construct_VHS_kernel_symm(chol_chunk, self.sqrt_dt, xshifted[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        VHS_recv = xp.zeros_like(VHS_send)
+
+        srank = self.mpi_handler.scomm.rank
+        sender = numpy.where(self.mpi_handler.receivers == srank)[0]
+
+        for _ in range(self.mpi_handler.ssize - 1):
+            synchronize()
+            self.mpi_handler.scomm.Isend(
+                xshifted_send, dest=self.mpi_handler.receivers[srank], tag=1
+            )
+            self.mpi_handler.scomm.Isend(VHS_send, dest=self.mpi_handler.receivers[srank], tag=2)
+
+            req1 = self.mpi_handler.scomm.Irecv(xshifted_recv, source=sender, tag=1)
+            req2 = self.mpi_handler.scomm.Irecv(VHS_recv, source=sender, tag=2)
+            req1.wait()
+            req2.wait()
+
+            self.mpi_handler.scomm.barrier()
+
+            VHS_send = construct_VHS_kernel_symm(chol_chunk, self.sqrt_dt, xshifted_recv[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+            VHS_send += VHS_recv
+
+            xshifted_send = xshifted_recv.copy()
+
+        synchronize()
+        self.mpi_handler.scomm.Isend(VHS_send, dest=self.mpi_handler.receivers[srank], tag=1)
+        req = self.mpi_handler.scomm.Irecv(VHS_recv, source=sender, tag=1)
+        req.wait()
+        self.mpi_handler.scomm.barrier()
+
+        synchronize()
+        return VHS_recv
 
 class PhaselessKptISDF(PhaselessKptBase):
     """A class for performing phaseless propagation with k-point Hamiltonian with ERI approximated by ISDF."""
@@ -222,10 +200,9 @@ class PhaselessKptISDF(PhaselessKptBase):
 
         start_time = time.time()
         if config.get_option("use_gpu"):
-            # walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)
-            # if walkers.ndown > 0 and not walkers.rhf:
-            #     walkers.phib = apply_exponential_batch(walkers.phib, VHS, self.exp_nmax)
-            raise NotImplementedError
+            walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)
+            if walkers.ndown > 0 and not walkers.rhf:
+                walkers.phib = apply_exponential_batch(walkers.phib, VHS, self.exp_nmax)
         else:
             for iw in range(walkers.nwalkers):
                 # 2.b Apply two-body
@@ -252,8 +229,6 @@ class PhaselessKptISDF(PhaselessKptBase):
         Lmat = numpy.zeros((nwalkers, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nk, hamiltonian.nbasis), dtype=numpy.complex128)
         Lmatdagger
 
-        # print(f"norm of x^+[0, gamma] = {numpy.linalg.norm(xp[:, :, 0])}")
-
         for iq in range(hamiltonian.nk):
             Glis = hamiltonian.q2G[iq]
             for iG in range(len(Glis)):
@@ -265,7 +240,6 @@ class PhaselessKptISDF(PhaselessKptBase):
                         Lmatdagger[:, ikpq, :, ik, :] += self.sqrt_dt * numpy.einsum("wX, XP, Pp, Pr -> wpr", xshifted[1, :, :, iq], hamiltonian.cholM[:, iq, iG, :].conj(), hamiltonian.weights[:, :, ikpq].conj(), hamiltonian.weights[:, :, ik])
                 except KeyError:
                     continue
-        # print(f"norm of VHS = {numpy.linalg.norm(VHS.ravel())}")
         Lmat = Lmat.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         Lmatdagger = Lmatdagger.reshape(nwalkers, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
         VHS = Lmat + Lmatdagger
@@ -273,4 +247,4 @@ class PhaselessKptISDF(PhaselessKptBase):
             raise NotImplementedError
         return VHS
 
-Phaseless = {"cholesky": PhaselessKptChol, "isdf": PhaselessKptISDF}
+Phaseless = {"cholesky": PhaselessKptChol, "isdf": PhaselessKptISDF, "cholchunked": PhaselessKptCholChunked}

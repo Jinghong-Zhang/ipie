@@ -1,8 +1,10 @@
 from ipie.hamiltonians.generic import GenericRealChol, GenericComplexChol
 from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
+from ipie.hamiltonians.kpt_chunked import KptComplexCholChunked
 from ipie.propagation.phaseless_generic import PhaselessGeneric, PhaselessGenericChunked
-from ipie.propagation.phaseless_kpt import PhaselessKptChol
+from ipie.propagation.phaseless_kpt import PhaselessKptChol, PhaselessKptCholChunked
+
 
 # Propagator = {GenericRealChol: PhaselessGeneric, GenericComplexChol: PhaselessGeneric}
 Propagator = {
@@ -11,4 +13,5 @@ Propagator = {
     GenericRealCholChunked: PhaselessGenericChunked,
     KptComplexChol: PhaselessKptChol,
     KptComplexCholSymm: PhaselessKptChol,
+    KptComplexCholChunked: PhaselessKptCholChunked
 }

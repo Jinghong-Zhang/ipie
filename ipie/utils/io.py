@@ -58,9 +58,11 @@ def read_hamiltonian(filename: str) -> Tuple[numpy.ndarray, numpy.ndarray, float
 
 def read_kpt_hamiltonian(filename: str) -> Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, float]:
     with h5py.File(filename, "r") as fh5:
-        hcore = numpy.array(fh5["hcore"])
-        LXmn = numpy.array(fh5["chol"])
-        kpts = numpy.array(fh5["kpoints"])
+        print(fh5.keys())
+        print(fh5["hcore"])
+        hcore = numpy.array(fh5["hcore"][()])
+        LXmn = numpy.array(fh5["chol"][()])
+        kpts = numpy.array(fh5["kpoints"][()])
         e0 = float(fh5["e0"][()])
     assert len(hcore.shape) == 3, "Incorrect shape for hcore, expected 3-dimensional array"
     nmo = hcore.shape[-1]
