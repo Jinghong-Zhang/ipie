@@ -23,8 +23,10 @@ from typing import Tuple, Union
 import numpy
 
 from ipie.hamiltonians import Generic as HamGeneric
-from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol
+from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm
+from ipie.hamiltonians.kpt_chunked import KptComplexCholChunked
 from ipie.propagation.phaseless_generic import PhaselessBase, PhaselessGeneric
+from ipie.utils.kpt_conv import generate_MPmesh_3d, find_Qplus, find_self_inverse_set
 from ipie.qmc.afqmc import AFQMC
 from ipie.qmc.options import QMCOpts
 from ipie.systems import Generic
@@ -111,12 +113,26 @@ def get_random_nomsd(nup, ndown, nbasis, ndet=10, cplx=True, init=False):
         return (coeffs, wfn, init_wfn)
     else:
         return (coeffs, wfn)
+    
+def make_full_rank_by_orthogonalization(A):
+    """
+    Orthogonalizes the columns of A to make it full rank.
+    
+    Parameters:
+    A (numpy.ndarray): The input matrix.
+    
+    Returns:
+    numpy.ndarray: An orthonormal matrix with full rank.
+    """
+    Q, _ = numpy.linalg.qr(A)
+    return Q
 
 def get_random_kpt_trial(nk, nup, ndown, nbasis, ndet=1, cplx=True, init=False):
     a = numpy.random.rand(ndet * nbasis * (nup + ndown) * nk)
     b = numpy.random.rand(ndet * nbasis * (nup + ndown) * nk)
     if cplx:
         wfn = (a + 1j * b).reshape((ndet, nk, nbasis, nup + ndown))
+        wfn = make_full_rank_by_orthogonalization(wfn)
         coeffs = numpy.random.rand(ndet) + 1j * numpy.random.rand(ndet)
     else:
         wfn = a.reshape((ndet, nk, nbasis, nup + ndown))
@@ -356,7 +372,25 @@ def gen_random_test_instances(nmo, nocc, naux, nwalkers, seed=7, ndets=1):
     trial._rH1b = shaped_normal((nocc, nmo))
     return system, ham, walkers, trial
 
-def gen_random_test_instances_kpt(nk, nmo, nocc, naux, nwalkers, seed=7, ndets=1):
+def gen_random_test_input_kpt(kmesh, nmo, nelec, naux, seed=7, ndets=1):
+    assert ndets == 1
+    nk = kmesh[0] * kmesh[1] * kmesh[2]
+    numpy.random.seed(seed)
+    nup, ndown = nelec
+    _, wfn = get_random_kpt_trial(nk, nup, ndown, nmo, ndet=ndets)
+    h1e = shaped_normal((nk, nmo, nmo), cmplx=True)
+    h1e = h1e + h1e.transpose(0, 2, 1).conj()
+
+    kpts = generate_MPmesh_3d(kmesh)
+    Sset = find_self_inverse_set(kpts)
+    Qplus = find_Qplus(kpts)
+    nq = len(Sset) + len(Qplus)
+
+    chol = shaped_normal((naux, nk, nmo, nq, nmo), cmplx=True)
+    
+    return h1e, chol, wfn, kpts
+
+def gen_random_test_instances_kpt_chunked(nk, nmo, nocc, naux, nwalkers, seed=7, ndets=1):
     assert ndets == 1
     numpy.random.seed(seed)
     wfn = get_random_kpt_trial(nk, nocc, nocc, nmo, ndet=ndets)
@@ -372,10 +406,11 @@ def gen_random_test_instances_kpt(nk, nmo, nocc, naux, nwalkers, seed=7, ndets=1
     [0.5, 0.,  0.5],
     [0.5, 0.5, 0. ],
     [0.5, 0.5, 0.5]])
-    ham = KptComplexChol(
+    ham = KptComplexCholChunked(
         h1e=numpy.array([h1e, h1e]),
-        chol=chol,
         kpts=kpts,
+        chol=chol,
+        chol_chunk=None,
         ecore=0,
         verbose=False,
     )

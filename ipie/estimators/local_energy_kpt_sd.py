@@ -251,53 +251,29 @@ def kpt_symmchol_exx_kernel_lowmem(rchola, rcholbara, Ghalfa, GhalfaT, kpq_mat, 
     for iq in range(len(Sset)):
         iq_real = Sset[iq]        
         for ik in range(nk):
-            Lkq = rchola[iq, ik].transpose(1, 0, 2).copy().reshape(naux * nocc, -1)
             ik_pq = kpq_mat[iq_real, ik]
             for ikprime in range(nk):
                 ikpr_pq = kpq_mat[iq_real, ikprime]
-                # Lkq = rchola[iq, ik]
-                # Lbarkpq = rcholbara[iq, ikprime]
-                Lbarkpq = rcholbara[iq, ikprime].transpose(1, 0, 2).copy().reshape(-1, naux * nocc)
                 for iw in range(nwalkers):
                     Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq, iw]
                     Ghalf_k_kp = Ghalfa[ik,ikprime, iw]
-                    # for g in range(naux):
-                    #     T1 = Lkq[g] @ Ghalf_kpq_kprpq
-                    #     T2 = Ghalf_k_kp @ Lbarkpq[g]
-                    #     for i in range(nocc):
-                    #         for j in range(nocc):
-                    #             exx[iw] -= T1[i, j] * T2[i, j]
-                    T1 = Lkq @ Ghalf_kpq_kprpq
-                    T2 = Ghalf_k_kp @ Lbarkpq
-                    T1 = T1.ravel()
-                    T2 = T2.ravel()
-                    exx[iw] -= T1 @ T2
+                    for g in range(naux):
+                        Lkqg = rchola[iq, ik, :, g].transpose(1, 0, 2).copy()
+                        Lbarkpqg = rcholbara[iq, ikprime, :, g].transpose(1, 0, 2).copy()
+                        T1 = Lkqg @ Ghalf_kpq_kprpq
+                        T2 = Ghalf_k_kp @ Lbarkpqg
+                        for i in range(nocc):
+                            for j in range(nocc):
+                                exx[iw] -= T1[i, j] * T2[i, j]
 
     for iq in range(len(Sset), len(Sset) + len(Qplus)):
         iq_real = Qplus[iq - len(Sset)]
-        # for ik in range(nk):
-        #     for ikprime in range(nk):
-        #         ikpr_pq = kpq_mat[iq_real, ikprime]
-        #         ik_pq = kpq_mat[iq_real, ik]
-        #         Lkq = rchola[iq, ik]
-        #         Lbarkpq = rcholbara[iq, ikprime]
-        #         for iw in range(nwalkers):
-        #             Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq, iw]
-        #             Ghalf_k_kp = Ghalfa[ik, ikprime, iw]
-        #             for g in range(naux):
-        #                 T1 = Lkq[g] @ Ghalf_kpq_kprpq
-        #                 T2 = Ghalf_k_kp @ Lbarkpq[g]
-        #                 for i in range(nocc):
-        #                     for j in range(nocc):
-        #                         exx[iw] -= 2. * T1[i, j] * T2[i, j]
         for ik in range(nk):
-            Lkq = rchola[iq, ik].transpose(1, 0, 2).copy().reshape(naux * nocc, -1)
+            Lkq = rchola[iq, ik].transpose(1, 0, 2).copy()
             ik_pq = kpq_mat[iq_real, ik]
             for ikprime in range(nk):
                 ikpr_pq = kpq_mat[iq_real, ikprime]
-                # Lkq = rchola[iq, ik]
-                # Lbarkpq = rcholbara[iq, ikprime]
-                Lbarkpq = rcholbara[iq, ikprime].transpose(1, 0, 2).copy().reshape(-1, naux * nocc)
+                Lbarkpq = rcholbara[iq, ikprime].transpose(1, 0, 2).copy()
                 for iw in range(nwalkers):
                     Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq, iw]
                     Ghalf_k_kp = Ghalfa[ik, ikprime, iw]

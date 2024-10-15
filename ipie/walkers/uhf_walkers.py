@@ -152,6 +152,7 @@ class UHFWalkers(BaseWalkers):
             Rdn_diag = xp.einsum("wii->wi", Rdn)
             log_det += xp.einsum("wi->w", xp.log(abs(Rdn_diag)))
         self.detR = xp.exp(log_det - self.detR_shift)
+        print(type(self.ovlp))
         self.ovlp = self.ovlp / self.detR
 
         synchronize()

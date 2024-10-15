@@ -22,3 +22,8 @@ if config.get_option("use_gpu"):
     from .gpu.exchange import exchange_reduction
 else:
     exchange_reduction = None
+
+if config.get_option("use_gpu"):
+    from .gpu.exchange_kpt import exchange_reduction_kpt
+else:
+    exchange_reduction_kpt = None

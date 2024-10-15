@@ -162,10 +162,10 @@ class KptSingleDet(TrialWavefunctionBase):
         self._rcholbarb_chunk = rot_chol[3][0]
         self.half_rotated = True
 
-    def calc_overlap(self, walkers: "UHFWalkers") -> numpy.ndarray:
+    def calc_overlap(self, walkers: "UHFWalkers") -> xp.ndarray:
         return calc_overlap_single_det_kpt(walkers, self)
 
-    def calc_greens_function(self, walkers, build_full: bool = False) -> numpy.ndarray:
+    def calc_greens_function(self, walkers, build_full: bool = False) -> xp.ndarray:
         if config.get_option("use_gpu"):
             return greens_function_kpt_single_det_batch(walkers, self, build_full=build_full)
         else:

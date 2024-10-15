@@ -66,7 +66,7 @@ def calc_overlap_single_det_ghf(walkers: "GHFWalkers", trial: "SingleDet"):
     ot = sign * xp.exp(log_ovlp - walkers.log_shift)
     return ot
 
-def calc_overlap_single_det_kpt(walkers:"UHFWalkers", trial: "SingleDet"):
+def calc_overlap_single_det_kpt(walkers:"UHFWalkers", trial: "KptSingleDet"):
     """Caculate overlap with single det k point trial wavefunction.
 
     Parameters
@@ -90,24 +90,27 @@ def calc_overlap_single_det_kpt(walkers:"UHFWalkers", trial: "SingleDet"):
     phia = walkers.phia.reshape(nwalkers, nk, nbsf, nk, nup)
     phib = walkers.phib.reshape(nwalkers, nk, nbsf, nk, ndown)
     
-    ovlpa = numpy.zeros((nwalkers, nk, nup, nk, nup), dtype=numpy.complex128)
-    for iw in range(nwalkers):
-        for ik1 in range(nk):
-            for ik2 in range(nk):
-                ovlpa[iw, ik1, :, ik2, :] = numpy.dot(phia[iw, ik2, :, ik1, :].T, trial.psi0a[ik2].conj())
+    # ovlpa = numpy.zeros((nwalkers, nk, nup, nk, nup), dtype=numpy.complex128)
+    # for iw in range(nwalkers):
+    #     for ik1 in range(nk):
+    #         for ik2 in range(nk):
+    #             ovlpa[iw, ik1, :, ik2, :] = numpy.dot(phia[iw, ik2, :, ik1, :].T, trial.psi0a[ik2].conj())
+    print(f"xp: {xp}")
+    ovlpa = xp.einsum("wlpki, lpj->wkilj", phia, trial.psi0a.conj(), optimize=True)
 
     ovlpa_reshape = ovlpa.reshape((nwalkers, nk * nup, nk * nup))
-    sign_a, log_ovlp_a = numpy.linalg.slogdet(ovlpa_reshape)
+    sign_a, log_ovlp_a = xp.linalg.slogdet(ovlpa_reshape)
 
     if ndown > 0 and not walkers.rhf:
-        ovlpb = numpy.zeros((nwalkers, nk, ndown, nk, ndown), dtype=numpy.complex128)
-        for iw in range(nwalkers):
-            for ik1 in range(nk):
-                for ik2 in range(nk):
-                    ovlpb[iw, ik1, :, ik2, :] = numpy.dot(phib[iw, ik2, :, ik1, :].T, trial.psi0b[ik2].conj())
+        # ovlpb = numpy.zeros((nwalkers, nk, ndown, nk, ndown), dtype=numpy.complex128)
+        # for iw in range(nwalkers):
+        #     for ik1 in range(nk):
+        #         for ik2 in range(nk):
+        #             ovlpb[iw, ik1, :, ik2, :] = numpy.dot(phib[iw, ik2, :, ik1, :].T, trial.psi0b[ik2].conj())
+        ovlpb = xp.einsum("wlpki, lpj->wkilj", phib, trial.psi0b.conj(), optimize=True)
 
         ovlpb_reshape = ovlpb.reshape((nwalkers, nk * ndown, nk * ndown))
-        sign_b, log_ovlp_b = numpy.linalg.slogdet(ovlpb_reshape)
+        sign_b, log_ovlp_b = xp.linalg.slogdet(ovlpb_reshape)
         ot = sign_a * sign_b * xp.exp(log_ovlp_a + log_ovlp_b - walkers.log_shift)
     elif ndown > 0 and walkers.rhf:
         ot = sign_a * sign_a * xp.exp(log_ovlp_a + log_ovlp_a - walkers.log_shift)

@@ -105,14 +105,12 @@ class PhaselessGeneric(PhaselessBase):
 
         xplus = xshifted[:nchol].reshape(nk, -1, nwalkers)
         xminus = xshifted[nchol:].reshape(nk, -1, nwalkers)
-        # print(f"norm of x^+[0, gamma] = {xp.linalg.norm(xplus[0, :, :])}")
 
         VHS = self.isqrt_dt * (
             hamiltonian.A.dot(xshifted[:nchol]) - hamiltonian.B.dot(xshifted[nchol:])
         )
         VHS = VHS.T.copy()
         VHS = VHS.reshape(nwalkers, hamiltonian.nbasis, hamiltonian.nbasis)
-        print(f"norm of VHS = {xp.linalg.norm(VHS.ravel())}")
 
         return VHS
 

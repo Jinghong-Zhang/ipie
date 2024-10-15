@@ -23,6 +23,8 @@ from numba import jit
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 
+from ipie.config import config
+
 
 def construct_force_bias_batch(hamiltonian, walkers, trial, mpi_handler=None):
     """Compute optimal force bias.
@@ -146,13 +148,13 @@ def construct_force_bias_kpt_batch_single_det(
         Force bias for Lminus.
     """
     if walkers.rhf:
-        vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
+        vbias = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
         # ghalf shape: nwalkers, nk, nup, nk, nbsf
         Ghalf_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
         for iq in range(hamiltonian.nk):
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[ik, iq]
-                vbias[:, :, iq] += 2.0 * numpy.einsum("gip, aip -> ga", trial._rchola[:, ik, :, iq, :], Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias[:, :, iq] += 2.0 * xp.einsum("gip, aip -> ga", trial._rchola[:, ik, :, iq, :], Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
         synchronize()
         imq = hamiltonian.imq_vec
         vbias_plus = .5 * 1j * (vbias + vbias[:, :, imq])
@@ -160,14 +162,14 @@ def construct_force_bias_kpt_batch_single_det(
         return vbias_plus, vbias_minus
 
     else:
-        vbias = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
+        vbias = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.nk), dtype=numpy.complex128)
         # ghalf shape: nwalkers, nk, nup, nk, nbsf
         Ghalfa_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
         Ghalfb_reshape = walkers.Ghalfb.reshape(walkers.nwalkers, hamiltonian.nk, trial.nbeta, hamiltonian.nk, hamiltonian.nbasis)
         for iq in range(hamiltonian.nk):
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[ik, iq]
-                vbias[:, :, iq] += numpy.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias[:, :, iq] += xp.einsum("gip, aip -> ag", trial._rchola[:, ik, :, iq, :], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + xp.einsum("gip, bip -> bg", trial._rcholb[:, ik, :, iq, :], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True)
         synchronize()
         imq = hamiltonian.imq_vec
         vbias_plus = .5 * 1j * (vbias + vbias[:, :, imq])
@@ -200,8 +202,8 @@ def construct_force_bias_kptsymm_batch_single_det(
         Force bias for Lminus.
     """
     if walkers.rhf:
-        vbias_plus = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
-        vbias_minus = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
+        vbias_plus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
+        vbias_minus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
         # ghalf shape: nwalkers, nk, nup, nk, nbsf
         Ghalf_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
         for iq in range(len(hamiltonian.Sset)):
@@ -210,8 +212,8 @@ def construct_force_bias_kptsymm_batch_single_det(
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
                 lpluslbar = trial._rchola[iq, ik] + trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
                 lminuslbar = trial._rchola[iq, ik] - trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
-                vbias_plus[:, :, iq] += 1j * numpy.einsum("igp, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
-                vbias_minus[:, :, iq] += numpy.einsum("igp, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_plus[:, :, iq] += 1j * xp.einsum("igp, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_minus[:, :, iq] += xp.einsum("igp, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
 
         for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
             iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
@@ -219,14 +221,14 @@ def construct_force_bias_kptsymm_batch_single_det(
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
                 lpluslbar = trial._rchola[iq, ik] + trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
                 lminuslbar = trial._rchola[iq, ik] - trial._rcholbara[iq, ikpq].transpose(0, 2, 1)
-                vbias_plus[:, :, iq] += 1j * math.sqrt(2) * numpy.einsum("igp, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
-                vbias_minus[:, :, iq] += math.sqrt(2) * numpy.einsum("igp, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_plus[:, :, iq] += 1j * math.sqrt(2) * xp.einsum("igp, aip -> ga", lpluslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
+                vbias_minus[:, :, iq] += math.sqrt(2) * xp.einsum("igp, aip -> ga", lminuslbar, Ghalf_reshape[:, ik, :, ikpq, :], optimize=True)
         synchronize()
         return vbias_plus, vbias_minus
 
     else:
-        vbias_plus = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
-        vbias_minus = numpy.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
+        vbias_plus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
+        vbias_minus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
         # ghalf shape: nwalkers, nk, nup, nk, nbsf
         Ghalfa_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
         Ghalfb_reshape = walkers.Ghalfb.reshape(walkers.nwalkers, hamiltonian.nk, trial.nbeta, hamiltonian.nk, hamiltonian.nbasis)
@@ -234,21 +236,21 @@ def construct_force_bias_kptsymm_batch_single_det(
             iq_real = hamiltonian.Sset[iq]
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_plus[:, :, iq] += .5j * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_plus[:, :, iq] += .5j * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * (xp.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * (xp.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
 
-                vbias_minus[:, :, iq] += .5 * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_minus[:, :, iq] -= .5 * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_minus[:, :, iq] += .5 * (xp.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_minus[:, :, iq] -= .5 * (xp.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
         
         for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
             iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_plus[:, :, iq] += .5j * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
 
-                vbias_minus[:, :, iq] += .5 * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
-                vbias_minus[:, :, iq] -= .5 * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
+                vbias_minus[:, :, iq] += .5 * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola[iq, ik], Ghalfa_reshape[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb[iq, ik], Ghalfb_reshape[:, ik, :, ikpq, :], optimize=True))
+                vbias_minus[:, :, iq] -= .5 * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara[iq, ik], Ghalfa_reshape[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb[iq, ik], Ghalfb_reshape[:, ikpq, :, ik, :], optimize=True))
         synchronize()
         return vbias_plus, vbias_minus
 
@@ -284,8 +286,8 @@ def construct_force_bias_kptisdf_batch_single_det(
     Ghalfa_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
     Ghalfb_reshape = walkers.Ghalfb.reshape(walkers.nwalkers, hamiltonian.nk, trial.nbeta, hamiltonian.nk, hamiltonian.nbasis)
     if walkers.rhf:
-        AqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
-        BqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        AqPG = xp.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        BqPG = xp.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
         for iq in range(hamiltonian.nk):
             Glis = hamiltonian.q2G[iq]
             for iG in range(len(Glis)):
@@ -293,18 +295,18 @@ def construct_force_bias_kptisdf_batch_single_det(
                     ik_lis = hamiltonian.qG2k[(iq, iG)]
                     for ik in ik_lis:
                         ikpq = hamiltonian.ikpq_mat[ik, iq]
-                        AqPG[:, iq, :, iG] += 2.0 * numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfa_reshape[:, ik, :, ikpq, :])
-                        BqPG[:, iq, :, iG] += 2.0 * numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfa_reshape[:, ikpq, :, ik, :])
+                        AqPG[:, iq, :, iG] += 2.0 * xp.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfa_reshape[:, ik, :, ikpq, :])
+                        BqPG[:, iq, :, iG] += 2.0 * xp.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfa_reshape[:, ikpq, :, ik, :])
                 except KeyError:
                     continue
-        vbias = numpy.einsum("XqPG, aqPG -> aXq", rcholM, AqPG)
-        vbiasconj = numpy.einsum("XqPG, aqPG -> aXq", rcholM, BqPG)
+        vbias = xp.einsum("XqPG, aqPG -> aXq", rcholM, AqPG)
+        vbiasconj = xp.einsum("XqPG, aqPG -> aXq", rcholM, BqPG)
         vbias_plus = .5 * 1j * (vbias + vbiasconj)
         vbias_minus = .5 * (vbias - vbiasconj)
         return vbias_plus, vbias_minus
     else:
-        AqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
-        BqPG = numpy.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        AqPG = xp.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
+        BqPG = xp.zeros((walkers.nwalkers, hamiltonian.nk, nisdf, 8), dtype=numpy.complex128)
         for iq in range(hamiltonian.nk):
             Glis = hamiltonian.q2G[iq]
             for iG in range(len(Glis)):
@@ -312,12 +314,12 @@ def construct_force_bias_kptisdf_batch_single_det(
                     ik_lis = hamiltonian.qG2k[(iq, iG)]
                     for ik in ik_lis:
                         ikpq = hamiltonian.ikpq_mat[ik, iq]
-                        AqPG[:, iq, :, iG] += numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfa_reshape[:, ik, :, ikpq, :]) + numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfb_reshape[:, ik, :, ikpq, :])
-                        BqPG[:, iq, :, iG] += numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfa_reshape[:, ikpq, :, ik, :]) + numpy.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfb_reshape[:, ikpq, :, ik, :])
+                        AqPG[:, iq, :, iG] += xp.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfa_reshape[:, ik, :, ikpq, :]) + xp.einsum("Pi, Pp, aip", rotweightsocc[:, :, ik].conj(), rotweights[:, :, ikpq], Ghalfb_reshape[:, ik, :, ikpq, :])
+                        BqPG[:, iq, :, iG] += xp.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfa_reshape[:, ikpq, :, ik, :]) + xp.einsum("Pi, Pp, aip", rotweightsocc[:, :, ikpq].conj(), rotweights[:, :, ik], Ghalfb_reshape[:, ikpq, :, ik, :])
                 except KeyError:
                     continue
-        vbias = numpy.einsum("XqPG, aqPG -> aXq", rcholM, AqPG)
-        vbiasconj = numpy.einsum("XqPG, aqPG -> aXq", rcholM, BqPG)
+        vbias = xp.einsum("XqPG, aqPG -> aXq", rcholM, AqPG)
+        vbiasconj = xp.einsum("XqPG, aqPG -> aXq", rcholM, BqPG)
         vbias_plus = .5 * 1j * (vbias + vbiasconj)
         vbias_minus = .5 * (vbias - vbiasconj)
         return vbias_plus, vbias_minus
@@ -465,25 +467,44 @@ def construct_force_bias_kptsymm_batch_single_det_chunked(hamiltonian, walkers, 
     vbias_batch_plus_send = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
     vbias_batch_minus_send = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
 
-    for iq in range(len(hamiltonian.Sset)):
-        iq_real = hamiltonian.Sset[iq]
-        for ik in range(hamiltonian.nk):
-            ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
-            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+    if config.get_option("use_gpu"):
+        for iq in range(len(hamiltonian.Sset)):
+            iq_real = hamiltonian.Sset[iq]
+            ikpq = hamiltonian.ikpq_mat[iq_real]
+            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb[:, :, :, ikpq, :], optimize=True))
+            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb[:, ikpq, :, :, :], optimize=True))
 
-            vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
-            vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
-        
-    for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
-        iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
-        for ik in range(hamiltonian.nk):
-            ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
-            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+            vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb[:, :, :, ikpq, :], optimize=True))
+            vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb[:, ikpq, :, :, :], optimize=True))
 
-            vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
-            vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+        for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
+            iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
+            ikpq = hamiltonian.ikpq_mat[iq_real]
+            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb[:, :, :, ikpq, :], optimize=True))
+            vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb[:, ikpq, :, :, :], optimize=True))   
+
+            vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * xp.sqrt(2) * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb[:, :, :, ikpq, :], optimize=True))
+            vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * xp.sqrt(2) * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb[:, ikpq, :, :, :], optimize=True))         
+    else:
+        for iq in range(len(hamiltonian.Sset)):
+            iq_real = hamiltonian.Sset[iq]
+            for ik in range(hamiltonian.nk):
+                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+            
+        for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
+            iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
+            for ik in range(hamiltonian.nk):
+                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
 
     receivers = handler.receivers
     for _ in range(handler.ssize - 1):
@@ -509,26 +530,45 @@ def construct_force_bias_kptsymm_batch_single_det_chunked(hamiltonian, walkers, 
         # prepare sending
         vbias_batch_plus_send = vbias_batch_plus_recv.copy()
         vbias_batch_minus_send = vbias_batch_minus_recv.copy()
+        if config.get_option("use_gpu"):
+            for iq in range(len(hamiltonian.Sset)):
+                iq_real = hamiltonian.Sset[iq]
+                ikpq = hamiltonian.ikpq_mat[iq_real]
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa_recv[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb_recv[:, :, :, ikpq, :], optimize=True))
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa_recv[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb_recv[:, ikpq, :, :, :], optimize=True))
 
-        for iq in range(len(hamiltonian.Sset)):
-            iq_real = hamiltonian.Sset[iq]
-            for ik in range(hamiltonian.nk):
-                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
-                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa_recv[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb_recv[:, :, :, ikpq, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa_recv[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb_recv[:, ikpq, :, :, :], optimize=True))
 
-                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
-                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
-            
-        for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
-            iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
-            for ik in range(hamiltonian.nk):
-                ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
-                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+            for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
+                iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
+                ikpq = hamiltonian.ikpq_mat[iq_real]
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa_recv[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb_recv[:, :, :, ikpq, :], optimize=True))
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa_recv[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb_recv[:, ikpq, :, :, :], optimize=True))
 
-                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * math.sqrt(2) * (numpy.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + numpy.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
-                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * math.sqrt(2) * (numpy.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + numpy.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * xp.sqrt(2) * (xp.einsum("kigp, akikp -> ag", trial._rchola_chunk[iq], Ghalfa_recv[:, :, :, ikpq, :], optimize=True) + xp.einsum("kigp, bkikp -> bg", trial._rcholb_chunk[iq], Ghalfb_recv[:, :, :, ikpq, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * xp.sqrt(2) * (xp.einsum("kpgi, akikp -> ag", trial._rcholbara_chunk[iq], Ghalfa_recv[:, ikpq, :, :, :], optimize=True) + xp.einsum("kpgi, bkikp -> bg", trial._rcholbarb_chunk[iq], Ghalfb_recv[:, ikpq, :, :, :], optimize=True))
+
+        else:
+            for iq in range(len(hamiltonian.Sset)):
+                iq_real = hamiltonian.Sset[iq]
+                for ik in range(hamiltonian.nk):
+                    ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
+                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+
+                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
+                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+                
+            for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
+                iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
+                for ik in range(hamiltonian.nk):
+                    ikpq = hamiltonian.ikpq_mat[iq_real, ik]
+                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
+                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+
+                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
+                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
         Ghalfa_send = Ghalfa_recv.copy()
         Ghalfb_send = Ghalfb_recv.copy()
 

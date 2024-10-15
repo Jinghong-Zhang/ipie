@@ -568,7 +568,7 @@ class AFQMC(AFQMCBase):
                 self.tortho += time.time() - start
             start = time.time()
 
-            self.propagator.propagate_walkers(self.walkers, self.hamiltonian, self.trial, eshift)
+            self.propagator.propagate_walkers(self.walkers, self.hamiltonian, self.trial, step, eshift)
 
             self.tprop_fbias = self.propagator.timer.tfbias
             self.tprop_ovlp = self.propagator.timer.tovlp

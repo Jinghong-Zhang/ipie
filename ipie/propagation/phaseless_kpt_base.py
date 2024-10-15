@@ -116,8 +116,8 @@ def construct_one_body_propagator(
     else:
         H1_numpy = H1
 
-    expH1_0 = xp.zeros((hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
-    expH1_1 = xp.zeros((hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
+    expH1_0 = numpy.zeros((hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
+    expH1_1 = numpy.zeros((hamiltonian.nk, hamiltonian.nbasis, hamiltonian.nbasis), dtype=numpy.complex128)
     for ik in range(hamiltonian.nk):
         expH1_0[ik] = scipy.linalg.expm(-0.5 * dt * H1_numpy[0, ik])
         expH1_1[ik] = scipy.linalg.expm(-0.5 * dt * H1_numpy[1, ik])
@@ -213,7 +213,7 @@ def construct_mean_field_shift(hamiltonian: KptComplexCholChunked, trial: KptSin
     trial.handler.scomm.Bcast(recvbuf, root=0)
     trial.handler.scomm.Bcast(recvbuf_conj, root=0)
 
-    mf_shift = xp.concatenate((recvbuf, recvbuf_conj))
+    mf_shift = numpy.concatenate((recvbuf, recvbuf_conj))
     return xp.array(mf_shift)
 
 @plum.dispatch
@@ -272,7 +272,6 @@ def construct_one_body_propagator(
         full_h1[0, ik, :, ik, :] = H1_numpy[0, ik]
         full_h1[1, ik, :, ik, :] = H1_numpy[1, ik]
     full_h1_mat = full_h1.reshape(2, hamiltonian.nk * hamiltonian.nbasis, hamiltonian.nk * hamiltonian.nbasis)
-    # print(f"norm of full_h1_mat = {xp.linalg.norm(full_h1_mat.ravel())}")
     expH1 = xp.array(
         [scipy.linalg.expm(-0.5 * dt * full_h1_mat[0]), scipy.linalg.expm(-0.5 * dt * full_h1_mat[1])]
     )
@@ -356,8 +355,6 @@ class PhaselessKptBase(ContinuousBase):
 
     def propagate_walkers_one_body(self, walkers, hamiltonian):
         start_time = time.time()
-        if walkers.mpi_handler.comm.rank == 0:
-            print("norm of expH1", xp.linalg.norm(self.expH1))
         phia_reshaped = walkers.phia.reshape(walkers.nwalkers, hamiltonian.nk, hamiltonian.nbasis, -1)
         phia = propagate_one_body_kpt(phia_reshaped, self.expH1[0])
         walkers.phia = phia.reshape(walkers.nwalkers, hamiltonian.nk * hamiltonian.nbasis, -1)
@@ -368,7 +365,7 @@ class PhaselessKptBase(ContinuousBase):
         synchronize()
         self.timer.tgemm += time.time() - start_time
 
-    def propagate_walkers_two_body(self, walkers, hamiltonian, trial):
+    def propagate_walkers_two_body(self, walkers, hamiltonian, step, trial):
         # optimal force bias
         xbar = xp.zeros((2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
 
@@ -394,6 +391,13 @@ class PhaselessKptBase(ContinuousBase):
         # Normally distributed auxiliary fields.
 
         xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.unique_nk * walkers.nwalkers).reshape(2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk)
+        # with h5py.File("auxiliary_fields.h5", "r") as f:
+        #     xi = f["xi"][step - 1]
+
+        # xi = xp.array(xi, dtype=numpy.complex128)
+        # if walkers.mpi_handler.comm.rank == 0:
+        #     print(f"xi norm = {xp.linalg.norm(xi.ravel())}")
+        #     print(f"xbar norm = {xp.linalg.norm(xbar.ravel())}")
 
         xshifted = xi - xbar
 
@@ -409,7 +413,7 @@ class PhaselessKptBase(ContinuousBase):
         # xp._default_memory_pool.free_all_blocks()
         return (cmf, cfb)
 
-    def propagate_walkers(self, walkers, hamiltonian, trial, eshift):
+    def propagate_walkers(self, walkers, hamiltonian, trial, step, eshift):
         synchronize()
         start_time = time.time()
         ovlp = trial.calc_greens_function(walkers)
@@ -421,7 +425,7 @@ class PhaselessKptBase(ContinuousBase):
         self.propagate_walkers_one_body(walkers, hamiltonian)
 
         # 2.b Apply two-body
-        (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, trial)
+        (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, step, trial)
 
         # 2.c Apply one-body
         self.propagate_walkers_one_body(walkers, hamiltonian)

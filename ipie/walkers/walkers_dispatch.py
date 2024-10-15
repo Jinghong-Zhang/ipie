@@ -170,6 +170,7 @@ def UHFWalkersTrial(
     nup: int,
     ndown: int,
     nbasis: int,
+    nk: int,
     nwalkers: int,
     mpi_handler: MPIHandler,
     verbose: bool = False,

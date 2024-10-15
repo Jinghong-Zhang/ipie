@@ -55,6 +55,25 @@ def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikp
     VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
     return VHS
 
+def construct_VHS_symm_gpu(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
+    VHS = xp.zeros((nk, nk, nwalkers, nbasis, nbasis), dtype=numpy.complex128)
+    x= .5 * (1j * xshifted[0] + xshifted[1])
+    xconj = .5 * (1j * xshifted[0] - xshifted[1])
+    ikpq_S = ikpq_mat[Sset]
+    idx_lenS = xp.arange(len(Sset))
+    kidx = xp.arange(nk)[:, None]
+    kpqidx = ikpq_S.T # k, q
+    VHS[kidx, kpqidx] += sqrt_dt * xp.einsum('wXq, Xkpqr->kqwpr', x[:, :, idx_lenS], chol[:, :, :, idx_lenS, :], optimize=True)
+    VHS[kpqidx, kidx] += sqrt_dt * xp.einsum('wXq, Xkpqr->kqwrp', xconj[:, :, idx_lenS], chol[:, :, :, idx_lenS, :].conj(), optimize=True)
+    ikpq_Q = ikpq_mat[Qplus]
+    idx_lenQ = xp.arange(len(Qplus))
+    kpqidx = ikpq_Q.T # k, q
+    VHS[kidx, kpqidx] += xp.sqrt(2) * sqrt_dt * xp.einsum('wXq, Xkpqr->kqwpr', x[:, :, idx_lenQ], chol[:, :, :, idx_lenQ, :], optimize=True)
+    VHS[kpqidx, kidx] += xp.sqrt(2) * sqrt_dt * xp.einsum('wXq, Xkpqr->kqwrp', xconj[:, :, idx_lenQ], chol[:, :, :, idx_lenQ, :].conj(), optimize=True)
+    VHS = VHS.transpose(2, 0, 3, 1, 4).copy()
+    VHS = VHS.reshape(nwalkers, nk * nbasis, nk * nbasis)
+    return VHS
+
 class PhaselessKptChol(PhaselessKptBase):
     """A class for performing phaseless propagation with k-point Hamiltonian."""
 
@@ -69,6 +88,8 @@ class PhaselessKptChol(PhaselessKptBase):
         synchronize()
         self.timer.tvhs += time.time() - start_time
         assert len(VHS.shape) == 3  # shape = nwalkers, nk * nbasis, nk * nbasis
+        if walkers.mpi_handler.comm.rank == 0:
+            print(f"VHS norm: {numpy.linalg.norm(VHS.ravel())}")
         start_time = time.time()
         if config.get_option("use_gpu"):
             walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)
@@ -121,9 +142,11 @@ class PhaselessKptChol(PhaselessKptBase):
         xshifted: [2, nwalkers, naux, unique_nk]
         """
         nwalkers = xshifted.shape[1]
-        VHS = construct_VHS_kernel_symm(hamiltonian.chol, self.sqrt_dt, xshifted, hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
         if config.get_option("use_gpu"):
             raise NotImplementedError
+        else:
+            VHS = construct_VHS_kernel_symm(hamiltonian.chol, self.sqrt_dt, xshifted, hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        
         return VHS
 
 class PhaselessKptCholChunked(PhaselessKptChol):
@@ -142,14 +165,16 @@ class PhaselessKptCholChunked(PhaselessKptChol):
     ) -> xp.ndarray:
         assert hamiltonian.chunked
         nwalkers = xshifted.shape[1]
-
+        
         xshifted_send = xshifted.copy()
         xshifted_recv = xp.zeros_like(xshifted)
 
         idxs = hamiltonian.chol_idxs_chunk
         chol_chunk = hamiltonian.chol_chunk.reshape(-1, hamiltonian.nk, hamiltonian.nbasis, hamiltonian.unique_nk, hamiltonian.nbasis)
-
-        VHS_send = construct_VHS_kernel_symm(chol_chunk, self.sqrt_dt, xshifted[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        if config.get_option("use_gpu"):
+            VHS_send = construct_VHS_symm_gpu(chol_chunk, self.sqrt_dt, xshifted[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        else:
+            VHS_send = construct_VHS_kernel_symm(chol_chunk, self.sqrt_dt, xshifted[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
         VHS_recv = xp.zeros_like(VHS_send)
 
         srank = self.mpi_handler.scomm.rank
@@ -168,8 +193,10 @@ class PhaselessKptCholChunked(PhaselessKptChol):
             req2.wait()
 
             self.mpi_handler.scomm.barrier()
-
-            VHS_send = construct_VHS_kernel_symm(chol_chunk, self.sqrt_dt, xshifted_recv[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+            if config.get_option("use_gpu"):
+                VHS_send = construct_VHS_symm_gpu(chol_chunk, self.sqrt_dt, xshifted_recv[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+            else:
+                VHS_send = construct_VHS_kernel_symm(chol_chunk, self.sqrt_dt, xshifted_recv[:, :, idxs, :], hamiltonian.nk, hamiltonian.nbasis, nwalkers, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
             VHS_send += VHS_recv
 
             xshifted_send = xshifted_recv.copy()
