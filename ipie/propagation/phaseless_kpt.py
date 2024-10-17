@@ -88,8 +88,6 @@ class PhaselessKptChol(PhaselessKptBase):
         synchronize()
         self.timer.tvhs += time.time() - start_time
         assert len(VHS.shape) == 3  # shape = nwalkers, nk * nbasis, nk * nbasis
-        if walkers.mpi_handler.comm.rank == 0:
-            print(f"VHS norm: {numpy.linalg.norm(VHS.ravel())}")
         start_time = time.time()
         if config.get_option("use_gpu"):
             walkers.phia = apply_exponential_batch(walkers.phia, VHS, self.exp_nmax)

@@ -365,7 +365,7 @@ class PhaselessKptBase(ContinuousBase):
         synchronize()
         self.timer.tgemm += time.time() - start_time
 
-    def propagate_walkers_two_body(self, walkers, hamiltonian, step, trial):
+    def propagate_walkers_two_body(self, walkers, hamiltonian, trial):
         # optimal force bias
         xbar = xp.zeros((2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
 
@@ -391,13 +391,6 @@ class PhaselessKptBase(ContinuousBase):
         # Normally distributed auxiliary fields.
 
         xi = xp.random.normal(0.0, 1.0, 2 * hamiltonian.nchol * hamiltonian.unique_nk * walkers.nwalkers).reshape(2, walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk)
-        # with h5py.File("auxiliary_fields.h5", "r") as f:
-        #     xi = f["xi"][step - 1]
-
-        # xi = xp.array(xi, dtype=numpy.complex128)
-        # if walkers.mpi_handler.comm.rank == 0:
-        #     print(f"xi norm = {xp.linalg.norm(xi.ravel())}")
-        #     print(f"xbar norm = {xp.linalg.norm(xbar.ravel())}")
 
         xshifted = xi - xbar
 
@@ -413,7 +406,7 @@ class PhaselessKptBase(ContinuousBase):
         # xp._default_memory_pool.free_all_blocks()
         return (cmf, cfb)
 
-    def propagate_walkers(self, walkers, hamiltonian, trial, step, eshift):
+    def propagate_walkers(self, walkers, hamiltonian, trial, eshift):
         synchronize()
         start_time = time.time()
         ovlp = trial.calc_greens_function(walkers)
@@ -425,7 +418,7 @@ class PhaselessKptBase(ContinuousBase):
         self.propagate_walkers_one_body(walkers, hamiltonian)
 
         # 2.b Apply two-body
-        (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, step, trial)
+        (cmf, cfb) = self.propagate_walkers_two_body(walkers, hamiltonian, trial)
 
         # 2.c Apply one-body
         self.propagate_walkers_one_body(walkers, hamiltonian)
@@ -443,7 +436,6 @@ class PhaselessKptBase(ContinuousBase):
 
     def update_weight(self, walkers, ovlp, ovlp_new, cfb, cmf, eshift):
         ovlp_ratio = ovlp_new / ovlp
-        # print(f"ovlp_ratio = {ovlp_ratio}")
         hybrid_energy = -(xp.log(ovlp_ratio) + cfb + cmf) / self.dt
         hybrid_energy = self.apply_bound_hybrid(hybrid_energy, eshift)
         importance_function = xp.exp(

@@ -213,7 +213,6 @@ class PhaselessBase(ContinuousBase):
         self.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
         nchol = hamiltonian.nchol
         xbar = -self.sqrt_dt * (1j * self.vbias - self.mf_shift)
-        # print(f"xbar at gamma point = {numpy.sum(xbar[0, 2496:2688])}")
         synchronize()
         self.timer.tfbias += time.time() - start_time
 
