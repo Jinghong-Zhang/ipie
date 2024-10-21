@@ -5,10 +5,11 @@ import numpy
 from numba import jit
 
 from ipie.estimators.local_energy import local_energy_G
-from ipie.estimators.kernels import exchange_reduction_kpt
+from ipie.estimators.kernels.gpu.exchange_kpt import exx_kpt_kernel
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 from ipie.config import config
+from ipie.utils.backend import get_device_memory
 
 from ipie.systems.generic import Generic
 from ipie.hamiltonians.kpt_chunked import KptComplexCholChunked
@@ -243,84 +244,115 @@ def kpt_symmchol_ecoul_kernel_batch_uhf_gpu(rchola, rcholb, rcholbara, rcholbarb
         rcholb_q = rcholb[iq]
         rcholbara_q = rcholbara[iq]
         rcholbarb_q = rcholbarb[iq]
-        X[iq] = xp.sqrt(2) * (xp.einsum("xkip, kkwip -> xw", rchola_q, Ga_kpq, optimize=True) + xp.einsum("xkip, kkwip -> xw", rcholb_q, Gb_kpq, optimize=True))
-        Xbar[iq] = xp.sqrt(2) * (xp.einsum("xkqj, kkwjq -> xw", rcholbara_q, GaT_kpq, optimize=True) + xp.einsum("xkqj, kkwjq -> xw", rcholbarb_q, GbT_kpq, optimize=True))
+        X[iq] = xp.sqrt(2) * (xp.einsum("kixp, kkwip -> xw", rchola_q, Ga_kpq, optimize=True) + xp.einsum("kixp, kkwip -> xw", rcholb_q, Gb_kpq, optimize=True))
+        Xbar[iq] = xp.sqrt(2) * (xp.einsum("ksxj, kkwjs -> xw", rcholbara_q, GaT_kpq, optimize=True) + xp.einsum("ksxj, kkwjs -> xw", rcholbarb_q, GbT_kpq, optimize=True))
         #TODO: possibly write a kernel for this
 
     ecoul = xp.einsum("qxw, qxw -> w", X, Xbar, optimize=True)
 
     return 0.5 * ecoul / nk
 
-def kpt_symmchol_exx_kernel_batch_gpu(rchola_chunk, rcholbara_chunk, Ghalfa, GhalfaT, kpq_mat, Sset, Qplus, buff):
+def kpt_symmchol_exx_kernel_batch_gpu(rchola_chunk, rcholbara_chunk, Ghalfa, kpq_mat, Sset, Qplus, max_mem=8.0):
     # shape of rchola: (nq, nk, nocc, naux, nbsf) (q, k, i, gamma, p)
     # shape of rcholbara: (nq, nk, nbsf, naux, nocc) (q, k, p, gamma, i)
     # shape of Ghalf: (nk, nk, nw, nocc, nbsf)
     # shape of GhalfT: (nk, nk, nbsf, nocc, nw)
     # buff size: (nchol_chunk, nocc, nwalkers, nocc)
+    unique_q = xp.concatenate((Sset, Qplus))
+    kpq_res_q = kpq_mat[unique_q]
+
     nwalkers = Ghalfa.shape[2]
-    unique_nq = len(Sset) + len(Qplus)
+    nSset = len(Sset)
+    nQplus = len(Qplus)
     nocc = rchola_chunk.shape[2]
     nchol = rchola_chunk.shape[3]
     nk = rchola_chunk.shape[1]
-    exx = xp.zeros((nwalkers), dtype=numpy.complex128)
-    nchol_chunk_size = buff.shape[0]
-    # print(nchol_chunk_size)
-    nchol_chunks = ceil(nchol / nchol_chunk_size)
-    nchol_left = nchol
-    # print(f"nchol_chunks: {nchol_chunks}, nchol_left: {nchol_left}")
-    _buff = buff.ravel()
-    for i in range(nchol_chunks):
-        nchol_chunk = min(nchol_chunk_size, nchol_left)
-        nchol_left -= nchol_chunk
-        chol_sls = slice(i * nchol_chunk_size, i * nchol_chunk_size + nchol_chunk)
-        # print(f"nchol_chunk: {nchol_chunk}, chol_sls: {chol_sls}")
-        for iq in range(len(Sset)):
-            iq_real = Sset[iq]
-            for ik in range(nk):
-                for ikprime in range(nk):
-                    ikpr_pq = kpq_mat[iq_real, ikprime]
-                    ik_pq = kpq_mat[iq_real, ik]
-                    size = nwalkers * nchol_chunk * nocc * nocc
-                    # alpha-alpha
-                    rchola_chunk_ik = rchola_chunk[iq, ik][:, chol_sls, :].copy()
-                    Lkq = rchola_chunk_ik.reshape(nchol_chunk * nocc, -1)
-                    rcholbara_chunk_ikprime = rcholbara_chunk[iq, ikprime][:, chol_sls, :].copy()
-                    Lbarkpq = rcholbara_chunk_ikprime.reshape(-1, nchol_chunk * nocc)
-                    Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq].reshape(-1, nocc * nwalkers)
-                    Ghalf_k_kp = Ghalfa[ik, ikprime].reshape(nwalkers * nocc, -1)
-                    Txij = _buff[:size].reshape((nchol_chunk * nocc, nwalkers * nocc))
-                    # T1 = Lkq @ Ghalf_kpq_kprpq # (naux * nocc, nocc * nwalkers)
-                    xp.dot(Lkq, Ghalf_kpq_kprpq, out=Txij)
-                    T1 = Txij.copy().reshape(nocc, nchol_chunk, nocc, nwalkers)
-                    Txij = _buff[:size].reshape((nwalkers * nocc, nchol_chunk * nocc))
-                    # T2 = Ghalf_k_kp @ Lbarkpq # (nwalkers * nocc, naux * nocc)
-                    xp.dot(Ghalf_k_kp, Lbarkpq, out=Txij)
-                    T2 = Txij.copy().reshape(nwalkers, nocc, nchol_chunk, nocc)
-                    exchange_reduction_kpt(T1, T2, exx)
 
-        for iq in range(len(Sset), unique_nq):
-            iq_real = Qplus[iq - len(Sset)]
-            for ik in range(nk):
-                for ikprime in range(nk):
-                    ikpr_pq = kpq_mat[iq_real, ikprime]
-                    ik_pq = kpq_mat[iq_real, ik]
-                    size = nwalkers * nchol_chunk * nocc * nocc
-                    # alpha-alpha
-                    rchola_chunk_ik = rchola_chunk[iq, ik][:, chol_sls, :].copy()
-                    Lkq = xp.sqrt(2) * rchola_chunk_ik.reshape(nchol_chunk * nocc, -1)
-                    rcholbara_chunk_ikprime = rcholbara_chunk[iq, ikprime][:, chol_sls, :].copy()
-                    Lbarkpq = xp.sqrt(2) * rcholbara_chunk_ikprime.reshape(-1, nchol_chunk * nocc)
-                    Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq].reshape(-1, nocc * nwalkers)
-                    Ghalf_k_kp = Ghalfa[ik,ikprime].reshape(nwalkers * nocc, -1)
-                    Txij = _buff[:size].reshape((nchol_chunk * nocc, nwalkers * nocc))
-                    # T1 = Lkq @ Ghalf_kpq_kprpq # (naux * nocc, nocc * nwalkers)
-                    xp.dot(Lkq, Ghalf_kpq_kprpq, out=Txij)
-                    T1 = Txij.copy().reshape(nchol_chunk, nocc, nocc, nwalkers)
-                    Txij = _buff[:size].reshape((nwalkers * nocc, nchol_chunk * nocc))
-                    # T2 = Ghalf_k_kp @ Lbarkpq # (nwalkers * nocc, naux * nocc)
-                    xp.dot(Ghalf_k_kp, Lbarkpq, out=Txij)
-                    T2 = Txij.copy().reshape(nwalkers, nocc, nchol_chunk, nocc)
-                    exchange_reduction_kpt(T1, T2, exx)
+    exx = xp.zeros((nwalkers), dtype=numpy.complex128)
+
+    kcube_Sset = xp.arange(len(Sset) * nk * nk)
+    kcube_Qplus = xp.arange(len(Qplus) * nk * nk) + len(Sset) * nk * nk
+
+    mem_needed = 16 * nwalkers * nocc * nocc * nchol * 2 * nSset * nk * nk / (1024.0**3.0)
+    num_nk_chunks_Sset = max(1, ceil(mem_needed / max_mem))
+    nk_chunk_Sset_size = ceil(len(kcube_Sset) / num_nk_chunks_Sset)
+    nkcube_left = len(kcube_Sset)
+    if len(kcube_Sset) > 0:
+        for i in range(num_nk_chunks_Sset):
+            nk_chunk = min(nkcube_left, nk_chunk_Sset_size)
+            nkcube_left -= nk_chunk
+            k_sls = kcube_Sset[i * nk_chunk_Sset_size: i * nk_chunk_Sset_size + nk_chunk]
+            exx += exx_kpt_kernel(rchola_chunk, rcholbara_chunk, Ghalfa, k_sls, kpq_res_q)
+
+    mem_needed = 16 * nwalkers * nocc * nocc * nchol * 2 * nQplus * nk * nk / (1024.0**3.0)
+    num_nk_chunks_Qplus = max(1, ceil(mem_needed / max_mem))
+    nk_chunk_Qplus_size = ceil(len(kcube_Qplus) / num_nk_chunks_Qplus)
+    nkcube_left = len(kcube_Qplus)
+    if len(kcube_Qplus) > 0:
+        for i in range(num_nk_chunks_Qplus):
+            nk_chunk = min(nkcube_left, nk_chunk_Qplus_size)
+            nkcube_left -= nk_chunk
+            k_sls = kcube_Qplus[i * nk_chunk_Qplus_size: i * nk_chunk_Qplus_size + nk_chunk]
+            exx += 2. * exx_kpt_kernel(rchola_chunk, rcholbara_chunk, Ghalfa, k_sls, kpq_res_q)
+    # exx = xp.zeros((nwalkers), dtype=numpy.complex128)
+    # nchol_chunk_size = buff.shape[0]
+    # # print(nchol_chunk_size)
+    # nchol_chunks = ceil(nchol / nchol_chunk_size)
+    # nchol_left = nchol
+    # # print(f"nchol_chunks: {nchol_chunks}, nchol_left: {nchol_left}")
+    # _buff = buff.ravel()
+    # for i in range(nchol_chunks):
+    #     nchol_chunk = min(nchol_chunk_size, nchol_left)
+    #     nchol_left -= nchol_chunk
+    #     chol_sls = slice(i * nchol_chunk_size, i * nchol_chunk_size + nchol_chunk)
+    #     # print(f"nchol_chunk: {nchol_chunk}, chol_sls: {chol_sls}")
+    #     for iq in range(len(Sset)):
+    #         iq_real = Sset[iq]
+    #         for ik in range(nk):
+    #             for ikprime in range(nk):
+    #                 ikpr_pq = kpq_mat[iq_real, ikprime]
+    #                 ik_pq = kpq_mat[iq_real, ik]
+    #                 size = nwalkers * nchol_chunk * nocc * nocc
+    #                 # alpha-alpha
+    #                 rchola_chunk_ik = rchola_chunk[iq, ik][:, chol_sls, :].copy()
+    #                 Lkq = rchola_chunk_ik.reshape(nchol_chunk * nocc, -1)
+    #                 rcholbara_chunk_ikprime = rcholbara_chunk[iq, ikprime][:, chol_sls, :].copy()
+    #                 Lbarkpq = rcholbara_chunk_ikprime.reshape(-1, nchol_chunk * nocc)
+    #                 Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq].reshape(-1, nocc * nwalkers)
+    #                 Ghalf_k_kp = Ghalfa[ik, ikprime].reshape(nwalkers * nocc, -1)
+    #                 Txij = _buff[:size].reshape((nchol_chunk * nocc, nwalkers * nocc))
+    #                 # T1 = Lkq @ Ghalf_kpq_kprpq # (naux * nocc, nocc * nwalkers)
+    #                 xp.dot(Lkq, Ghalf_kpq_kprpq, out=Txij)
+    #                 T1 = Txij.copy().reshape(nocc, nchol_chunk, nocc, nwalkers)
+    #                 Txij = _buff[:size].reshape((nwalkers * nocc, nchol_chunk * nocc))
+    #                 # T2 = Ghalf_k_kp @ Lbarkpq # (nwalkers * nocc, naux * nocc)
+    #                 xp.dot(Ghalf_k_kp, Lbarkpq, out=Txij)
+    #                 T2 = Txij.copy().reshape(nwalkers, nocc, nchol_chunk, nocc)
+    #                 exchange_reduction_kpt(T1, T2, exx)
+
+    #     for iq in range(len(Sset), unique_nq):
+    #         iq_real = Qplus[iq - len(Sset)]
+    #         for ik in range(nk):
+    #             for ikprime in range(nk):
+    #                 ikpr_pq = kpq_mat[iq_real, ikprime]
+    #                 ik_pq = kpq_mat[iq_real, ik]
+    #                 size = nwalkers * nchol_chunk * nocc * nocc
+    #                 # alpha-alpha
+    #                 rchola_chunk_ik = rchola_chunk[iq, ik][:, chol_sls, :].copy()
+    #                 Lkq = xp.sqrt(2) * rchola_chunk_ik.reshape(nchol_chunk * nocc, -1)
+    #                 rcholbara_chunk_ikprime = rcholbara_chunk[iq, ikprime][:, chol_sls, :].copy()
+    #                 Lbarkpq = xp.sqrt(2) * rcholbara_chunk_ikprime.reshape(-1, nchol_chunk * nocc)
+    #                 Ghalf_kpq_kprpq = GhalfaT[ik_pq, ikpr_pq].reshape(-1, nocc * nwalkers)
+    #                 Ghalf_k_kp = Ghalfa[ik,ikprime].reshape(nwalkers * nocc, -1)
+    #                 Txij = _buff[:size].reshape((nchol_chunk * nocc, nwalkers * nocc))
+    #                 # T1 = Lkq @ Ghalf_kpq_kprpq # (naux * nocc, nocc * nwalkers)
+    #                 xp.dot(Lkq, Ghalf_kpq_kprpq, out=Txij)
+    #                 T1 = Txij.copy().reshape(nchol_chunk, nocc, nocc, nwalkers)
+    #                 Txij = _buff[:size].reshape((nwalkers * nocc, nchol_chunk * nocc))
+    #                 # T2 = Ghalf_k_kp @ Lbarkpq # (nwalkers * nocc, naux * nocc)
+    #                 xp.dot(Ghalf_k_kp, Lbarkpq, out=Txij)
+    #                 T2 = Txij.copy().reshape(nwalkers, nocc, nchol_chunk, nocc)
+    #                 exchange_reduction_kpt(T1, T2, exx)
     return - 0.5 * exx / nk
 
 def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
@@ -328,7 +360,7 @@ def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
     hamiltonian: KptComplexCholChunked,
     walker_batch: UHFWalkers,
     trial: KptSingleDet,
-    max_mem: float = 2.0
+    max_mem: float = 8.0
 ):
     """Compute local energy for walker batch (all walkers at once).
 
@@ -360,8 +392,6 @@ def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
 
     ghalfa = walker_batch.Ghalfa.reshape(nwalkers, nk, nalpha, nk, nbasis)
     ghalfb = walker_batch.Ghalfb.reshape(nwalkers, nk, nbeta, nk, nbasis)
-    ghalfaT = walker_batch.Ghalfa.transpose(0, 2, 1).reshape(nwalkers, nk, nbasis, nk, nalpha)
-    ghalfbT = walker_batch.Ghalfb.transpose(0, 2, 1).reshape(nwalkers, nk, nbasis, nk, nbeta)
 
     diagGhalfa = xp.zeros((nwalkers, nk, nalpha, nbasis), dtype=numpy.complex128)
     diagGhalfb = xp.zeros((nwalkers, nk, nbeta, nbasis), dtype=numpy.complex128)
@@ -375,26 +405,20 @@ def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
     e1b /= nk
     e1b += hamiltonian.ecore
 
-    ghalfa = ghalfa.transpose(1, 3, 0, 2, 4).copy() # nk, nk, nw, nalpha, nbasis
-    ghalfb = ghalfb.transpose(1, 3, 0, 2, 4).copy() # nk, nk, nw, nbeta, nbasis
-    ghalfaTcoul = ghalfaT.transpose(1, 3, 0, 2, 4).copy() # nk, nk, nw, nbasis, nalpha
-    ghalfbTcoul = ghalfbT.transpose(1, 3, 0, 2, 4).copy() # nk, nk, nw, nbasis, nbeta
-    ghalfaTx = ghalfaT.transpose(1, 3, 2, 4, 0).copy() # nk, nk, nbasis, nalpha, nw
-    ghalfbTx = ghalfbT.transpose(1, 3, 2, 4, 0).copy() # nk, nk, nbasis, nbeta, nw
+    # ghalfa = ghalfa.transpose(1, 3, 0, 2, 4).copy() # nk, nk, nw, nalpha, nbasis
+    # ghalfb = ghalfb.transpose(1, 3, 0, 2, 4).copy() # nk, nk, nw, nbeta, nbasis
+    # ghalfaTx = ghalfa.transpose(3, 1, 4, 2, 0).copy() # nk, nk, nbasis, nalpha, nw
+    # ghalfbTx = ghalfb.transpose(3, 1, 4, 2, 0).copy() # nk, nk, nbasis, nbeta, nw
+    ghalfa_send = ghalfa.transpose(1, 3, 0, 2, 4).copy()
+    ghalfb_send = ghalfb.transpose(1, 3, 0, 2, 4).copy()
+    # ghalfaTx_send = ghalfa.transpose(3, 1, 4, 2, 0).copy()
+    # ghalfbTx_send = ghalfb.transpose(3, 1, 4, 2, 0).copy()
 
-    ghalfa_send = ghalfa.copy()
-    ghalfb_send = ghalfb.copy()
-    ghalfaTcoul_send = ghalfaTcoul.copy()
-    ghalfbTcoul_send = ghalfbTcoul.copy()
-    ghalfaTx_send = ghalfaTx.copy()
-    ghalfbTx_send = ghalfbTx.copy()
+    ghalfa_recv = xp.zeros_like(ghalfa_send)
+    ghalfb_recv = xp.zeros_like(ghalfb_send)
 
-    ghalfa_recv = xp.zeros_like(ghalfa)
-    ghalfb_recv = xp.zeros_like(ghalfb)
-    ghalfaTcoul_recv = xp.zeros_like(ghalfaTcoul)
-    ghalfbTcoul_recv = xp.zeros_like(ghalfbTcoul)
-    ghalfaTx_recv = xp.zeros_like(ghalfaTx)
-    ghalfbTx_recv = xp.zeros_like(ghalfbTx)
+    # ghalfaTx_recv = xp.zeros_like(ghalfaTx_send)
+    # ghalfbTx_recv = xp.zeros_like(ghalfbTx_send)
 
     handler = walker_batch.mpi_handler
     senders = handler.senders
@@ -405,21 +429,20 @@ def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
     rcholbara_chunk = trial._rcholbara_chunk
     rcholbarb_chunk = trial._rcholbarb_chunk
 
-    # buffer for low on GPU memory usage
-    max_nchol = max(trial._rchola_chunk.shape[3], trial._rcholb_chunk.shape[3])
-    max_nocc = max(nalpha, nbeta)
-    mem_needed = 16 * nwalkers * max_nocc * max_nocc * max_nchol / (1024.0**3.0)
-    num_chunks = max(1, ceil(mem_needed / max_mem))
-    chunk_size = ceil(max_nchol / num_chunks)
-    buff = xp.zeros(shape=(chunk_size, nwalkers * max_nocc * max_nocc), dtype=numpy.complex128)
+    # # buffer for low on GPU memory usage
+    # max_nchol = max(trial._rchola_chunk.shape[3], trial._rcholb_chunk.shape[3])
+    # max_nocc = max(nalpha, nbeta)
+    # mem_needed = 16 * nwalkers * max_nocc * max_nocc * max_nchol / (1024.0**3.0)
+    # num_chunks = max(1, ceil(mem_needed / max_mem))
+    # chunk_size = ceil(max_nchol / num_chunks)
+    # buff = xp.zeros(shape=(chunk_size, nwalkers * max_nocc * max_nocc), dtype=numpy.complex128)
 
     ecoul_send = kpt_symmchol_ecoul_kernel_batch_uhf_gpu(
-        rchola_chunk, rcholb_chunk, rcholbara_chunk, rcholbarb_chunk, ghalfa, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus
+        rchola_chunk, rcholb_chunk, rcholbara_chunk, rcholbarb_chunk, ghalfa_send, ghalfb_send, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus
     )
 
-    exx_send = kpt_symmchol_exx_kernel_batch_gpu(rchola_chunk, rcholbara_chunk, ghalfa, ghalfaTx, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, buff) 
-    exx_send += kpt_symmchol_exx_kernel_batch_gpu(rcholb_chunk, rcholbarb_chunk, ghalfb, ghalfbTx, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, buff) 
-
+    exx_send = kpt_symmchol_exx_kernel_batch_gpu(rchola_chunk, rcholbara_chunk, ghalfa_send, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, max_mem) 
+    exx_send += kpt_symmchol_exx_kernel_batch_gpu(rcholb_chunk, rcholbarb_chunk, ghalfb_send, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, max_mem) 
     exx_recv = exx_send.copy()
     ecoul_recv = ecoul_send.copy()
 
@@ -428,22 +451,18 @@ def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
             if handler.srank == isend:
                 handler.scomm.Send(ghalfa_send, dest=receivers[isend], tag=1)
                 handler.scomm.Send(ghalfb_send, dest=receivers[isend], tag=2)
-                handler.scomm.Send(ghalfaTcoul_send, dest=receivers[isend], tag=3)
-                handler.scomm.Send(ghalfbTcoul_send, dest=receivers[isend], tag=4)
-                handler.scomm.Send(ghalfaTx_send, dest=receivers[isend], tag=5)
-                handler.scomm.Send(ghalfbTx_send, dest=receivers[isend], tag=6)
-                handler.scomm.Send(ecoul_send, dest=receivers[isend], tag=7)
-                handler.scomm.Send(exx_send, dest=receivers[isend], tag=8)
+                # handler.scomm.Send(ghalfaTx_send, dest=receivers[isend], tag=3)
+                # handler.scomm.Send(ghalfbTx_send, dest=receivers[isend], tag=4)
+                handler.scomm.Send(ecoul_send, dest=receivers[isend], tag=3)
+                handler.scomm.Send(exx_send, dest=receivers[isend], tag=4)
             elif handler.srank == receivers[isend]:
                 sender = numpy.where(receivers == handler.srank)[0]
                 handler.scomm.Recv(ghalfa_recv, source=sender, tag=1)
                 handler.scomm.Recv(ghalfb_recv, source=sender, tag=2)
-                handler.scomm.Recv(ghalfaTcoul_recv, source=sender, tag=3)
-                handler.scomm.Recv(ghalfbTcoul_recv, source=sender, tag=4)
-                handler.scomm.Recv(ghalfaTx_recv, source=sender, tag=5)
-                handler.scomm.Recv(ghalfbTx_recv, source=sender, tag=6)
-                handler.scomm.Recv(ecoul_recv, source=sender, tag=7)
-                handler.scomm.Recv(exx_recv, source=sender, tag=8)
+                # handler.scomm.Recv(ghalfaTx_recv, source=sender, tag=3)
+                # handler.scomm.Recv(ghalfbTx_recv, source=sender, tag=4)
+                handler.scomm.Recv(ecoul_recv, source=sender, tag=3)
+                handler.scomm.Recv(exx_recv, source=sender, tag=4)
         handler.scomm.barrier()
 
     # prepare sending
@@ -452,14 +471,12 @@ def local_energy_kpt_single_det_uhf_batch_chunked_gpu(
         rchola_chunk, rcholb_chunk, rcholbara_chunk, rcholbarb_chunk, ghalfa_recv, ghalfb_recv, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus
     )
         exx_send = exx_recv.copy()
-        exx_send += kpt_symmchol_exx_kernel_batch_gpu(rchola_chunk, rcholbara_chunk, ghalfa_recv, ghalfaTx_recv, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, buff)
-        exx_send += kpt_symmchol_exx_kernel_batch_gpu(rcholb_chunk, rcholbarb_chunk, ghalfb_recv, ghalfbTx_recv, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, buff)
+        exx_send += kpt_symmchol_exx_kernel_batch_gpu(rchola_chunk, rcholbara_chunk, ghalfa_recv, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, max_mem)
+        exx_send += kpt_symmchol_exx_kernel_batch_gpu(rcholb_chunk, rcholbarb_chunk, ghalfb_recv, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus, max_mem)
         ghalfa_send = ghalfa_recv.copy()
         ghalfb_send = ghalfb_recv.copy()
-        ghalfaTcoul_send = ghalfaTcoul_recv.copy()
-        ghalfbTcoul_send = ghalfbTcoul_recv.copy()
-        ghalfaTx_send = ghalfaTx_recv.copy()
-        ghalfbTx_send = ghalfbTx_recv.copy()
+        # ghalfaTx_send = ghalfaTx_recv.copy()
+        # ghalfbTx_send = ghalfbTx_recv.copy()
 
 
     if len(senders) > 1:

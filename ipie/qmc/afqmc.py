@@ -23,6 +23,8 @@ import time
 import uuid
 from typing import Dict, Optional, Tuple
 
+
+from ipie.utils.backend import get_device_memory
 from ipie.config import config
 from ipie.estimators.estimator_base import EstimatorBase
 from ipie.estimators.handler import EstimatorHandler
@@ -542,9 +544,8 @@ class AFQMC(AFQMCBase):
         # self.distribute_hamiltonian()
         self.copy_to_gpu()
 
-        # from ipie.utils.backend import get_device_memory
-        # used_bytes, total_bytes = get_device_memory()
-        # print(f"# after distribute {comm.rank}: using {used_bytes/1024**3} GB out of {total_bytes/1024**3} GB memory on GPU")
+        used_bytes, total_bytes = get_device_memory()
+        print(f"# after distribute {self.mpi_handler.comm.rank}: using {used_bytes/1024**3} GB out of {total_bytes/1024**3} GB memory on GPU")
         self.setup_estimators(estimator_filename, additional_estimators=additional_estimators)
 
         # TODO: This magic value of 2 is pretty much never controlled on input.

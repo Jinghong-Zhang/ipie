@@ -500,11 +500,11 @@ def construct_force_bias_kptsymm_batch_single_det_chunked(hamiltonian, walkers, 
             iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
             for ik in range(hamiltonian.nk):
                 ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
-                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
+                vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
 
-                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
-                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * xp.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb[:, ik, :, ikpq, :], optimize=True))
+                vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * xp.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb[:, ikpq, :, ik, :], optimize=True))
 
     receivers = handler.receivers
     for _ in range(handler.ssize - 1):
@@ -564,11 +564,11 @@ def construct_force_bias_kptsymm_batch_single_det_chunked(hamiltonian, walkers, 
                 iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
                 for ik in range(hamiltonian.nk):
                     ikpq = hamiltonian.ikpq_mat[iq_real, ik]
-                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
-                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
+                    vbias_batch_plus_send[:, chol_idxs_chunk, iq] += .5j * xp.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
 
-                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * math.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
-                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * math.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
+                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] += .5 * xp.sqrt(2) * (xp.einsum("igp, aip -> ag", trial._rchola_chunk[iq, ik], Ghalfa_recv[:, ik, :, ikpq, :], optimize=True) + xp.einsum("igp, bip -> bg", trial._rcholb_chunk[iq, ik], Ghalfb_recv[:, ik, :, ikpq, :], optimize=True))
+                    vbias_batch_minus_send[:, chol_idxs_chunk, iq] -= .5 * xp.sqrt(2) * (xp.einsum("pgi, aip -> ag", trial._rcholbara_chunk[iq, ik], Ghalfa_recv[:, ikpq, :, ik, :], optimize=True) + xp.einsum("pgi, bip -> bg", trial._rcholbarb_chunk[iq, ik], Ghalfb_recv[:, ikpq, :, ik, :], optimize=True))
         Ghalfa_send = Ghalfa_recv.copy()
         Ghalfb_send = Ghalfb_recv.copy()
 

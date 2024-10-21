@@ -53,6 +53,8 @@ from ipie.utils.backend import arraylib as xp
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.walkers.ghf_walkers import GHFWalkers
 
+from ipie.utils.backend import get_device_memory
+
 
 @plum.dispatch
 def local_energy(

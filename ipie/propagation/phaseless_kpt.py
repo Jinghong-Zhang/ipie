@@ -3,13 +3,6 @@ import time
 
 import numpy
 
-from ipie.utils.pack_numba import unpack_VHS_batch
-
-try:
-    from ipie.utils.pack_numba_gpu import unpack_VHS_batch_gpu
-except:
-    pass
-
 import plum
 
 from ipie.config import config
@@ -25,6 +18,7 @@ from numba import jit
 
 @jit(nopython=True, fastmath=True)
 def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
+
     VHS = numpy.zeros((nk, nk, nwalkers, nbasis * nbasis), dtype=numpy.complex128)
     for iq in range(len(Sset)):
         iq_real = Sset[iq]
@@ -66,7 +60,7 @@ def construct_VHS_symm_gpu(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_m
     VHS[kidx, kpqidx] += sqrt_dt * xp.einsum('wXq, Xkpqr->kqwpr', x[:, :, idx_lenS], chol[:, :, :, idx_lenS, :], optimize=True)
     VHS[kpqidx, kidx] += sqrt_dt * xp.einsum('wXq, Xkpqr->kqwrp', xconj[:, :, idx_lenS], chol[:, :, :, idx_lenS, :].conj(), optimize=True)
     ikpq_Q = ikpq_mat[Qplus]
-    idx_lenQ = xp.arange(len(Qplus))
+    idx_lenQ = xp.arange(len(Qplus)) + len(Sset)
     kpqidx = ikpq_Q.T # k, q
     VHS[kidx, kpqidx] += xp.sqrt(2) * sqrt_dt * xp.einsum('wXq, Xkpqr->kqwpr', x[:, :, idx_lenQ], chol[:, :, :, idx_lenQ, :], optimize=True)
     VHS[kpqidx, kidx] += xp.sqrt(2) * sqrt_dt * xp.einsum('wXq, Xkpqr->kqwrp', xconj[:, :, idx_lenQ], chol[:, :, :, idx_lenQ, :].conj(), optimize=True)
