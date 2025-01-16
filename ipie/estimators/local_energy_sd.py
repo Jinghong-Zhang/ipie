@@ -317,6 +317,82 @@ def local_energy_single_det_uhf(
 
     return energy
 
+def ecorrcoul_lno_real_rchol_uhf(chola_pinned, chola, Ga_pinned, Ga, Gb_pinned, Gb):
+    """
+    chola_pinned: [X, I, a]
+    chola: [X, j, b]
+    Ga_pinned: [w, I, a]
+    Ga: [w, j, b]
+    Gb_pinned:  [w, I, a]
+    Gb: [w, j, b]
+    """
+    # sort out cupy later
+    zeros = numpy.zeros
+    dot = numpy.dot
+    nwalkers = Ga.shape[0]
+    Ga_pinned_real = Ga_pinned.real.copy()
+    Ga_pinned_imag = Ga_pinned.imag.copy()
+    Gb_pinned_real = Gb_pinned.real.copy()
+    Gb_pinned_imag = Gb_pinned.imag.copy()
+    
+    # X = rchola.dot(Ghalfa_batch_real.T) + 1.0j * rchola.dot(Ghalfa_batch_imag.T)  # naux x nwalkers
+    X1 = numpy.einsum("wIa, xIa->wxI", Ga_pinned_real, chola_pinned) + 1.0j * numpy.einsum(
+        "wIa,xIa->wxI", Ga_pinned_imag, chola_pinned)
+    X1 += numpy.einsum("wIa, xIa->wxI", Gb_pinned_real, chola_pinned) + 1.0j * numpy.einsum(
+        "wIa,xIa->wxI", Gb_pinned_imag, chola_pinned)
+
+    # X1 shape: [w,x,I]
+    chola = chola.reshape(chola.shape[0], -1)
+    Ga = Ga.reshape(Ga.shape[0], -1)
+    Gb = Gb.reshape(Gb.shape[0], -1)
+    Ga_real = Ga.real.copy()
+    Ga_imag = Ga.imag.copy()
+    Gb_real = Gb.real.copy()
+    Gb_imag = Gb.imag.copy()
+    X2 = chola.dot(Ga_real.T) + 1.0j * chola.dot(Ga_imag.T)
+    X2 += chola.dot(Gb_real.T) + 1.0j * chola.dot(Gb_imag.T)
+    X2 = X2.T.copy()
+    # X2 shape: [w,x]
+    nocc_pinned = chola_pinned.shape[1]
+    ecoul = zeros((nwalkers, nocc_pinned), dtype=numpy.complex128)
+    naux = chola.shape[0]
+    nwalkers = Ga.shape[0]
+    for iw in range(nwalkers):
+        ecoul[iw] += X2[iw].dot(X1[iw])
+    ecoul *= 0.5
+    return ecoul
+
+@jit(nopython=True, fastmath=True)
+def ecorrxx_lno_real_rchol(chola_pinned, chola, Ga_pinned, Ga):
+    """
+    chola_pinned: [X, I, b]
+    chola: [X, j, a]
+    Ga_pinned: [w, I, a]
+    Ga: [w, j, b]
+    """
+    # sort out cupy later
+    zeros = numpy.zeros
+    dot = numpy.dot
+    naux = chola.shape[0]
+    nwalkers = Ga.shape[0]
+    ngroup = chola_pinned.shape[1]
+    exx = zeros((nwalkers, ngroup), dtype=numpy.complex128)
+    for iw in range(nwalkers):
+        Gpinned_real = Ga_pinned[iw].real.copy()
+        Gpinned_imag = Ga_pinned[iw].imag.copy()
+        Greal = Ga[iw].real.copy()
+        Gimag = Ga[iw].imag.copy()
+        for jx in range(naux):
+            for I in range(ngroup):
+                T_pinned = numpy.outer(chola_pinned[jx, I], Gpinned_real) + 1j * numpy.outer(chola_pinned[jx, I], Gpinned_imag) # iw, jx, I, b, a
+                T = Greal.T.dot(chola[jx]) + 1j * Gimag.T.dot(chola[jx]) # iw, jx, b, a
+                T_pinned_reshape = T_pinned.ravel()
+                T = T.ravel()
+                exx[iw, I] += T_pinned_reshape.dot(T)
+    exx *= 0.5
+    return exx
+
+
 
 def local_energy_single_det_batch(system, hamiltonian, walkers, trial):
     """Compute local energy for walker batch (all walkers at once).
