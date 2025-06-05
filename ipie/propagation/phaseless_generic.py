@@ -24,8 +24,6 @@ from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.walkers.ghf_walkers import GHFWalkers
 from typing import Union
 
-from cuquantum.bindings import cutensornet
-from cuquantum.tensornet import NetworkOptions, contract
 
 class PhaselessGeneric(PhaselessBase):
     """A class for performing phaseless propagation with real, generic, hamiltonian."""
@@ -143,17 +141,15 @@ class PhaselessISDF(PhaselessBase):
                 start_time = time.time()
                 Temp = xp.zeros(walkers.phia.shape, dtype=walkers.phia.dtype)
                 xp.copyto(Temp, walkers.phia)
-                handle = cutensornet.create()
                 for n in range(1, self.exp_nmax + 1):
-                    Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp, handle) / n  # matmul use much less GPU memory than einsum
+                    Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp) / n  # matmul use much less GPU memory than einsum
                     walkers.phia += Temp
                 del Temp
                 if walkers.ndown > 0 and not walkers.rhf:
                     Temp = xp.zeros(walkers.phib.shape, dtype=walkers.phib.dtype)
                     xp.copyto(Temp, walkers.phib)
-                    handle = cutensornet.create()
                     for n in range(1, self.exp_nmax + 1):
-                        Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp, handle) / n  # matmul use much less GPU memory than einsum
+                        Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp) / n  # matmul use much less GPU memory than einsum
                         walkers.phib += Temp
                     del Temp
                 synchronize()
@@ -201,10 +197,8 @@ class PhaselessISDF(PhaselessBase):
             Lx_real = hamiltonian.cholM @ xshifted.real
             Lx_imag = hamiltonian.cholM @ xshifted.imag
             nwalkers = xshifted.shape[-1]
-            handle = cutensornet.create()
-            network_opts = NetworkOptions(handle=handle, memory_limit=0.8 * xp.cuda.Device().mem_info[0])
-            VHS_real = contract('Pw, Pp, Pr -> wpr', Lx_real, hamiltonian.cgto, hamiltonian.cgto, options=network_opts)
-            VHS_imag = contract('Pw, Pp, Pr -> wpr', Lx_imag, hamiltonian.cgto, hamiltonian.cgto, options=network_opts)
+            VHS_real = xp.einsum('Pw, Pp, Pr -> wpr', Lx_real, hamiltonian.cgto, hamiltonian.cgto, optimize=True)
+            VHS_imag = xp.einsum('Pw, Pp, Pr -> wpr', Lx_imag, hamiltonian.cgto, hamiltonian.cgto, optimize=True)
             VHS = xp.zeros((nwalkers, hamiltonian.nbasis, hamiltonian.nbasis), dtype=xp.complex128)
             VHS.real = VHS_real
             VHS.imag = VHS_imag
@@ -213,9 +207,7 @@ class PhaselessISDF(PhaselessBase):
             xp._default_memory_pool.free_all_blocks()
         elif isinstance(hamiltonian, GenericComplexISDF):
             Lx = hamiltonian.cholM @ xshifted
-            handle = cutensornet.create()
-            network_opts = NetworkOptions(handle=handle, memory_limit=0.8 * xp.cuda.Device().mem_info[0])
-            VHS = contract('Pw, Pp, Pr -> wpr', Lx, hamiltonian.cgto, hamiltonian.cgto, options=network_opts)
+            VHS = xp.einsum('Pw, Pp, Pr -> wpr', Lx, hamiltonian.cgto, hamiltonian.cgto, optimize=True)
             VHS = self.isqrt_dt * VHS
             synchronize()
             xp._default_memory_pool.free_all_blocks()
@@ -312,9 +304,8 @@ class PhaselessGenericChunked(PhaselessGeneric):
         synchronize()
         return VHS
 
-def apply_VHS_to_phi_batch(cgto, Lx, phi, handle):
-    network_opts = NetworkOptions(handle=handle, memory_limit=0.8 * xp.cuda.Device().mem_info[0])
-    outphi = contract('Pw, Pp, Pr, wri -> wpi', Lx, cgto, cgto, phi, handle=handle, options=network_opts)
+def apply_VHS_to_phi_batch(cgto, Lx, phi):
+    outphi = xp.einsum('Pw, Pp, Pr, wri -> wpi', Lx, cgto, cgto, phi, optimize=True)
     xp._default_memory_pool.free_all_blocks()
     return outphi
 
@@ -349,17 +340,15 @@ class PhaselessISDFChunked(PhaselessBase):
                 start_time = time.time()
                 Temp = xp.zeros(walkers.phia.shape, dtype=walkers.phia.dtype)
                 xp.copyto(Temp, walkers.phia)
-                handle = cutensornet.create()
                 for n in range(1, self.exp_nmax + 1):
-                    Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp, handle) / n  # matmul use much less GPU memory than einsum
+                    Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp) / n  # matmul use much less GPU memory than einsum
                     walkers.phia += Temp
                 del Temp
                 if walkers.ndown > 0 and not walkers.rhf:
                     Temp = xp.zeros(walkers.phib.shape, dtype=walkers.phib.dtype)
                     xp.copyto(Temp, walkers.phib)
-                    handle = cutensornet.create()
                     for n in range(1, self.exp_nmax + 1):
-                        Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp, handle) / n  # matmul use much less GPU memory than einsum
+                        Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Temp) / n  # matmul use much less GPU memory than einsum
                         walkers.phib += Temp
                     del Temp
                 synchronize()
@@ -452,10 +441,8 @@ class PhaselessISDFChunked(PhaselessBase):
             self.mpi_handler.scomm.barrier()
 
             nwalkers = xshifted.shape[-1]
-            handle = cutensornet.create()
-            network_opts = NetworkOptions(handle=handle, memory_limit=0.8 * xp.cuda.Device().mem_info[0])
-            VHS_real = contract('Pw, Pp, Pr -> wpr', Lx_recv_real, hamiltonian.cgto, hamiltonian.cgto, options=network_opts)
-            VHS_imag = contract('Pw, Pp, Pr -> wpr', Lx_recv_imag, hamiltonian.cgto, hamiltonian.cgto, options=network_opts)
+            VHS_real = xp.einsum('Pw, Pp, Pr -> wpr', Lx_recv_real, hamiltonian.cgto, hamiltonian.cgto, optimize=True)
+            VHS_imag = xp.einsum('Pw, Pp, Pr -> wpr', Lx_recv_imag, hamiltonian.cgto, hamiltonian.cgto, optimize=True)
             VHS = xp.zeros((nwalkers, hamiltonian.nbasis, hamiltonian.nbasis), dtype=xp.complex128)
             VHS.real = VHS_real
             VHS.imag = VHS_imag

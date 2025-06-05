@@ -19,8 +19,6 @@
 import numpy
 from numba import jit
 from math import ceil, sqrt
-from cuquantum.bindings import cutensornet
-from cuquantum.tensornet import NetworkOptions, contract
 
 from ipie.estimators.local_energy import local_energy_G
 from ipie.estimators.kernels import exchange_reduction
@@ -1084,31 +1082,25 @@ def local_energy_single_det_batch_gpu(system, hamiltonian, walkers, trial, max_m
 def ecoul_kernel_batch_real_isdf_uhf_gpu(MPQ, halfrot_cgtoa, halfrot_cgtob, cgto, Ghalfa_batch, Ghalfb_batch):
     nwalkers = Ghalfa_batch.shape[0]
     ecoul = xp.zeros(nwalkers, dtype=numpy.complex128)
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
 
-    v_wP_real = contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.real, options=network_opts) + contract('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.real, options=network_opts)
-    v_wP_imag = contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.imag, options=network_opts) + contract('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.imag, options=network_opts)
+    v_wP_real = xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.real, optimize=True) + xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.real, optimize=True)
+    v_wP_imag = xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.imag, optimize=True) + xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.imag, optimize=True)
     v_wP = xp.zeros_like(v_wP_real, dtype=xp.complex128)
     v_wP.real = v_wP_real
     v_wP.imag = v_wP_imag
     ecoul += xp.sum((v_wP @ MPQ) * v_wP, axis=1)
-    cutensornet.destroy(handle)
     return .5 * ecoul
 
 def ecoul_kernel_batch_real_isdf_rhf_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch):
     nwalkers = Ghalfa_batch.shape[0]
     ecoul = xp.zeros(nwalkers, dtype=numpy.complex128)
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
 
-    v_wP_real = 2.0 * contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.real, options=network_opts)
-    v_wP_imag = 2.0 * contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.imag, options=network_opts)
+    v_wP_real = 2.0 * xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.real, optimize=True)
+    v_wP_imag = 2.0 * xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.imag, optimize=True)
     v_wP = xp.zeros_like(v_wP_real, dtype=xp.complex128)
     v_wP.real = v_wP_real
     v_wP.imag = v_wP_imag
     ecoul += xp.sum((v_wP @ MPQ) * v_wP, axis=1)
-    cutensornet.destroy(handle)
     return .5 * ecoul
 
 def exx_kernel_batch_real_isdf_uhf_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch):

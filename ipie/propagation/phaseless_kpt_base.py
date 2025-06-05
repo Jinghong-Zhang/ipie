@@ -12,8 +12,6 @@ import plum
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
 from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm, KptISDF
 from ipie.hamiltonians.kpt_chunked import KptComplexCholChunked
-from cuquantum.bindings import cutensornet
-from cuquantum.tensornet import NetworkOptions, contract
 from typing import Union
 
 try:
@@ -236,10 +234,7 @@ def construct_mean_field_shift(hamiltonian: KptISDF, trial: KptSingleDet):
     Gcharge = (trial.G[0] + trial.G[1])
     # convert to complex128
     Gcharge = Gcharge.astype(numpy.complex128)
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
-    mf_shift = contract("kPp, kPr, Pg, kpr -> g", cgto.conj(), cgto, diagcholM, Gcharge, options=network_opts)
-    cutensornet.destroy(handle)
+    mf_shift = xp.einsum("kPp, kPr, Pg, kpr -> g", cgto.conj(), cgto, diagcholM, Gcharge, optimize=True)
     return xp.array(mf_shift)
 
 @plum.dispatch
@@ -267,10 +262,7 @@ def construct_one_body_propagator(
     # to cupy array
     cholpcholconj = xp.array(cholpcholconj)
     cgto = xp.array(cgto)
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
-    shift = .5 * contract("kPp, kPq, Pg, g -> kpq", cgto.conj(), cgto, cholpcholconj[igamma], mf_shift, options=network_opts)
-    cutensornet.destroy(handle)
+    shift = .5 * xp.einsum("kPp, kPq, Pg, g -> kpq", cgto.conj(), cgto, cholpcholconj[igamma], mf_shift, optimize=True)
     H1 = hamiltonian.h1e_mod + xp.array([shift, shift])
     if hasattr(H1, "get"):
         H1_numpy = H1.get()

@@ -28,8 +28,6 @@ from ipie.estimators.kernels import exchange_reduction
 
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
-from cuquantum.bindings import cutensornet
-from cuquantum.tensornet import NetworkOptions, contract
 
 # Local energy routies for chunked (distributed) integrals. Distributed here
 # means over MPI processes with information typically residing on different
@@ -376,16 +374,13 @@ def ecoul_kernel_batch_real_isdf_chunk_rhf_gpu(cholM_chunk, halfrot_cgtoa, cgto,
         nx_chunk = min(nisdfx_left, chunk_size)
         nisdfx_left -= nx_chunk
         slices_x.append(slice(i_chunk * chunk_size, i_chunk * chunk_size + nx_chunk))
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
-    v_wP = 2. * contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch, options=network_opts)
+    v_wP = 2. * xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch)
     for slicex in slices_x:
         v_wP_chunkx = v_wP[:, slicex].copy()
         for slicey in slices_x:
             v_wP_chunky = v_wP[:, slicey].copy()
             MPQ = cholM_chunk[slicey] @ cholM_chunk[slicex].T
             ecoul += xp.sum((v_wP_chunky @ MPQ) * v_wP_chunkx, axis=1)
-    cutensornet.destroy(handle)
     return .5 * ecoul
 
 def ecoul_kernel_batch_real_isdf_chunk_uhf_gpu(cholM_chunk, halfrot_cgtoa, halfrot_cgtob, cgto, Ghalfa_batch, Ghalfb_batch):
@@ -404,10 +399,8 @@ def ecoul_kernel_batch_real_isdf_chunk_uhf_gpu(cholM_chunk, halfrot_cgtoa, halfr
         nx_chunk = min(nisdfx_left, chunk_size)
         nisdfx_left -= nx_chunk
         slices_x.append(slice(i_chunk * chunk_size, i_chunk * chunk_size + nx_chunk))
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
-    v_wP_real = contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.real, options=network_opts) + contract('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.real, options=network_opts)
-    v_wP_imag = contract('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.imag, options=network_opts) + contract('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.imag, options=network_opts)
+    v_wP_real = xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.real, optimize=True) + xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.real, optimize=True)
+    v_wP_imag = xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtoa, cgto, Ghalfa_batch.imag, optimize=True) + xp.einsum('Pi, Pp, wip -> wP', halfrot_cgtob, cgto, Ghalfb_batch.imag, optimize=True)
     v_wP = xp.zeros_like(v_wP_real, dtype=xp.complex128)
     v_wP.real = v_wP_real
     v_wP.imag = v_wP_imag
@@ -417,7 +410,6 @@ def ecoul_kernel_batch_real_isdf_chunk_uhf_gpu(cholM_chunk, halfrot_cgtoa, halfr
             v_wP_chunky = v_wP[:, slicey].copy()
             MPQ = cholM_chunk[slicey] @ cholM_chunk[slicex].T
             ecoul += xp.sum((v_wP_chunky @ MPQ) * v_wP_chunkx, axis=1)
-    cutensornet.destroy(handle)
     return .5 * ecoul
 
 def exx_kernel_batch_real_isdf_chunk_uhf_gpu(cholM_chunk, halfrot_cgtoa, cgto, Ghalfa_batch):

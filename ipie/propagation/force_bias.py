@@ -23,9 +23,8 @@ import plum
 from numba import jit
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
-from ipie.utils.contract_gf_cgto import slice_gf_kpq_k_qlis, slice_cgto_kpq
+from ipie.utils.contract_gf_cgto import slice_gf_kpq_k_qlis, slice_cgto_kpq, contract_cgto_gf_batch
 from math import ceil
-from cuquantum import cutensornet, NetworkOptions
 
 from ipie.config import config
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol, GenericRealISDF
@@ -181,14 +180,11 @@ def construct_force_bias_batch_single_det(
     """
     if walkers.rhf:
         Ghalfa = walkers.Ghalfa
-        handle = cutensornet.create()
-        network_opts = NetworkOptions(handle=handle)
-        vbias_batch_real = 2.0 * cutensornet.contract("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.real, options=network_opts) 
-        vbias_batch_imag = 2.0 * cutensornet.contract("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.imag, options=network_opts) 
+        vbias_batch_real = 2.0 * xp.einsum("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.real, optimize=True) 
+        vbias_batch_imag = 2.0 * xp.einsum("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.imag, optimize=True) 
         vbias_batch = xp.empty((walkers.nwalkers, hamiltonian.nchol), dtype=Ghalfa.dtype)
         vbias_batch.real = vbias_batch_real
         vbias_batch.imag = vbias_batch_imag
-        cutensornet.destroy(handle)
         synchronize()
 
         return vbias_batch
@@ -196,14 +192,11 @@ def construct_force_bias_batch_single_det(
     else:
         Ghalfa = walkers.Ghalfa
         Ghalfb = walkers.Ghalfb
-        handle = cutensornet.create()
-        network_opts = NetworkOptions(handle=handle)
-        vbias_batch_real = cutensornet.contract("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.real, options=network_opts) + cutensornet.contract("Pi, Pr, Pg, wir -> wg", rcgtob, hamiltonian.cgto, hamiltonian.cholM, Ghalfb.real, options=network_opts)
-        vbias_batch_imag = cutensornet.contract("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.imag, options=network_opts) + cutensornet.contract("Pi, Pr, Pg, wir -> wg", rcgtob, hamiltonian.cgto, hamiltonian.cholM, Ghalfb.imag, options=network_opts)
+        vbias_batch_real = xp.einsum("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.real, optimize=True) + xp.einsum("Pi, Pr, Pg, wir -> wg", rcgtob, hamiltonian.cgto, hamiltonian.cholM, Ghalfb.real, optimize=True)
+        vbias_batch_imag = xp.einsum("Pi, Pr, Pg, wir -> wg", rcgtoa, hamiltonian.cgto, hamiltonian.cholM, Ghalfa.imag, optimize=True) + xp.einsum("Pi, Pr, Pg, wir -> wg", rcgtob, hamiltonian.cgto, hamiltonian.cholM, Ghalfb.imag, optimize=True)
         vbias_batch = xp.empty((walkers.nwalkers, hamiltonian.nchol), dtype=Ghalfa.dtype)
         vbias_batch.real = vbias_batch_real
         vbias_batch.imag = vbias_batch_imag
-        cutensornet.destroy(handle)
         synchronize()
         return vbias_batch
 
@@ -443,8 +436,6 @@ def construct_force_bias_kptisdf_batch_single_det(
             num_nq_chunks_Sset = max(1, ceil(mem_cost_Sset / max_mem))
             nq_chunk_Sset_size = ceil(len(hamiltonian.Sset) / num_nq_chunks_Sset)
             nq_left = len(hamiltonian.Sset)
-            handle = cutensornet.create()
-            network_opts = NetworkOptions(handle=handle)
             if len(hamiltonian.Sset) > 0:
                 for i in range(num_nq_chunks_Sset):
                     nq_chunk = min(nq_left, nq_chunk_Sset_size)
@@ -453,12 +444,14 @@ def construct_force_bias_kptisdf_batch_single_det(
                     kpq_slice = hamiltonian.ikpq_mat[q_sls]
                     ga_kmq = slice_gf_kpq_k_qlis(Ghalfa_reshape, q_sls, hamiltonian.ikmq_mat) # q, k, w, p, r
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
+                    # X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    X_wPa = contract_cgto_gf_batch(rcgtoa_kmq, hamiltonian.halfrot_cgto, ga_kmq)
                     ga_kpq = slice_gf_kpq_k_qlis(Ghalfa_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
-                    Y_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, options=network_opts)
+                    # Y_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, optimize=True)
+                    Y_wPa = contract_cgto_gf_batch(rcgtoa_kpq, hamiltonian.halfrot_cgto, ga_kpq)
                     L_q = hamiltonian.cholM[i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk]
-                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 2.0j * cutensornet.contract("qwP, qPg -> wgq", X_wPa, L_q, options=network_opts)
+                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 2.0j * xp.einsum("qwP, qPg -> wgq", X_wPa, L_q, optimize=True)
 
 
             num_nq_chunks_Qplus = max(1, ceil(mem_cost_Qplus / max_mem))
@@ -474,14 +467,15 @@ def construct_force_bias_kptisdf_batch_single_det(
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
                     ga_kpq = slice_gf_kpq_k_qlis(Ghalfa_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
-                    Y_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, options=network_opts)
+                    # X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    # Y_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, optimize=True)
+                    X_wPa = contract_cgto_gf_batch(rcgtoa_kmq, hamiltonian.halfrot_cgto, ga_kmq)
+                    Y_wPa = contract_cgto_gf_batch(rcgtoa_kpq, hamiltonian.halfrot_cgto, ga_kpq)
                     L_q = hamiltonian.cholM[i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)]
-                    v1 = cutensornet.contract("qwP, qPg -> wgq", X_wPa, L_q, options=network_opts)
-                    v2 = cutensornet.contract("qwP, qPg -> wgq", Y_wPa, L_q.conj(), options=network_opts)
+                    v1 = xp.einsum("qwP, qPg -> wgq", X_wPa, L_q, optimize=True)
+                    v2 = xp.einsum("qwP, qPg -> wgq", Y_wPa, L_q.conj(), optimize=True)
                     vbias_plus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += 1j * xp.sqrt(2) * (v1 + v2)
                     vbias_minus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += 1. * xp.sqrt(2) * (v1 - v2)
-            cutensornet.destroy(handle)
             synchronize()
             return vbias_plus, vbias_minus
         else:
@@ -502,8 +496,6 @@ def construct_force_bias_kptisdf_batch_single_det(
             num_nq_chunks_Sset = max(1, ceil(mem_cost_Sset / max_mem))
             nq_chunk_Sset_size = ceil(len(hamiltonian.Sset) / num_nq_chunks_Sset)
             nq_left = len(hamiltonian.Sset)
-            handle = cutensornet.create()
-            network_opts = NetworkOptions(handle=handle)
             if len(hamiltonian.Sset) > 0:
                 for i in range(num_nq_chunks_Sset):
                     nq_chunk = min(nq_left, nq_chunk_Sset_size)
@@ -514,16 +506,20 @@ def construct_force_bias_kptisdf_batch_single_det(
                     gb_kmq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikmq_mat)
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
                     rcgtob_kmq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikmq_mat, q_sls)
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
-                    X_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, options=network_opts)
+                    # X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    # X_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, optimize=True)
+                    X_wPa = contract_cgto_gf_batch(rcgtoa_kmq, hamiltonian.halfrot_cgto, ga_kmq)
+                    X_wPb = contract_cgto_gf_batch(rcgtob_kmq, hamiltonian.halfrot_cgto, gb_kmq)
                     ga_kpq = slice_gf_kpq_k_qlis(Ghalfa_reshape, q_sls, hamiltonian.ikpq_mat)
                     gb_kpq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
                     rcgtob_kpq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikpq_mat, q_sls)
-                    Y_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, options=network_opts)
-                    Y_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kpq.conj(), hamiltonian.halfrot_cgto, gb_kpq, options=network_opts)
+                    # Y_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, optimize=True)
+                    # Y_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kpq.conj(), hamiltonian.halfrot_cgto, gb_kpq, optimize=True)
+                    Y_wPa = contract_cgto_gf_batch(rcgtoa_kpq, hamiltonian.halfrot_cgto, ga_kpq)
+                    Y_wPb = contract_cgto_gf_batch(rcgtob_kpq, hamiltonian.halfrot_cgto, gb_kpq)
                     L_q = hamiltonian.cholM[i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk]
-                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 1j * cutensornet.contract("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, options=network_opts)
+                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 1j * xp.einsum("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, optimize=True)
 
 
             num_nq_chunks_Qplus = max(1, ceil(mem_cost_Qplus / max_mem))
@@ -543,16 +539,19 @@ def construct_force_bias_kptisdf_batch_single_det(
                     gb_kpq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
                     rcgtob_kpq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikpq_mat, q_sls)
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
-                    X_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, options=network_opts)
-                    Y_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, options=network_opts)
-                    Y_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kpq.conj(), hamiltonian.halfrot_cgto, gb_kpq, options=network_opts)
+                    # X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    # X_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, optimize=True)
+                    # Y_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, optimize=True)
+                    # Y_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kpq.conj(), hamiltonian.halfrot_cgto, gb_kpq, optimize=True)
+                    X_wPa = contract_cgto_gf_batch(rcgtoa_kmq, hamiltonian.halfrot_cgto, ga_kmq)
+                    X_wPb = contract_cgto_gf_batch(rcgtob_kmq, hamiltonian.halfrot_cgto, gb_kmq)
+                    Y_wPa = contract_cgto_gf_batch(rcgtoa_kpq, hamiltonian.halfrot_cgto, ga_kpq)
+                    Y_wPb = contract_cgto_gf_batch(rcgtob_kpq, hamiltonian.halfrot_cgto, gb_kpq)
                     L_q = hamiltonian.cholM[i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)]
-                    v1 = cutensornet.contract("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, options=network_opts)
-                    v2 = cutensornet.contract("qwP, qPg -> wgq", Y_wPa + Y_wPb, L_q.conj(), options=network_opts)
+                    v1 = xp.einsum("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, optimize=True)
+                    v2 = xp.einsum("qwP, qPg -> wgq", Y_wPa + Y_wPb, L_q.conj(), optimize=True)
                     vbias_plus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += .5j * xp.sqrt(2) * (v1 + v2)
                     vbias_minus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += .5 * xp.sqrt(2) * (v1 - v2)
-            cutensornet.destroy(handle)
             synchronize()
             return vbias_plus, vbias_minus
             # vbias_plus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
@@ -869,8 +868,6 @@ def construct_force_bias_kptisdf_batch_single_det(
             num_nq_chunks_Sset = max(1, ceil(mem_cost_Sset / max_mem))
             nq_chunk_Sset_size = ceil(len(hamiltonian.Sset) / num_nq_chunks_Sset)
             nq_left = len(hamiltonian.Sset)
-            handle = cutensornet.create()
-            network_opts = NetworkOptions(handle=handle)
             if len(hamiltonian.Sset) > 0:
                 for i in range(num_nq_chunks_Sset):
                     nq_chunk = min(nq_left, nq_chunk_Sset_size)
@@ -879,9 +876,9 @@ def construct_force_bias_kptisdf_batch_single_det(
                     kpq_slice = hamiltonian.ikpq_mat[q_sls]
                     ga_kmq = slice_gf_kpq_k_qlis(Ghalfa_reshape, q_sls, hamiltonian.ikmq_mat) # q, k, w, p, r
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
+                    X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
                     L_q = hamiltonian.cholM[i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk]
-                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 2.0j * cutensornet.contract("qwP, qPg -> wgq", X_wPa, L_q, options=network_opts)
+                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 2.0j * xp.einsum("qwP, qPg -> wgq", X_wPa, L_q, optimize=True)
 
 
             num_nq_chunks_Qplus = max(1, ceil(mem_cost_Qplus / max_mem))
@@ -897,14 +894,13 @@ def construct_force_bias_kptisdf_batch_single_det(
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
                     ga_kpq = slice_gf_kpq_k_qlis(Ghalfa_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
-                    Y_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, options=network_opts)
+                    X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    Y_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, optimize=True)
                     L_q = hamiltonian.cholM[i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)]
-                    v1 = cutensornet.contract("qwP, qPg -> wgq", X_wPa, L_q, options=network_opts)
-                    v2 = cutensornet.contract("qwP, qPg -> wgq", Y_wPa, L_q.conj(), options=network_opts)
+                    v1 = xp.einsum("qwP, qPg -> wgq", X_wPa, L_q, optimize=True)
+                    v2 = xp.einsum("qwP, qPg -> wgq", Y_wPa, L_q.conj(), optimize=True)
                     vbias_plus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += 1j * xp.sqrt(2) * (v1 + v2)
                     vbias_minus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += 1. * xp.sqrt(2) * (v1 - v2)
-            cutensornet.destroy(handle)
             synchronize()
             return vbias_plus, vbias_minus
         else:
@@ -925,7 +921,6 @@ def construct_force_bias_kptisdf_batch_single_det(
             num_nq_chunks_Sset = max(1, ceil(mem_cost_Sset / max_mem))
             nq_chunk_Sset_size = ceil(len(hamiltonian.Sset) / num_nq_chunks_Sset)
             nq_left = len(hamiltonian.Sset)
-            handle = cutensornet.create()
             if len(hamiltonian.Sset) > 0:
                 for i in range(num_nq_chunks_Sset):
                     nq_chunk = min(nq_left, nq_chunk_Sset_size)
@@ -936,11 +931,10 @@ def construct_force_bias_kptisdf_batch_single_det(
                     gb_kmq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikmq_mat)
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
                     rcgtob_kmq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikmq_mat, q_sls)
-                    network_opts = NetworkOptions(handle=handle, memory_limit=0.8 * xp.cuda.Device().mem_info[0])
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
-                    X_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, options=network_opts)
+                    X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    X_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, optimize=True)
                     L_q = hamiltonian.cholM[i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk]
-                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 1j * cutensornet.contract("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, options=network_opts)
+                    vbias_plus[:, :, i * nq_chunk_Sset_size: i * nq_chunk_Sset_size + nq_chunk] += 1j * xp.einsum("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, optimize=True)
 
 
             num_nq_chunks_Qplus = max(1, ceil(mem_cost_Qplus / max_mem))
@@ -960,64 +954,17 @@ def construct_force_bias_kptisdf_batch_single_det(
                     gb_kpq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
                     rcgtob_kpq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikpq_mat, q_sls)
-                    network_opts = NetworkOptions(handle=handle, memory_limit=0.8 * xp.cuda.Device().mem_info[0])
-                    X_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, options=network_opts)
-                    X_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, options=network_opts)
-                    Y_wPa = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, options=network_opts)
-                    Y_wPb = cutensornet.contract("qkPp, kPr, qkwpr -> qwP", rcgtob_kpq.conj(), hamiltonian.halfrot_cgto, gb_kpq, options=network_opts)
+                    X_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kmq.conj(), hamiltonian.halfrot_cgto, ga_kmq, optimize=True)
+                    X_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kmq.conj(), hamiltonian.halfrot_cgto, gb_kmq, optimize=True)
+                    Y_wPa = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtoa_kpq.conj(), hamiltonian.halfrot_cgto, ga_kpq, optimize=True)
+                    Y_wPb = xp.einsum("qkPp, kPr, qkwpr -> qwP", rcgtob_kpq.conj(), hamiltonian.halfrot_cgto, gb_kpq, optimize=True)
                     L_q = hamiltonian.cholM[i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)]
-                    v1 = cutensornet.contract("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, options=network_opts)
-                    v2 = cutensornet.contract("qwP, qPg -> wgq", Y_wPa + Y_wPb, L_q.conj(), options=network_opts)
+                    v1 = xp.einsum("qwP, qPg -> wgq", X_wPa + X_wPb, L_q, optimize=True)
+                    v2 = xp.einsum("qwP, qPg -> wgq", Y_wPa + Y_wPb, L_q.conj(), optimize=True)
                     vbias_plus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += .5j * xp.sqrt(2) * (v1 + v2)
                     vbias_minus[:, :, i * nq_chunk_Qplus_size + len(hamiltonian.Sset): i * nq_chunk_Qplus_size + nq_chunk + len(hamiltonian.Sset)] += .5 * xp.sqrt(2) * (v1 - v2)
-            cutensornet.destroy(handle)
             synchronize()
             return vbias_plus, vbias_minus
-            # vbias_plus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
-            # vbias_minus = xp.zeros((walkers.nwalkers, hamiltonian.nchol, hamiltonian.unique_nk), dtype=numpy.complex128)
-            # # ghalf shape: nwalkers, nk, nup, nk, nbsf
-            # Ghalfa_reshape = walkers.Ghalfa.reshape(walkers.nwalkers, hamiltonian.nk, trial.nalpha, hamiltonian.nk, hamiltonian.nbasis)
-            # Ghalfb_reshape = walkers.Ghalfb.reshape(walkers.nwalkers, hamiltonian.nk, trial.nbeta, hamiltonian.nk, hamiltonian.nbasis)
-            # handle = cutensornet.create()
-            # network_opts = NetworkOptions(handle=handle)
-            # for iq in range(len(hamiltonian.Sset)):
-            #     iq_real = hamiltonian.Sset[iq]
-            #     ikpq = hamiltonian.ikpq_mat[iq_real]
-            #     ga_kpq = slice_gf_kpq_k_given_q(Ghalfa_reshape, iq_real, hamiltonian.ikpq_mat)
-            #     gb_kpq = slice_gf_kpq_k_given_q(Ghalfb_reshape, iq_real, hamiltonian.ikpq_mat)
-            #     cgto_kpq = hamiltonian.halfrot_cgto[ikpq]
-            #     X_wPa = contract_gf_cgto12_k_kpq(ga_kpq, trial._rcgtoa, cgto_kpq, iq_real, network_opts)
-            #     X_wPb = contract_gf_cgto12_k_kpq(gb_kpq, trial._rcgtob, cgto_kpq, iq_real, network_opts)
-            #     L_q = hamiltonian.cholM[iq]
-            #     vbias_plus[:, :, iq] += 1j * (X_wPa + X_wPb).dot(L_q)
-            #     vbias_minus[:, :, iq] += xp.zeros_like(vbias_plus[:, :, iq])
-
-            # for iq in range(len(hamiltonian.Sset), len(hamiltonian.Sset) + len(hamiltonian.Qplus)):
-            #     iq_real = hamiltonian.Qplus[iq - len(hamiltonian.Sset)]
-            #     ikpq = hamiltonian.ikpq_mat[iq_real]
-            #     cgto_kpq = hamiltonian.halfrot_cgto[ikpq]
-            #     rcgtoa_kpq = trial._rcgtoa[ikpq]
-            #     rcgtob_kpq = trial._rcgtob[ikpq]
-            #     ga_kpq_k = slice_gf_kpq_k_given_q(Ghalfa_reshape, iq_real, hamiltonian.ikpq_mat)
-            #     Y_wPa = contract_gf_cgto12_kpq_k(ga_kpq_k, rcgtoa_kpq, hamiltonian.halfrot_cgto, iq_real, network_opts)
-            #     # del ga_kpq_k
-            #     gb_kpq_k = slice_gf_kpq_k_given_q(Ghalfb_reshape, iq_real, hamiltonian.ikpq_mat)
-            #     Y_wPb = contract_gf_cgto12_kpq_k(gb_kpq_k, rcgtob_kpq, hamiltonian.halfrot_cgto, iq_real, network_opts)
-            #     # del gb_kpq_k
-            #     ga_k_kpq = slice_gf_k_kpq_given_q(Ghalfa_reshape, iq_real, hamiltonian.ikpq_mat)
-            #     X_wPa = contract_gf_cgto12_k_kpq(ga_k_kpq, trial._rcgtoa, cgto_kpq, iq_real, network_opts)
-            #     # del ga_k_kpq
-            #     gb_k_kpq = slice_gf_k_kpq_given_q(Ghalfb_reshape, iq_real, hamiltonian.ikpq_mat)
-            #     X_wPb = contract_gf_cgto12_k_kpq(gb_k_kpq, trial._rcgtob, cgto_kpq, iq_real, network_opts)
-            #     # del gb_k_kpq
-            #     L_q = hamiltonian.cholM[iq]
-            #     v1 = (X_wPa + X_wPb).dot(L_q)
-            #     v2 = (Y_wPa + Y_wPb).dot(L_q.conj())
-            #     vbias_plus[:, :, iq] += .5j * xp.sqrt(2) * (v1 + v2)
-            #     vbias_minus[:, :, iq] += .5 * xp.sqrt(2) * (v1 - v2)
-            # cutensornet.destroy(handle)
-            # synchronize()
-            # return vbias_plus, vbias_minus
         else:
             pass
 
@@ -1164,10 +1111,8 @@ def construct_force_bias_batch_single_det_isdf_chunked(hamiltonian, walkers, rcg
     vbias_batch_real_send = xp.zeros((hamiltonian.nchol, walkers.nwalkers))
     vbias_batch_imag_send = xp.zeros((hamiltonian.nchol, walkers.nwalkers))
 
-    handle = cutensornet.create()
-    network_opts = NetworkOptions(handle=handle)
-    vbias_batch_real_send[chol_idxs_chunk, :] = cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa.real, options=network_opts) + cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb.real, options=network_opts)
-    vbias_batch_imag_send[chol_idxs_chunk, :] = cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa.imag, options=network_opts) + cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb.imag, options=network_opts)
+    vbias_batch_real_send[chol_idxs_chunk, :] = xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa.real, optimize=True) + xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb.real, optimize=True)
+    vbias_batch_imag_send[chol_idxs_chunk, :] = xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa.imag, optimize=True) + xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb.imag, optimize=True)
 
     receivers = handler.receivers
     for _ in range(handler.ssize - 1):
@@ -1193,8 +1138,8 @@ def construct_force_bias_batch_single_det_isdf_chunked(hamiltonian, walkers, rcg
         # prepare sending
         vbias_batch_real_send = vbias_batch_real_recv.copy()
         vbias_batch_imag_send = vbias_batch_imag_recv.copy()
-        vbias_batch_real_send[chol_idxs_chunk, :] = cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa_recv.real, options=network_opts) + cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb_recv.real, options=network_opts)
-        vbias_batch_imag_send[chol_idxs_chunk, :] = cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa_recv.imag, options=network_opts) + cutensornet.contract("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb_recv.imag, options=network_opts)
+        vbias_batch_real_send[chol_idxs_chunk, :] = xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa_recv.real, optimize=True) + xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb_recv.real, optimize=True)
+        vbias_batch_imag_send[chol_idxs_chunk, :] = xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtoa, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfa_recv.imag, optimize=True) + xp.einsum("Pi, Pr, Pg, wir -> gw", rcgtob, hamiltonian.cgto, hamiltonian.cholM_chunk, Ghalfb_recv.imag, optimize=True)
         Ghalfa_send = Ghalfa_recv.copy()
         Ghalfb_send = Ghalfb_recv.copy()
 

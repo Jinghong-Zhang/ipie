@@ -73,7 +73,6 @@ def construct_h1e_mod_isdf(MPQ, cgto, h1e, ikpq_mat, ikmq_mat, Sset, Qplus, h1e_
         for ik in range(nk):
             ikpq = ikpq_mat[iq_real, ik]
             cgto_ikpq = cgto[ikpq]
-            # v0 += .5 * oe.contract('kPp, kPr, PQ, kQr, kQq -> kpq', cgto.conj(), cgto_ikpq, MPQ_iq, cgto_ikpq.conj(), cgto)
             cgto_PQ = cgto_ikpq @ cgto_ikpq.T.conj()
             cgtoM = MPQ_iq * cgto_PQ
             v0[ik] += .5 * cgto[ik].conj().T @ cgtoM @ cgto[ik]
@@ -86,8 +85,6 @@ def construct_h1e_mod_isdf(MPQ, cgto, h1e, ikpq_mat, ikmq_mat, Sset, Qplus, h1e_
             cgto_ikpq = cgto[ikpq]
             ikmq = ikmq_mat[iq_real, ik]
             cgto_ikmq = cgto[ikmq]
-            
-            # v0 += .5 * (oe.contract('kPp, kPr, PQ, kQr, kQq -> kpq', cgto.conj(), cgto_ikpq, MPQ_iq, cgto_ikpq.conj(), cgto) + oe.contract('kPp, kPr, PQ, kQr, kQq -> kpq', cgto.conj(), cgto_ikmq, MPQ_iq.conj(), cgto_ikmq.conj(), cgto))
             cgto_PQ = cgto_ikpq @ cgto_ikpq.T.conj()
             cgtoM = MPQ_iq * cgto_PQ
             v0[ik] += .5 *cgto[ik].conj().T @ cgtoM @ cgto[ik]
