@@ -19,123 +19,134 @@ try:
     # pylint: disable=import-error
     import cupy as cp
     import numba
-    from numba import cuda
 except ModuleNotFoundError:
     pass
 
+try:
+    from numba import cuda
+    has_cuda = True
+except ImportError:
+    has_cuda = False
+
 _block_size = 512  #
 
-
-@cuda.jit("void(complex128[:,:,:,:], complex128[:])")
-def kernel_exchange_reduction_old(T, exx_w):
-    nwalker = T.shape[0]
-    naux = T.shape[1]
-    nocc = T.shape[2]
-    nocc_sq = nocc * nocc
-    thread_ix = cuda.threadIdx.x
-    block_ix = cuda.blockIdx.x
-    if block_ix > nwalker * nocc * nocc:
-        return
-    walker = block_ix // nocc_sq
-    a = (block_ix % nocc_sq) // nocc
-    b = (block_ix % nocc_sq) % nocc
-    shared_array = cuda.shared.array(shape=(_block_size,), dtype=numba.complex128)
-    block_size = cuda.blockDim.x
-    shared_array[thread_ix] = 0.0
-    for x in range(thread_ix, naux, block_size):
-        shared_array[thread_ix] += T[walker, x, a, b] * T[walker, x, b, a]
-    # pylint: disable=no-value-for-parameter
-    cuda.syncthreads()
-    nreduce = block_size // 2
-    indx = nreduce
-    for _ in range(0, nreduce):
-        if indx == 0:
-            break
-        if thread_ix < indx:
-            shared_array[thread_ix] += shared_array[thread_ix + indx]
+if has_cuda:
+    @cuda.jit("void(complex128[:,:,:,:], complex128[:])")
+    def kernel_exchange_reduction_old(T, exx_w):
+        nwalker = T.shape[0]
+        naux = T.shape[1]
+        nocc = T.shape[2]
+        nocc_sq = nocc * nocc
+        thread_ix = cuda.threadIdx.x
+        block_ix = cuda.blockIdx.x
+        if block_ix > nwalker * nocc * nocc:
+            return
+        walker = block_ix // nocc_sq
+        a = (block_ix % nocc_sq) // nocc
+        b = (block_ix % nocc_sq) % nocc
+        shared_array = cuda.shared.array(shape=(_block_size,), dtype=numba.complex128)
+        block_size = cuda.blockDim.x
+        shared_array[thread_ix] = 0.0
+        for x in range(thread_ix, naux, block_size):
+            shared_array[thread_ix] += T[walker, x, a, b] * T[walker, x, b, a]
         # pylint: disable=no-value-for-parameter
         cuda.syncthreads()
-        indx = indx // 2
-    if thread_ix == 0:
-        cuda.atomic.add(exx_w.real, walker, shared_array[0].real)
-        cuda.atomic.add(exx_w.imag, walker, shared_array[0].imag)
+        nreduce = block_size // 2
+        indx = nreduce
+        for _ in range(0, nreduce):
+            if indx == 0:
+                break
+            if thread_ix < indx:
+                shared_array[thread_ix] += shared_array[thread_ix + indx]
+            # pylint: disable=no-value-for-parameter
+            cuda.syncthreads()
+            indx = indx // 2
+        if thread_ix == 0:
+            cuda.atomic.add(exx_w.real, walker, shared_array[0].real)
+            cuda.atomic.add(exx_w.imag, walker, shared_array[0].imag)
 
 
-@cuda.jit("void(complex128[:,:,:,:], complex128[:])")
-def kernel_exchange_reduction(T, exx_w):
-    naux = T.shape[0]
-    nocc = T.shape[1]
-    nwalker = T.shape[2]
-    nocc_sq = nocc * nocc
-    thread_ix = cuda.threadIdx.x
-    block_ix = cuda.blockIdx.x
-    if block_ix > nwalker * nocc * nocc:
-        return
-    walker = block_ix // nocc_sq
-    a = (block_ix % nocc_sq) // nocc
-    b = (block_ix % nocc_sq) % nocc
-    shared_array = cuda.shared.array(shape=(_block_size,), dtype=numba.complex128)
-    block_size = cuda.blockDim.x
-    shared_array[thread_ix] = 0.0
-    for x in range(thread_ix, naux, block_size):
-        shared_array[thread_ix] += T[x, a, walker, b] * T[x, b, walker, a]
-    # pylint: disable=no-value-for-parameter
-    cuda.syncthreads()
-    nreduce = block_size // 2
-    indx = nreduce
-    for _ in range(0, nreduce):
-        if indx == 0:
-            break
-        if thread_ix < indx:
-            shared_array[thread_ix] += shared_array[thread_ix + indx]
+    @cuda.jit("void(complex128[:,:,:,:], complex128[:])")
+    def kernel_exchange_reduction(T, exx_w):
+        naux = T.shape[0]
+        nocc = T.shape[1]
+        nwalker = T.shape[2]
+        nocc_sq = nocc * nocc
+        thread_ix = cuda.threadIdx.x
+        block_ix = cuda.blockIdx.x
+        if block_ix > nwalker * nocc * nocc:
+            return
+        walker = block_ix // nocc_sq
+        a = (block_ix % nocc_sq) // nocc
+        b = (block_ix % nocc_sq) % nocc
+        shared_array = cuda.shared.array(shape=(_block_size,), dtype=numba.complex128)
+        block_size = cuda.blockDim.x
+        shared_array[thread_ix] = 0.0
+        for x in range(thread_ix, naux, block_size):
+            shared_array[thread_ix] += T[x, a, walker, b] * T[x, b, walker, a]
         # pylint: disable=no-value-for-parameter
         cuda.syncthreads()
-        indx = indx // 2
-    if thread_ix == 0:
-        cuda.atomic.add(exx_w.real, walker, shared_array[0].real)
-        cuda.atomic.add(exx_w.imag, walker, shared_array[0].imag)
+        nreduce = block_size // 2
+        indx = nreduce
+        for _ in range(0, nreduce):
+            if indx == 0:
+                break
+            if thread_ix < indx:
+                shared_array[thread_ix] += shared_array[thread_ix + indx]
+            # pylint: disable=no-value-for-parameter
+            cuda.syncthreads()
+            indx = indx // 2
+        if thread_ix == 0:
+            cuda.atomic.add(exx_w.real, walker, shared_array[0].real)
+            cuda.atomic.add(exx_w.imag, walker, shared_array[0].imag)
 
 
-def exchange_reduction_old(Twxij, exx_walker):
-    """Reduce intermediate with itself.
+    def exchange_reduction_old(Twxij, exx_walker):
+        """Reduce intermediate with itself.
 
-    equivalent to einsum('wxij,wxji->w', Twxij, Twxij)
+        equivalent to einsum('wxij,wxji->w', Twxij, Twxij)
 
-    Parameters
-    ---------
-    Txiwj : np.ndarray
-        Intemediate tensor of dimension (naux, nocca/b, nwalker, nocca/b).
-    exx_walker : np.ndarray
-        Exchange contribution for all walkers in batch.
-    """
-    nwalkers = Twxij.shape[0]
-    nocc = Twxij.shape[2]
-    blocks_per_grid = nwalkers * nocc * nocc
-    # todo add constants to config
-    # do blocks_per_grid dot products + reductions
-    # look into optimizations.
-    kernel_exchange_reduction_old[blocks_per_grid, _block_size](Twxij, exx_walker)
-    # pylint: disable=no-value-for-parameter
-    cp.cuda.stream.get_current_stream().synchronize()
+        Parameters
+        ---------
+        Txiwj : np.ndarray
+            Intemediate tensor of dimension (naux, nocca/b, nwalker, nocca/b).
+        exx_walker : np.ndarray
+            Exchange contribution for all walkers in batch.
+        """
+        nwalkers = Twxij.shape[0]
+        nocc = Twxij.shape[2]
+        blocks_per_grid = nwalkers * nocc * nocc
+        # todo add constants to config
+        # do blocks_per_grid dot products + reductions
+        # look into optimizations.
+        kernel_exchange_reduction_old[blocks_per_grid, _block_size](Twxij, exx_walker)
+        # pylint: disable=no-value-for-parameter
+        cp.cuda.stream.get_current_stream().synchronize()
 
 
-def exchange_reduction(Txiwj, exx_walker):
-    """Reduce intermediate with itself.
+    def exchange_reduction(Txiwj, exx_walker):
+        """Reduce intermediate with itself.
 
-    equivalent to einsum('xiwj,xjwi->w', Txiwj, Txiwj)
+        equivalent to einsum('xiwj,xjwi->w', Txiwj, Txiwj)
 
-    Parameters
-    ---------
-    Txiwj : np.ndarray
-        Intemediate tensor of dimension (naux, nocca/b, nwalker, nocca/b).
-    exx_walker : np.ndarray
-        Exchange contribution for all walkers in batch.
-    """
-    nwalkers = Txiwj.shape[2]
-    nocc = Txiwj.shape[1]
-    blocks_per_grid = nwalkers * nocc * nocc
-    # todo add constants to config
-    # do blocks_per_grid dot products + reductions
-    # look into optimizations.
-    kernel_exchange_reduction[blocks_per_grid, _block_size](Txiwj, exx_walker)
-    cp.cuda.stream.get_current_stream().synchronize()
+        Parameters
+        ---------
+        Txiwj : np.ndarray
+            Intemediate tensor of dimension (naux, nocca/b, nwalker, nocca/b).
+        exx_walker : np.ndarray
+            Exchange contribution for all walkers in batch.
+        """
+        nwalkers = Txiwj.shape[2]
+        nocc = Txiwj.shape[1]
+        blocks_per_grid = nwalkers * nocc * nocc
+        # todo add constants to config
+        # do blocks_per_grid dot products + reductions
+        # look into optimizations.
+        kernel_exchange_reduction[blocks_per_grid, _block_size](Txiwj, exx_walker)
+        cp.cuda.stream.get_current_stream().synchronize()
+else:
+    def exchange_reduction(Txiwj, exx_walker):
+        pass
+    def exchange_reduction_old(Twxij, exx_walker):
+        pass
+    
