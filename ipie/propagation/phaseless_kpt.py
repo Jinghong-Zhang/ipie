@@ -437,7 +437,7 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
     xp._default_memory_pool.free_all_blocks()
     return outphi
 
-def construct_VHS_batch(cgto, Lx, Lconjx, kpq_mat, kmq_mat, unique_qs, handle):
+def construct_VHS_batch(cgto, Lx, Lconjx, kpq_mat, kmq_mat, unique_qs):
     """
     Apply VHS to phi in batch.
     """
