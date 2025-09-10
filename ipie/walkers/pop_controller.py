@@ -576,6 +576,7 @@ def stochastic_reconfiguration(walkers, comm, timer=PopControllerTimer()):
             buflis[i] = get_buffer(walkers, i)
     timer.add_non_communication()
     comm.barrier()
+    timer.start_time()
     send_reqs = []
     for isend, (src_idx, dest_idx) in enumerate(local_send):
         src_loc = src_idx % nwalkers
@@ -615,6 +616,7 @@ def stochastic_reconfiguration(walkers, comm, timer=PopControllerTimer()):
     MPI.Request.Waitall(send_reqs)
 
     comm.Barrier()
+    timer.add_communication()
 
     timer.start_time()
     walkers.weight[:] = new_average_weight

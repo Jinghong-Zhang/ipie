@@ -166,12 +166,14 @@ class UHFWalkers(BaseWalkers):
     def reortho_batched(self):
         """reorthogonalise walkers."""
         assert config.get_option("use_gpu")
-        (self.phia, Rup) = qr(self.phia, mode=qr_mode)
+        (phia, Rup) = qr(self.phia, mode=qr_mode)
+        self.phia = xp.ascontiguousarray(phia)
         Rup_diag = xp.einsum("wii->wi", Rup)
         log_det = xp.einsum("wi->w", xp.log(abs(Rup_diag)))
 
         if self.ndown > 0:
-            (self.phib, Rdn) = qr(self.phib, mode=qr_mode)
+            (phib, Rdn) = qr(self.phib, mode=qr_mode)
+            self.phib = xp.ascontiguousarray(phib)
             Rdn_diag = xp.einsum("wii->wi", Rdn)
             log_det += xp.einsum("wi->w", xp.log(abs(Rdn_diag)))
         self.detR = xp.exp(log_det - self.detR_shift)
