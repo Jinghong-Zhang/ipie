@@ -169,12 +169,16 @@ class UHFWalkers(BaseWalkers):
         (phia, Rup) = qr(self.phia, mode=qr_mode)
         self.phia = xp.ascontiguousarray(phia)
         Rup_diag = xp.einsum("wii->wi", Rup)
+        Rup_sign = xp.sign(Rup_diag)
+        self.phia *= Rup_sign[:, None, :]
         log_det = xp.einsum("wi->w", xp.log(abs(Rup_diag)))
 
         if self.ndown > 0:
             (phib, Rdn) = qr(self.phib, mode=qr_mode)
             self.phib = xp.ascontiguousarray(phib)
             Rdn_diag = xp.einsum("wii->wi", Rdn)
+            Rdn_sign = xp.sign(Rdn_diag)
+            self.phib *= Rdn_sign[:, None, :]
             log_det += xp.einsum("wi->w", xp.log(abs(Rdn_diag)))
         self.detR = xp.exp(log_det - self.detR_shift)
         self.ovlp = self.ovlp / self.detR
