@@ -697,32 +697,32 @@ def kpt_isdf_exx_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sse
             Ga_chunk = Ghalfa_batch[w_sls]
             w_chunk_idx = xp.arange(n_chunk)[:, None, None, None, None]  # shape (W_chunk,1,1,1,1)
 
-        for iq in range(len(Sset)):
-            iq_real = Sset[iq]
-            ikpq = kpq_mat[iq_real]
-            phikr_kpq = cgto[ikpq]
-            phiki_kpq = halfrot_cgtoa[ikpq]
-            kpq_idx = kpq_mat[k_idx, iq_real]
-            kprimepq_idx = kpq_mat[kprime_idx, iq_real]
-            G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
-            MPQ_iq = MPQ[iq]
-            # exx[w_sls] -= contract('kPi, kPp, PQ, KQj, KQq, wkiKq, wKjkp -> w', halfrot_cgtoa.conj(), phikr_kpq, MPQ_iq, phiki_kpq.conj(), cgto, Ga_chunk, G_kpq_kprimepq_chunk, options=network_opts)
-            exx[w_sls] -= contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
-            xp.cuda.get_current_stream().synchronize()
-            del G_kpq_kprimepq_chunk
+            for iq in range(len(Sset)):
+                iq_real = Sset[iq]
+                ikpq = kpq_mat[iq_real]
+                phikr_kpq = cgto[ikpq]
+                phiki_kpq = halfrot_cgtoa[ikpq]
+                kpq_idx = kpq_mat[k_idx, iq_real]
+                kprimepq_idx = kpq_mat[kprime_idx, iq_real]
+                G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
+                MPQ_iq = MPQ[iq]
+                # exx[w_sls] -= contract('kPi, kPp, PQ, KQj, KQq, wkiKq, wKjkp -> w', halfrot_cgtoa.conj(), phikr_kpq, MPQ_iq, phiki_kpq.conj(), cgto, Ga_chunk, G_kpq_kprimepq_chunk, options=network_opts)
+                exx[w_sls] -= contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
+                xp.cuda.get_current_stream().synchronize()
+                del G_kpq_kprimepq_chunk
 
-        for iq in range(len(Sset), len(Sset) + len(Qplus)):
-            iq_real = Qplus[iq - len(Sset)]
-            ikpq = kpq_mat[iq_real]
-            phikr_kpq = cgto[ikpq]
-            phiki_kpq = halfrot_cgtoa[ikpq]
-            kpq_idx = kpq_mat[k_idx, iq_real]
-            kprimepq_idx = kpq_mat[kprime_idx, iq_real]
-            G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
-            MPQ_iq = MPQ[iq]
-            exx[w_sls] -= 2. * contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
-            xp.cuda.get_current_stream().synchronize()
-            del G_kpq_kprimepq_chunk
+            for iq in range(len(Sset), len(Sset) + len(Qplus)):
+                iq_real = Qplus[iq - len(Sset)]
+                ikpq = kpq_mat[iq_real]
+                phikr_kpq = cgto[ikpq]
+                phiki_kpq = halfrot_cgtoa[ikpq]
+                kpq_idx = kpq_mat[k_idx, iq_real]
+                kprimepq_idx = kpq_mat[kprime_idx, iq_real]
+                G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
+                MPQ_iq = MPQ[iq]
+                exx[w_sls] -= 2. * contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
+                xp.cuda.get_current_stream().synchronize()
+                del G_kpq_kprimepq_chunk
 
     return 0.5 * exx / nk
 
@@ -992,6 +992,7 @@ def local_energy_kpt_single_det_uhf_isdf_gpu(system, hamiltonian, walkers, trial
         e1b += hamiltonian.ecore
 
         ecoul = kpt_isdf_ecoul_kernel_gpu(hamiltonian.MPQ, trial._rcgtoa, trial._rcgtob, hamiltonian.cgto, ghalfa, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        print(f"ecoul: {ecoul}")
 
         exxa = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtoa, hamiltonian.cgto, ghalfa, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
         exxb = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtob, hamiltonian.cgto, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
