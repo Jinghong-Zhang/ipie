@@ -4,6 +4,7 @@ import numpy
 
 from ipie.config import MPI
 from ipie.utils.backend import arraylib as xp
+from ipie.utils.backend import synchronize
 
 
 class PopControllerTimer:
@@ -529,6 +530,7 @@ def stochastic_reconfiguration(walkers, comm, timer=PopControllerTimer()):
     comm.barrier()
     timer.start_time()
     send_reqs = []
+    synchronize()
     for isend, (src_idx, dest_idx) in enumerate(local_send):
         src_loc = src_idx % nwalkers
         dest_rk = dest_idx // nwalkers
@@ -562,7 +564,7 @@ def stochastic_reconfiguration(walkers, comm, timer=PopControllerTimer()):
         #     f"count={count} err={err}")
 
         set_buffer(walkers, iw, buf)
-
+    synchronize()
     # 4) Wait on sends
     MPI.Request.Waitall(send_reqs)
 
