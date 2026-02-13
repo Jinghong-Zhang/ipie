@@ -300,8 +300,8 @@ class PhaselessKptISDF(PhaselessKptBase):
         cholMx = xp.matmul(cholM, xtot) # q, P, w
         cholMx = cholMx.transpose(2, 0, 1) # w, q, P
         # cholMxconj = contract('qPg, wgq -> wqP', cholM.conj(), xconjtot, options=network_opts)
-        xconjtot = xconjtot.transpose(2, 1, 0)
-        cholMxconj = xp.matmul(cholM.conj(), xconjtot)
+        xconjtot = xconjtot.transpose(2, 1, 0).conj()
+        cholMxconj = xp.conj(xp.matmul(cholM, xconjtot))
         cholMxconj = cholMxconj.transpose(2, 0, 1)
         return cholMx, cholMxconj
 

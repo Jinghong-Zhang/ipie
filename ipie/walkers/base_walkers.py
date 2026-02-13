@@ -210,7 +210,7 @@ class BaseWalkers(metaclass=ABCMeta):
             weight = self.weight
             hybrid_energy = self.hybrid_energy
             if isinstance(phia, numpy.ndarray):
-                fh5[f"walker_timeslice_{num_slices}"] = numpy.array([phia, phib])
+                fh5[f"walker_timeslice_{num_slices}"] = numpy.concatenate([phia, phib], axis=-1)
                 fh5[f"walker_weight_{num_slices}"] = weight
                 fh5[f"walker_hybrid_energy_{num_slices}"] = hybrid_energy
             else:
@@ -220,13 +220,19 @@ class BaseWalkers(metaclass=ABCMeta):
                 fh5[f"walker_weight_{num_slices}"] = xp.asnumpy(weight)
                 fh5[f"walker_hybrid_energy_{num_slices}"] = xp.asnumpy(hybrid_energy)
 
-    def read_walkers_batch(self, trial, comm):
+    def read_walkers_batch(self, trial, comm, nup=None, ndown=None):
         read_file = self.write_filepath + f"walkers_{comm.rank}.h5"
         with h5py.File(read_file, "r") as fh5:
             try:
                 num_slices = len(fh5.keys()) // 3 - 1
-                phia = fh5[f"walker_timeslice_{num_slices}"][0]
-                phib = fh5[f"walker_timeslice_{num_slices}"][1]
+                if fh5[f"walker_timeslice_{num_slices}"][()].ndim == 3:
+                    assert nup is not None and ndown is not None, "Need nup and ndown to read 2D walker data."
+                    assert fh5[f"walker_timeslice_{num_slices}"][()].shape[-1] == nup + ndown, "nup + ndown does not match walker data shape."
+                    phia = fh5[f"walker_timeslice_{num_slices}"][:][:, :, :nup]
+                    phib = fh5[f"walker_timeslice_{num_slices}"][:][:, :, nup:nup + ndown]
+                else:
+                    phia = fh5[f"walker_timeslice_{num_slices}"][0]
+                    phib = fh5[f"walker_timeslice_{num_slices}"][1]
                 self.phia = xp.array(phia)
                 self.phib = xp.array(phib)
                 weight = fh5[f"walker_weight_{num_slices}"][:]

@@ -255,14 +255,13 @@ def construct_one_body_propagator(
     dt : float
         Timestep.
     """
-    
-    cholpcholconj = hamiltonian.cholM + hamiltonian.cholM.conj()
-    igamma = hamiltonian.igamma
+    cholgamma = hamiltonian.cholM[hamiltonian.igamma]  # [nisdf, naux]
+    cholpcholconj = cholgamma + cholgamma.conj()
     cgto = hamiltonian.cgto
     # to cupy array
     cholpcholconj = xp.array(cholpcholconj)
     cgto = xp.array(cgto)
-    shift = .5 * xp.einsum("kPp, kPq, Pg, g -> kpq", cgto.conj(), cgto, cholpcholconj[igamma], mf_shift, optimize=True)
+    shift = .5 * xp.einsum("kPp, kPq, Pg, g -> kpq", cgto.conj(), cgto, cholpcholconj, mf_shift, optimize=True)
     H1 = hamiltonian.h1e_mod + xp.array([shift, shift])
     if hasattr(H1, "get"):
         H1_numpy = H1.get()
