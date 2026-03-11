@@ -9,6 +9,7 @@ from ipie.utils.backend import synchronize, cast_to_device
 
 import plum
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
+from ipie.trial_wavefunction.cisd import CISD
 from ipie.trial_wavefunction.noci import NOCI
 from ipie.trial_wavefunction.particle_hole import ParticleHole
 from ipie.trial_wavefunction.single_det import SingleDet
@@ -189,7 +190,7 @@ def construct_mean_field_shift(hamiltonian: GenericRealCholChunked, trial: Trial
 
 @plum.dispatch
 def construct_mean_field_shift(
-    hamiltonian: GenericRealChol, trial: Union[SingleDet, ParticleHole, NOCI]
+    hamiltonian: GenericRealChol, trial: Union[SingleDet, ParticleHole, NOCI, CISD]
 ):
     r"""Compute mean field shift.
 

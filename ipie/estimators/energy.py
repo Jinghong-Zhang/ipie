@@ -41,6 +41,7 @@ from ipie.estimators.local_energy_wicks import (
 from ipie.estimators.local_energy_kpt_sd import local_energy_kpt_single_det_uhf
 from ipie.estimators.local_energy_kpt_sd_isdf import local_energy_kpt_single_det_uhf_isdf_gpu
 from ipie.estimators.local_energy_kpt_sd_chunked import local_energy_kpt_single_det_uhf_chunked
+from ipie.estimators.local_energy_cisd import local_energy_cisd_batch
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.hamiltonians.isdf import GenericRealISDF
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
@@ -54,6 +55,7 @@ from ipie.trial_wavefunction.particle_hole import (
     ParticleHoleSlow,
 )
 from ipie.trial_wavefunction.single_det_kpt import KptSingleDet
+from ipie.trial_wavefunction.cisd import CISD
 from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm
 from ipie.hamiltonians.kpt_isdf_hamiltonian import KptISDF
 from ipie.hamiltonians.kpt_chunked import KptComplexCholChunked
@@ -182,6 +184,11 @@ def local_energy(
 ):
     return local_energy_single_det_uhf_batch_isdf_chunked_gpu(system, hamiltonian, walkers, trial)
 
+@plum.dispatch
+def local_energy(
+    system: Generic, hamiltonian: GenericRealChol, walkers: UHFWalkers, trial: CISD
+):
+    return local_energy_cisd_batch(system, hamiltonian, walkers, trial)
 
 class EnergyEstimator(EstimatorBase):
     def __init__(

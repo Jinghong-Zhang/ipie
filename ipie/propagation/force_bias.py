@@ -215,6 +215,125 @@ def construct_force_bias_batch_single_det(hamiltonian: GenericComplexChol, walke
     synchronize()
     return vbias_batch
 
+def construct_force_bias_batch_cisd(
+    hamiltonian: GenericRealChol, walkers: UHFWalkers, trial: "CISD"
+):
+    """Compute optimal force bias for CISD trial wavefunction.
+
+    Uses half-rotated Cholesky vectors.
+
+    Parameters
+    ----------
+    hamiltonian : class
+        hamiltonian object.
+    walkers : class
+        walkers object.
+    rchola, rcholb : :class:`numpy.ndarray`
+        Half-rotated cholesky for each spin.
+
+    Returns
+    -------
+    xbar : :class:`numpy.ndarray`
+        Force bias.
+    """
+    gova = walkers.ghalfa[:, :, trial.nalpha:]
+    nvira = hamiltonian.nbasis - trial.nalpha
+    eye_a = -xp.broadcast_to(xp.eye(nvira)[None, :, :], (gova.shape[0], nvira, nvira))
+    calg_a = xp.concatenate([gova, eye_a], axis=1)
+    if walkers.rhf:
+        chol = hamiltonian.chol.reshape((hamiltonian.nbasis, hamiltonian.nbasis, hamiltonian.nchol))
+        lg = xp.einsum("kqX,wkq->wX", trial.rchol, walkers.ghalfa, optimize=True)
+        c1gov = xp.einsum("ia,wia->w", trial.c1a, gova, optimize=True)
+        c2g_dir = xp.einsum("iajb,wia->wjb", trial.c2aa, gova, optimize=True)
+        c2g_cross = xp.einsum("iajb,wib->wja", trial.c2aa, gova, optimize=True)
+        c2g_dir_G = xp.einsum("wia,wiq->wqa", c2g_dir, walkers.ghalfa, optimize=True)
+        calg_c2g_dir_G = xp.einsum("wpa,wqa->wpq", calg_a, c2g_dir_G, optimize=True)
+        c2g_cross_G = xp.einsum("wja,wjq->wqa", c2g_cross, walkers.ghalfa, optimize=True)
+        calg_c2g_cross_G = xp.einsum("wpa,wqa->wpq", calg_a, c2g_cross_G, optimize=True)
+
+        v0 = 2.0 * lg
+        v1_1 = 4.0 * xp.einsum("wX,w->wX", lg, c1gov, optimize=True)
+        v1_2 = -2.0 * xp.einsum("pqX,ia,wiq,wpa->wX", chol, trial.c1a, walkers.ghalfa, calg_a, optimize=True)
+        v2_1_1 = 4.0 * xp.einsum("wX,wjb,wjb->wX", lg, c2g_dir, gova, optimize=True)
+        v2_1_2 = -2.0 * xp.einsum("wX,wja,wja->wX", lg, c2g_cross, gova, optimize=True)
+        v2_2_1 = -4.0 * xp.einsum("pqX,wpq->wX", chol, calg_c2g_dir_G, optimize=True)
+        v2_2_2 = 2.0 * xp.einsum("pqX,wpq->wX", chol, calg_c2g_cross_G, optimize=True)
+        vtot = v0 + v1_1 + v1_2 + v2_1_1 + v2_1_2 + v2_2_1 + v2_2_2
+    else:
+        chol = hamiltonian.chol.reshape((hamiltonian.nbasis, hamiltonian.nbasis, hamiltonian.nchol))
+        if hamiltonian.h1eb is None or hamiltonian.cholb is None:
+            hamiltonian.construct_beta_integrals(trial.mo_coeffb)
+        cholb = hamiltonian.cholb
+        govb = walkers.ghalfb[:, :, trial.nbeta:]
+        nvirb = hamiltonian.nbasis - trial.nbeta
+        eye_b = -xp.broadcast_to(xp.eye(nvirb)[None, :, :], (govb.shape[0], nvirb, nvirb))
+        calg_b = xp.concatenate([govb, eye_b], axis=1)
+
+        chol_g_a = xp.einsum("kqX,wkq->wX", trial.rchola, walkers.ghalfa, optimize=True)
+        chol_g_b = xp.einsum("kqX,wkq->wX", trial.rcholb, walkers.ghalfb, optimize=True)
+        chol_g = chol_g_a + chol_g_b
+        c1g_a = xp.einsum("ia,wia->w", trial.c1a, gova, optimize=True)
+        c1g_b = xp.einsum("ia,wia->w", trial.c1b, govb, optimize=True)
+        c1calg_a = xp.einsum("ia,wpa->wpi", trial.c1a, calg_a, optimize=True)
+        c1calg_b = xp.einsum("ia,wpa->wpi", trial.c1b, calg_b, optimize=True)
+        c1calgG_a = xp.einsum("wpi,wiq->wpq", c1calg_a, walkers.ghalfa, optimize=True)
+        c1calgG_b = xp.einsum("wpi,wiq->wpq", c1calg_b, walkers.ghalfb, optimize=True)
+
+        if trial.c2_antisymm:
+            c2g_aa = xp.einsum("iajb,wia->wjb", trial.c2aa, gova, optimize=True)
+            c2g_bb = xp.einsum("iajb,wia->wjb", trial.c2bb, govb, optimize=True)
+            c2g_ab_a = xp.einsum("iajb,wjb->wia", trial.c2ab, govb, optimize=True)
+            c2g_ab_b = xp.einsum("iajb,wia->wjb", trial.c2ab, gova, optimize=True)
+            gci2g_aa_c = 0.5 * xp.einsum("wia,wia->w", c2g_aa, gova, optimize=True)
+            gci2g_bb_c = 0.5 * xp.einsum("wia,wia->w", c2g_bb, govb, optimize=True)
+            gci2g_aa_x = xp.zeros_like(gci2g_aa_c)
+            gci2g_bb_x = xp.zeros_like(gci2g_bb_c)
+            gci2g_ab = xp.einsum("wia,wia->w", c2g_ab_a, gova, optimize=True)
+            c2g_aa_G = xp.einsum("wia,wiq->wqa", c2g_aa, walkers.ghalfa, optimize=True)
+            c2g_bb_G = xp.einsum("wia,wiq->wqa", c2g_bb, walkers.ghalfb, optimize=True)
+            c2g_ab_a_G = xp.einsum("wia,wiq->wqa", c2g_ab_a, walkers.ghalfa, optimize=True)
+            c2g_ab_b_G = xp.einsum("wia,wiq->wqa", c2g_ab_b, walkers.ghalfb, optimize=True)
+            calg_c2g_aa_G = xp.einsum("wpa,wqa->wpq", calg_a, c2g_aa_G, optimize=True)
+            calg_c2g_bb_G = xp.einsum("wpa,wqa->wpq", calg_b, c2g_bb_G, optimize=True)
+            calg_c2g_ab_a_G = xp.einsum("wpa,wqa->wpq", calg_a, c2g_ab_a_G, optimize=True)
+            calg_c2g_ab_b_G = xp.einsum("wpa,wqa->wpq", calg_b, c2g_ab_b_G, optimize=True)
+            v2_2_1 = -xp.einsum("pqX,wpq->wX", chol, calg_c2g_aa_G + calg_c2g_ab_a_G, optimize=True)
+            v2_2_1 -= xp.einsum("pqX,wpq->wX", cholb, calg_c2g_bb_G + calg_c2g_ab_b_G, optimize=True)
+            v2_2_2 = xp.zeros_like(v2_2_1)
+        else:
+            c2g_aa_c = xp.einsum("iajb,wia->wjb", trial.c2aa, gova, optimize=True)
+            c2g_bb_c = xp.einsum("iajb,wia->wjb", trial.c2bb, govb, optimize=True)
+            c2g_aa_x = xp.einsum("iajb,wib->wja", trial.c2aa, gova, optimize=True)
+            c2g_bb_x = xp.einsum("iajb,wib->wja", trial.c2bb, govb, optimize=True)
+            c2g_ab_a = xp.einsum("iajb,wjb->wia", trial.c2ab, govb, optimize=True)
+            c2g_ab_b = xp.einsum("iajb,wia->wjb", trial.c2ab, gova, optimize=True)
+            gci2g_aa_c = 0.5 * xp.einsum("wia,wia->w", c2g_aa_c, gova, optimize=True)
+            gci2g_aa_x = -0.5 * xp.einsum("wia,wia->w", c2g_aa_x, gova, optimize=True)
+            gci2g_bb_c = 0.5 * xp.einsum("wia,wia->w", c2g_bb_c, govb, optimize=True)
+            gci2g_bb_x = -0.5 * xp.einsum("wia,wia->w", c2g_bb_x, govb, optimize=True)
+            gci2g_ab = xp.einsum("wia,wia->w", c2g_ab_a, gova, optimize=True)
+            c2g_ab_a_G = xp.einsum("wia,wiq->wqa", c2g_ab_a, walkers.ghalfa, optimize=True)
+            c2g_ab_b_G = xp.einsum("wia,wiq->wqa", c2g_ab_b, walkers.ghalfb, optimize=True)
+            calg_c2g_ab_a_G = xp.einsum("wpa,wqa->wpq", calg_a, c2g_ab_a_G, optimize=True)
+            calg_c2g_ab_b_G = xp.einsum("wpa,wqa->wpq", calg_b, c2g_ab_b_G, optimize=True)
+            v2_2_1 = -xp.einsum("pqX,wpa,wia,wiq->wX", chol, calg_a, c2g_aa_c, walkers.ghalfa, optimize=True)
+            v2_2_1 -= xp.einsum("pqX,wpa,wia,wiq->wX", cholb, calg_b, c2g_bb_c, walkers.ghalfb, optimize=True)
+            v2_2_1 -= xp.einsum("pqX,wpq->wX", chol, calg_c2g_ab_a_G, optimize=True)
+            v2_2_1 -= xp.einsum("pqX,wpq->wX", cholb, calg_c2g_ab_b_G, optimize=True)
+            v2_2_2 = xp.einsum("pqX,wpa,wja,wjq->wX", chol, calg_a, c2g_aa_x, walkers.ghalfa, optimize=True)
+            v2_2_2 += xp.einsum("pqX,wpa,wja,wjq->wX", cholb, calg_b, c2g_bb_x, walkers.ghalfb, optimize=True)
+
+        gci2g = gci2g_aa_c + gci2g_aa_x + gci2g_bb_c + gci2g_bb_x + gci2g_ab
+        v2_1 = xp.einsum("wX,w->wX", chol_g, gci2g, optimize=True)
+        v0 = chol_g
+        v1_1 = xp.einsum("wX,w->wX", chol_g, c1g_a + c1g_b, optimize=True)
+        v1_2 = -xp.einsum("pqX,wpq->wX", chol, c1calgG_a, optimize=True)
+        v1_2 -= xp.einsum("pqX,wpq->wX", cholb, c1calgG_b, optimize=True)
+        v2_2 = v2_2_1 + v2_2_2
+        vtot = v0 + v1_1 + v1_2 + v2_1 + v2_2
+    return vtot / trial.ovlp_ratio_cisd[:, None]
+
+
 
 def construct_force_bias_kpt_batch_single_det(
     hamiltonian: "KptComplexChol", walkers: "UHFWalkers", trial: "KptSingleDet"

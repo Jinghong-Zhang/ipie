@@ -152,3 +152,55 @@ def greens_function_single_det_batch(walker_batch, trial, build_full=False):
     synchronize()
 
     return ot
+
+
+def greens_function_single_det_spin_batch(walker_batch, trial, build_full=False):
+    """Compute walker's green's function using only batched operations, for beta electrons the green's function is transformed to mob basis rather than moa basis.
+
+    Parameters
+    ----------
+    walker_batch : object
+        SingleDetWalkerBatch object.
+    trial : object
+        Trial wavefunction object.
+    Returns
+    -------
+    ot : float64 / complex128
+        Overlap with trial.
+    """
+    phia = xp.ascontiguousarray(walker_batch.phia)
+    phib = xp.ascontiguousarray(walker_batch.phib)
+    noccb = trial.psi0b.shape[-1]
+
+    ovlp_a = xp.einsum("wpi,pj->wij", phia, trial.psi0a.conj(), optimize=True)
+    ovlp_inv_a = xp.linalg.inv(ovlp_a)
+    sign_a, log_ovlp_a = xp.linalg.slogdet(ovlp_a)
+
+    walker_batch.Ghalfa = xp.einsum("wij,wpj->wip", ovlp_inv_a, phia, optimize=True)
+    if not trial.half_rotated or build_full:
+        walker_batch.Ga = xp.einsum(
+            "pi,wiq->wpq", trial.psi0a.conj(), walker_batch.Ghalfa, optimize=True
+        )
+
+    has_beta = phib is not None and phib.shape[-1] > 0 and noccb > 0
+    if has_beta and not walker_batch.rhf:
+        if getattr(trial, "mo_coeffb", None) is not None:
+            phib = xp.einsum("qp,wqi->wpi", trial.mo_coeffb, phib, optimize=True)
+        psi0b_mob = xp.eye(trial.psi0b.shape[0], noccb)
+        ovlp_b = xp.einsum("wpi,pj->wij", phib, psi0b_mob, optimize=True)
+        ovlp_inv_b = xp.linalg.inv(ovlp_b)
+        sign_b, log_ovlp_b = xp.linalg.slogdet(ovlp_b)
+        walker_batch.Ghalfb = xp.einsum("wij,wpj->wip", ovlp_inv_b, phib, optimize=True)
+        if not trial.half_rotated or build_full:
+            walker_batch.Gb = xp.einsum(
+                "pi,wiq->wpq", trial.psi0b.conj(), walker_batch.Ghalfb, optimize=True
+            )
+        ot = sign_a * sign_b * xp.exp(log_ovlp_a + log_ovlp_b - walker_batch.log_shift)
+    elif has_beta and walker_batch.rhf:
+        ot = sign_a * sign_a * xp.exp(log_ovlp_a + log_ovlp_a - walker_batch.log_shift)
+    else:
+        ot = sign_a * xp.exp(log_ovlp_a - walker_batch.log_shift)
+
+    synchronize()
+
+    return ot

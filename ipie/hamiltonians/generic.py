@@ -79,6 +79,8 @@ class GenericRealChol(GenericBase):
         h1e_mod = numpy.zeros(self.H1.shape, dtype=self.H1.dtype)
         construct_h1e_mod(self.chol, self.H1, h1e_mod)
         self.h1e_mod = xp.array(h1e_mod)
+        self.h1eb = None
+        self.cholb = None
 
         if verbose:
             mem = self.chol.nbytes / (1024.0**3)
@@ -95,6 +97,17 @@ class GenericRealChol(GenericBase):
         ik = i * self.nbasis + k
         jl = j * self.nbasis + l
         return numpy.dot(self.chol[ik], self.chol[jl])
+    
+    def construct_beta_integrals(self, mocoeffb_moa):
+        if self.h1eb is None:
+            self.h1eb = xp.einsum(
+                "pi,pq,qj->ij", mocoeffb_moa, self.H1[1], mocoeffb_moa, optimize=True
+            )
+        if self.cholb is None:
+            chol = self.chol.reshape((self.nbasis, self.nbasis, self.nchol))
+            self.cholb = xp.einsum(
+                "pqX,pi,qj->ijX", chol, mocoeffb_moa, mocoeffb_moa, optimize=True
+            )
 
 
 class GenericComplexChol(GenericBase):

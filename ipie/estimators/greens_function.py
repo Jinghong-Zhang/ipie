@@ -24,7 +24,9 @@ from ipie.estimators.greens_function_multi_det import (
 from ipie.estimators.greens_function_single_det import (
     greens_function_single_det,
     greens_function_single_det_batch,
+    greens_function_single_det_spin_batch,
 )
+from ipie.trial_wavefunction.cisd import CISD
 from ipie.trial_wavefunction.noci import NOCI
 from ipie.trial_wavefunction.particle_hole import ParticleHole
 from ipie.trial_wavefunction.single_det import SingleDet
@@ -58,6 +60,8 @@ def get_greens_function(trial):
             compute_greens_function = greens_function_single_det_batch
         else:
             compute_greens_function = greens_function_single_det
+    elif isinstance(trial, CISD):
+        compute_greens_function = greens_function_single_det_spin_batch
     elif isinstance(trial, NOCI):
         compute_greens_function = greens_function_noci
     elif isinstance(trial, ParticleHole):

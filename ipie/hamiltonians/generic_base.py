@@ -33,6 +33,7 @@ class GenericBase(metaclass=ABCMeta):
         self.verbose = verbose
         self.ecore = ecore
         self.H1 = np.array(h1e, dtype=h1e.dtype)
+        self.h1e = self.H1
         self.nbasis = h1e.shape[-1]
         self.nchol = None
 

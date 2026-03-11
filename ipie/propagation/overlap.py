@@ -72,6 +72,50 @@ def calc_overlap_single_det_ghf(walkers: "GHFWalkers", trial: "SingleDet"):
     return ot
 
 
+def calc_overlap_cisd(walkers: "UHFWalkers", trial: "CISD"):
+    """Calculate overlap with CISD trial wavefunction.
+
+    Parameters
+    ----------
+    walkers : object
+        WalkerBatch object (this stores some intermediates for the particular trial wfn).
+    trial : object
+        Trial wavefunction object.
+
+    Returns
+    -------
+    ot : float / complex
+        Overlap.
+    """
+    nocca = trial.nalpha
+    noccb = trial.nbeta
+    if walkers.rhf:
+        gova = walkers.ghalfa[:, :, nocca:]
+        ovlp_1 = 2.0 * xp.einsum("ia,wia->w", trial.c1a, gova, optimize=True)
+        ovlp_2_1 = 2.0 * xp.einsum("iajb,wia,wjb->w", trial.c2aa, gova, gova, optimize=True)
+        ovlp_2_2 = -1.0 * xp.einsum("iajb,wib,wja->w", trial.c2aa, gova, gova, optimize=True)
+        ovlp = 1.0 + ovlp_1 + ovlp_2_1 + ovlp_2_2
+        o0 = calc_overlap_single_det_uhf(walkers, trial)
+        trial.ovlp_ratio_cisd = ovlp
+    else:
+        gova = walkers.ghalfa[:, :, nocca:]
+        govb = walkers.ghalfb[:, :, noccb:]
+        ovlp_1a = xp.einsum("ia,wia->w", trial.c1a, gova, optimize=True)
+        ovlp_1b = xp.einsum("ia,wia->w", trial.c1b, govb, optimize=True)
+        ovlp_2ab = xp.einsum("iajb,wia,wjb->w", trial.c2ab, gova, govb, optimize=True)
+        if trial.c2_antisymm: # if c2 is antisymmetrized we can save compute time by only doing the direct term and skipping the exchange term (which is already included in c2)
+            ovlp_2aa = 0.5 * xp.einsum("iajb,wia,wjb->w", trial.c2aa, gova, gova, optimize=True)
+            ovlp_2bb = 0.5 * xp.einsum("iajb,wia,wjb->w", trial.c2bb, govb, govb, optimize=True)
+        else:
+            ovlp_2aa = 0.5 * xp.einsum("iajb,wia,wjb->w", trial.c2aa, gova, gova, optimize=True)
+            ovlp_2aa -= 0.5 * xp.einsum("iajb,wib,wja->w", trial.c2aa, gova, gova, optimize=True) # exchange contribution
+            ovlp_2bb = 0.5 * xp.einsum("iajb,wia,wjb->w", trial.c2bb, govb, govb, optimize=True)
+            ovlp_2bb -= 0.5 * xp.einsum("iajb,wib,wja->w", trial.c2bb, govb, govb, optimize=True)
+        ovlp = 1.0 + ovlp_1a + ovlp_1b + ovlp_2aa + ovlp_2ab + ovlp_2bb
+        o0 = calc_overlap_single_det_uhf(walkers, trial)
+        trial.ovlp_ratio_cisd = ovlp
+    return ovlp * o0
+
 # overlap for a given determinant
 # note that the phase is not included
 def get_overlap_one_det_wicks(nex_a, cre_a, anh_a, G0a, nex_b, cre_b, anh_b, G0b):
