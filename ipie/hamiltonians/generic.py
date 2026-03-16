@@ -100,12 +100,12 @@ class GenericRealChol(GenericBase):
     
     def construct_beta_integrals(self, mocoeffb_moa):
         if self.h1eb is None:
-            self.h1eb = xp.einsum(
+            self.h1eb = numpy.einsum(
                 "pi,pq,qj->ij", mocoeffb_moa, self.H1[1], mocoeffb_moa, optimize=True
             )
         if self.cholb is None:
             chol = self.chol.reshape((self.nbasis, self.nbasis, self.nchol))
-            self.cholb = xp.einsum(
+            self.cholb = numpy.einsum(
                 "pqX,pi,qj->ijX", chol, mocoeffb_moa, mocoeffb_moa, optimize=True
             )
 
