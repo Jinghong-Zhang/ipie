@@ -186,8 +186,7 @@ class PhaselessGenericChunked(PhaselessGeneric):
             unpack_VHS_batch(hamiltonian.sym_idx[0], hamiltonian.sym_idx[1], VHS_recv, VHS)
         synchronize()
         return VHS
-
-
+    
 Phaseless = {
     "generic": PhaselessGeneric,
     "chunked": PhaselessGenericChunked,

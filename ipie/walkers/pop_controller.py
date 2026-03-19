@@ -157,6 +157,9 @@ def get_buffer(walkers, iw):
     buff : dict
         Relevant walker information for population control.
     """
+    if hasattr(walkers, "get_buffer"):
+        return walkers.get_buffer(iw)
+
     s = 0
     buff = xp.zeros(walkers.buff_size, dtype=numpy.complex128)
     for d in walkers.buff_names:
@@ -188,6 +191,10 @@ def set_buffer(walkers, iw, buff):
     buff : dict
         Relevant walker information for population control.
     """
+    if hasattr(walkers, "set_buffer"):
+        walkers.set_buffer(iw, buff)
+        return
+
     s = 0
     for d in walkers.buff_names:
         data = walkers.__dict__[d]
@@ -349,7 +356,10 @@ def comb(walkers, comm, weights, target_weight, timer=PopControllerTimer()):
     # for w in walkers.walkers:
     # w.weight = 1.0
     timer.start_time()
-    walkers.weight.fill(1.0)
+    if hasattr(walkers, "fill_combined_weight"):
+        walkers.fill_combined_weight(1.0)
+    else:
+        walkers.weight.fill(1.0)
     timer.add_non_communication()
 
 
@@ -458,7 +468,10 @@ def pair_branch(walkers, comm, max_weight, min_weight, timer=PopControllerTimer(
         if walker[1] > 1:
             timer.start_time()
             tag = comm.rank * walkers.nwalkers + walker[3]
-            walkers.weight[iw] = walker[0]
+            if hasattr(walkers, "set_combined_weight"):
+                walkers.set_combined_weight(iw, walker[0])
+            else:
+                walkers.weight[iw] = walker[0]
             buff = get_buffer(walkers, iw)
             timer.add_non_communication()
             timer.start_time()
@@ -597,4 +610,7 @@ def stochastic_reconfiguration(
 
     timer.start_time()
     walkers.weight[:] = new_average_weight
+    if hasattr(walkers, "walkers_A") and hasattr(walkers, "walkers_B"):
+        walkers.walkers_A.weight[:] = new_average_weight
+        walkers.walkers_B.weight[:] = new_average_weight
     timer.add_non_communication()

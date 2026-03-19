@@ -62,6 +62,7 @@ from ipie.trial_wavefunction.single_det import SingleDet
 from ipie.trial_wavefunction.single_det_ghf import SingleDetGHF
 from ipie.utils.backend import arraylib as xp
 from ipie.walkers.ghf_walkers import GHFWalkers
+from ipie.walkers.correlated_walkers import CorrelatedWalkers
 
 
 @plum.dispatch
@@ -232,3 +233,75 @@ class EnergyEstimator(EstimatorBase):
         data[ix_nume] = data[ix_nume] / data[ix_deno]
         ix_nume = self._data_index["E2Body"]
         data[ix_nume] = data[ix_nume] / data[ix_deno]
+
+
+class CorrelatedEnergyEstimator(EstimatorBase):
+    """Minimal estimator for weighted energy difference in correlated runs.
+
+    This estimator expects paired inputs for ``system``, ``hamiltonian`` and
+    ``trial``, along with a ``CorrelatedWalkers`` instance. It computes
+    ``DeltaE = E_B - E_A`` with total walker weight
+    ``w = w_A * w_B``.
+    """
+
+    def __init__(self, filename=None):
+        super().__init__()
+        self.scalar_estimator = True
+        self._data = {
+            "EDiffNumer": 0.0j,
+            "EDiffDenom": 0.0j,
+            "EDiff": 0.0j,
+            "E1BodyDiff": 0.0j,
+            "E2BodyDiff": 0.0j,
+        }
+        self._shape = (len(self.names),)
+        self._data_index = {k: i for i, k in enumerate(list(self._data.keys()))}
+        self.print_to_stdout = True
+        self.ascii_filename = filename
+
+    @staticmethod
+    def _unpack_pair(obj, name):
+        if isinstance(obj, (tuple, list)) and len(obj) == 2:
+            return obj[0], obj[1]
+        if isinstance(obj, dict):
+            if "A" in obj and "B" in obj:
+                return obj["A"], obj["B"]
+            if "reference" in obj and "sample" in obj:
+                return obj["reference"], obj["sample"]
+        raise ValueError(
+            f"{name} must be a 2-tuple/list or dict with keys ('A','B') or ('reference','sample')."
+        )
+
+    def compute_estimator(self, system=None, walkers=None, hamiltonian=None, trial=None):
+        if not isinstance(walkers, CorrelatedWalkers):
+            raise ValueError("CorrelatedEnergyEstimator requires a CorrelatedWalkers instance.")
+
+        systemA, systemB = self._unpack_pair(system, "system")
+        hamiltonianA, hamiltonianB = self._unpack_pair(hamiltonian, "hamiltonian")
+        trialA, trialB = self._unpack_pair(trial, "trial")
+
+        trialA.calc_greens_function(walkers.walkers_A)
+        trialB.calc_greens_function(walkers.walkers_B)
+
+        energyA = local_energy(systemA, hamiltonianA, walkers.walkers_A, trialA)
+        energyB = local_energy(systemB, hamiltonianB, walkers.walkers_B, trialB)
+
+        ediff = energyB - energyA
+        wt = walkers.weight
+
+        self._data["EDiffNumer"] = xp.sum(wt * ediff[:, 0].real)
+        self._data["EDiffDenom"] = xp.sum(wt)
+        self._data["E1BodyDiff"] = xp.sum(wt * ediff[:, 1].real)
+        self._data["E2BodyDiff"] = xp.sum(wt * ediff[:, 2].real)
+        return self.data
+
+    def post_reduce_hook(self, data):
+        ix_diff = self._data_index["EDiff"]
+        ix_nume = self._data_index["EDiffNumer"]
+        ix_deno = self._data_index["EDiffDenom"]
+        data[ix_diff] = data[ix_nume] / data[ix_deno]
+
+        ix_e1 = self._data_index["E1BodyDiff"]
+        ix_e2 = self._data_index["E2BodyDiff"]
+        data[ix_e1] = data[ix_e1] / data[ix_deno]
+        data[ix_e2] = data[ix_e2] / data[ix_deno]
