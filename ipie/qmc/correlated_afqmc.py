@@ -37,12 +37,12 @@ class CorrelatedAFQMC:
 
     This driver is independent from AFQMC/AFQMCBase and is built around:
     - CorrelatedWalkers: wrapper for (walkers_a, walkers_b)
-    - CorrelatedPropagator: wrapper for (propagator_a, propagator_b)
+    - CorrelatedPropagator: joint propagator for paired walker channels
 
-    Channel A and B are propagated separately in each step. Aggregate walker
-    weight and overlap are maintained as products of per-channel quantities.
-    For correlated sampling, both channels are propagated with the same
-    timestep sign.
+    Channel A and B are propagated in one joint step using shared auxiliary
+    fields. Aggregate walker weight and overlap are maintained as products of
+    per-channel quantities. For correlated sampling, both channels are
+    propagated with the same timestep sign.
     """
 
     def __init__(
@@ -102,8 +102,7 @@ class CorrelatedAFQMC:
         self.propagator = propagator
         self.eq_propagator = eq_propagator if eq_propagator is not None else propagator
 
-        self.eshiftA = 0.0
-        self.eshiftB = 0.0
+        self.eshift = 0.0
         self.setup_timers()
 
     @staticmethod
@@ -332,12 +331,6 @@ class CorrelatedAFQMC:
         self.accumulators = WalkerAccumulator(
             ["Weight", "WeightFactor", "HybridEnergy"], self.params.num_steps_per_block
         )
-        self.accumulatorsA = WalkerAccumulator(
-            ["Weight", "WeightFactor", "HybridEnergy"], self.params.num_steps_per_block
-        )
-        self.accumulatorsB = WalkerAccumulator(
-            ["Weight", "WeightFactor", "HybridEnergy"], self.params.num_steps_per_block
-        )
         comm = self.mpi_handler.comm
         # Correlated driver does not register single-system predefined estimators.
         # Additional correlated estimators can be attached via additional_estimators.
@@ -370,14 +363,10 @@ class CorrelatedAFQMC:
             self.walkers,
         )
         self.accumulators.update(self.walkers)
-        self.accumulatorsA.update(self.walkers.walkers_A)
-        self.accumulatorsB.update(self.walkers.walkers_B)
         self.estimators.print_block(comm, 0, self.accumulators)
         self.accumulators.zero()
-        self.accumulatorsA.zero()
-        self.accumulatorsB.zero()
 
-    def _compute_channel_eshift(self, accumulator):
+    def _compute_eshift(self, accumulator):
         comm = self.mpi_handler.comm
         local_vals = accumulator.buffer.copy()
         global_vals = xp.zeros_like(local_vals)
@@ -415,8 +404,7 @@ class CorrelatedAFQMC:
                 )
 
         self.setup_timers()
-        eshiftA = 0.0
-        eshiftB = 0.0
+        eshift = 0.0
         self.walkers.orthogonalise()
 
         self.pcontrol_eq = PopController(
@@ -475,8 +463,7 @@ class CorrelatedAFQMC:
                 self.hamiltonianB,
                 self.trialA,
                 self.trialB,
-                eshiftA,
-                eshiftB,
+                eshift,
             )
 
             timer_a = prop.timer_a
@@ -499,18 +486,12 @@ class CorrelatedAFQMC:
             start_clip = time.time()
             if step > 1 and step <= num_eqlb_steps:
                 wbound = self.pcontrol_eq.total_weight * 0.10
-                xp.nan_to_num(self.walkers.walkers_A.weight, copy=False)
-                xp.clip(self.walkers.walkers_A.weight, a_min=-wbound, a_max=wbound, out=self.walkers.walkers_A.weight)
-                xp.nan_to_num(self.walkers.walkers_B.weight, copy=False)
-                xp.clip(self.walkers.walkers_B.weight, a_min=-wbound, a_max=wbound, out=self.walkers.walkers_B.weight)
-                self.walkers.sync_combined_state()
+                xp.nan_to_num(self.walkers.weight, copy=False)
+                xp.clip(self.walkers.weight, a_min=-wbound, a_max=wbound, out=self.walkers.weight)
             elif step > num_eqlb_steps and step > 1:
                 wbound = self.pcontrol.total_weight * 0.10
-                xp.nan_to_num(self.walkers.walkers_A.weight, copy=False)
-                xp.clip(self.walkers.walkers_A.weight, a_min=-wbound, a_max=wbound, out=self.walkers.walkers_A.weight)
-                xp.nan_to_num(self.walkers.walkers_B.weight, copy=False)
-                xp.clip(self.walkers.walkers_B.weight, a_min=-wbound, a_max=wbound, out=self.walkers.walkers_B.weight)
-                self.walkers.sync_combined_state()
+                xp.nan_to_num(self.walkers.weight, copy=False)
+                xp.clip(self.walkers.weight, a_min=-wbound, a_max=wbound, out=self.walkers.weight)
             synchronize()
             self.tprop_clip += time.time() - start_clip
 
@@ -540,8 +521,6 @@ class CorrelatedAFQMC:
 
             start = time.time()
             self.accumulators.update(self.walkers)
-            self.accumulatorsA.update(self.walkers.walkers_A)
-            self.accumulatorsB.update(self.walkers.walkers_B)
             synchronize()
             self.testim += time.time() - start
 
@@ -559,11 +538,8 @@ class CorrelatedAFQMC:
                         (step - num_eqlb_steps) // self.params.num_steps_per_block,
                         self.accumulators,
                     )
-                    self.eshiftA = self._compute_channel_eshift(self.accumulatorsA)
-                    self.eshiftB = self._compute_channel_eshift(self.accumulatorsB)
                     self.accumulators.zero()
-                    self.accumulatorsA.zero()
-                    self.accumulatorsB.zero()
+                    self.eshift = self._compute_eshift(self.accumulators)
             else:
                 if step % self.params.eq_num_steps_per_block == 0:
                     self.estimators.compute_estimators(
@@ -577,11 +553,8 @@ class CorrelatedAFQMC:
                         step // self.params.eq_num_steps_per_block,
                         self.accumulators,
                     )
-                    self.eshiftA = self._compute_channel_eshift(self.accumulatorsA)
-                    self.eshiftB = self._compute_channel_eshift(self.accumulatorsB)
                     self.accumulators.zero()
-                    self.accumulatorsA.zero()
-                    self.accumulatorsB.zero()
+                    self.eshift = self._compute_eshift(self.accumulators)
             synchronize()
             self.testim += time.time() - start
 
@@ -594,12 +567,10 @@ class CorrelatedAFQMC:
                     if step == self.walkers.write_time:
                         self.walkers.write_walkers_batch(comm)
 
-            if step < num_eqlb_steps:
-                eshiftA = self.eshiftA
-                eshiftB = self.eshiftB
+            if step == 1:
+                eshift = self.eshift
             else:
-                eshiftA += self.eshiftA - eshiftA
-                eshiftB += self.eshiftB - eshiftB
+                eshift += self.eshift - eshift
 
             synchronize()
             self.tstep += time.time() - start_step
