@@ -107,9 +107,10 @@ class CorrelatedAFQMC:
 
     @staticmethod
     def build(
-        num_elec: Tuple[int, int],
+        num_elecA: Tuple[int, int],
         hamiltonianA,
         trial_wavefunctionA,
+        num_elecB: Tuple[int, int]= None,
         hamiltonianB=None,
         trial_wavefunctionB=None,
         walkers: Optional[CorrelatedWalkers] = None,
@@ -166,8 +167,8 @@ class CorrelatedAFQMC:
             walkermap_filepath=None,
         )
 
-        systemA = Generic(num_elec)
-        systemB = Generic(num_elec)
+        systemA = Generic(num_elecA)
+        systemB = Generic(num_elecB) if num_elecB is not None else systemA
 
         if trial_wavefunctionA.compute_trial_energy:
             trial_wavefunctionA.calculate_energy(systemA, hamiltonianA)
@@ -366,21 +367,6 @@ class CorrelatedAFQMC:
         self.estimators.print_block(comm, 0, self.accumulators)
         self.accumulators.zero()
 
-    def _compute_eshift(self, accumulator):
-        comm = self.mpi_handler.comm
-        local_vals = accumulator.buffer.copy()
-        global_vals = xp.zeros_like(local_vals)
-        comm.Reduce(local_vals, global_vals, op=MPI.SUM, root=0)
-
-        if comm.rank == 0:
-            weight = global_vals[accumulator.get_index("Weight")]
-            hybrid = global_vals[accumulator.get_index("HybridEnergy")]
-            shift = hybrid / weight if abs(weight) > 1e-16 else 0.0
-        else:
-            shift = None
-
-        return comm.bcast(shift, root=0).real
-
     def run(
         self,
         walkers=None,
@@ -539,7 +525,6 @@ class CorrelatedAFQMC:
                         self.accumulators,
                     )
                     self.accumulators.zero()
-                    self.eshift = self._compute_eshift(self.accumulators)
             else:
                 if step % self.params.eq_num_steps_per_block == 0:
                     self.estimators.compute_estimators(
@@ -554,7 +539,6 @@ class CorrelatedAFQMC:
                         self.accumulators,
                     )
                     self.accumulators.zero()
-                    self.eshift = self._compute_eshift(self.accumulators)
             synchronize()
             self.testim += time.time() - start
 
@@ -567,10 +551,10 @@ class CorrelatedAFQMC:
                     if step == self.walkers.write_time:
                         self.walkers.write_walkers_batch(comm)
 
-            if step == 1:
-                eshift = self.eshift
+            if step < num_eqlb_steps:
+                eshift = self.accumulators.eshift
             else:
-                eshift += self.eshift - eshift
+                eshift += self.accumulators.eshift - eshift
 
             synchronize()
             self.tstep += time.time() - start_step

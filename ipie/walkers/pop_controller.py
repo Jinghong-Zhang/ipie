@@ -610,7 +610,4 @@ def stochastic_reconfiguration(
 
     timer.start_time()
     walkers.weight[:] = new_average_weight
-    if hasattr(walkers, "walkers_A") and hasattr(walkers, "walkers_B"):
-        walkers.walkers_A.weight[:] = new_average_weight
-        walkers.walkers_B.weight[:] = new_average_weight
     timer.add_non_communication()
