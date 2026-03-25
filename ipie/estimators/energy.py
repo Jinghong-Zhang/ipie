@@ -17,6 +17,8 @@
 
 from typing import Union
 
+import numpy
+
 import plum
 
 from ipie.estimators.estimator_base import EstimatorBase
@@ -260,6 +262,22 @@ class CorrelatedEnergyEstimator(EstimatorBase):
         self.ascii_filename = filename
 
     @staticmethod
+    def _to_numpy(values):
+        if isinstance(values, numpy.ndarray):
+            return values
+        return xp.asnumpy(values)
+
+    @classmethod
+    def _first_three(cls, values):
+        return cls._to_numpy(values)[:3]
+
+    @staticmethod
+    def _safe_ratio(numerator, denominator):
+        if abs(denominator) < 1e-14:
+            return numpy.nan
+        return numerator / denominator
+
+    @staticmethod
     def _unpack_pair(obj, name):
         if isinstance(obj, (tuple, list)) and len(obj) == 2:
             return obj[0], obj[1]
@@ -288,9 +306,48 @@ class CorrelatedEnergyEstimator(EstimatorBase):
 
         ediff = energyB - energyA
         wt = walkers.weight
+        wt_a = walkers.walkers_A.weight
+        wt_b = walkers.walkers_B.weight
 
-        self._data["EDiffNumer"] = xp.sum(wt * ediff[:, 0].real)
-        self._data["EDiffDenom"] = xp.sum(wt)
+        ediff_numer = xp.sum(wt * ediff[:, 0].real)
+        ediff_denom = xp.sum(wt)
+        e_a_numer = xp.sum(wt_a * energyA[:, 0].real)
+        e_a_denom = xp.sum(wt_a)
+        e_b_numer = xp.sum(wt_b * energyB[:, 0].real)
+        e_b_denom = xp.sum(wt_b)
+
+        ediff_estimator = self._safe_ratio(
+            self._to_numpy(ediff_numer).item(), self._to_numpy(ediff_denom).item()
+        )
+        e_a_estimator = self._safe_ratio(
+            self._to_numpy(e_a_numer).item(), self._to_numpy(e_a_denom).item()
+        )
+        e_b_estimator = self._safe_ratio(
+            self._to_numpy(e_b_numer).item(), self._to_numpy(e_b_denom).item()
+        )
+
+        print(
+            "# Correlated energy estimator: "
+            f"EDiff={ediff_estimator} "
+            f"E_A={e_a_estimator} "
+            f"E_B={e_b_estimator} "
+            f"E_B-E_A={e_b_estimator - e_a_estimator}"
+        )
+        print(
+            "# Correlated energy estimator inputs: "
+            f"w_A[:3]={numpy.array2string(self._first_three(wt_a), precision=8, suppress_small=False)} "
+            f"w_B[:3]={numpy.array2string(self._first_three(wt_b), precision=8, suppress_small=False)} "
+            f"w_A*w_B[:3]={numpy.array2string(self._first_three(wt), precision=8, suppress_small=False)}"
+        )
+        print(
+            "# Correlated local energies: "
+            f"E_A_local[:3]={numpy.array2string(self._first_three(energyA[:, 0].real), precision=8, suppress_small=False)} "
+            f"E_B_local[:3]={numpy.array2string(self._first_three(energyB[:, 0].real), precision=8, suppress_small=False)} "
+            f"EDiff_local[:3]={numpy.array2string(self._first_three(ediff[:, 0].real), precision=8, suppress_small=False)}"
+        )
+
+        self._data["EDiffNumer"] = ediff_numer
+        self._data["EDiffDenom"] = ediff_denom
         self._data["E1BodyDiff"] = xp.sum(wt * ediff[:, 1].real)
         self._data["E2BodyDiff"] = xp.sum(wt * ediff[:, 2].real)
         return self.data

@@ -7,6 +7,8 @@
 
 import time
 
+import numpy
+
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 
@@ -22,20 +24,104 @@ class CorrelatedPropagator:
         self.propagator_a = propagator_a
         self.propagator_b = propagator_b
 
+    @staticmethod
+    def _to_numpy(values):
+        if values is None:
+            return None
+        if isinstance(values, numpy.ndarray):
+            return values
+        return xp.asnumpy(values)
+
+    @classmethod
+    def _first_three(cls, values):
+        if values is None:
+            return None
+        return cls._to_numpy(values)[:3]
+
+    @staticmethod
+    def _format_values(values):
+        if values is None:
+            return "None"
+        return numpy.array2string(values, precision=8, suppress_small=False)
+
+    @classmethod
+    def _walker_norms(cls, walkers):
+        if hasattr(walkers, "phi") and walkers.phi is not None:
+            phi = cls._to_numpy(walkers.phi)
+            return numpy.linalg.norm(phi, axis=(1, 2))
+
+        norm_sq = None
+        if hasattr(walkers, "phia") and walkers.phia is not None:
+            phia = cls._to_numpy(walkers.phia)
+            norm_sq = numpy.sum(numpy.abs(phia) ** 2, axis=(1, 2))
+        if hasattr(walkers, "phib") and walkers.phib is not None:
+            phib = cls._to_numpy(walkers.phib)
+            phib_norm_sq = numpy.sum(numpy.abs(phib) ** 2, axis=(1, 2))
+            norm_sq = phib_norm_sq if norm_sq is None else norm_sq + phib_norm_sq
+        if norm_sq is None:
+            return None
+        return numpy.sqrt(norm_sq)
+
+    @classmethod
+    def _print_channel_state(cls, label, walkers):
+        print(
+            f"# {label}: "
+            f"weight[:3]={cls._format_values(cls._first_three(walkers.weight))} "
+            f"ovlp[:3]={cls._format_values(cls._first_three(walkers.ovlp))} "
+            f"norm[:3]={cls._format_values(cls._first_three(cls._walker_norms(walkers)))}"
+        )
+
+    @classmethod
+    def _compute_weight_diagnostics(cls, propagator, walkers, ovlp, ovlp_new, cfb, cmf, eshift):
+        if isinstance(ovlp, tuple):
+            sgn_ovlp, log_ovlp = ovlp
+            sgn_ovlpnew, log_ovlpnew = ovlp_new
+            ovlp_ratio = sgn_ovlpnew / sgn_ovlp * xp.exp(log_ovlpnew - log_ovlp)
+        else:
+            ovlp_ratio = ovlp_new / ovlp
+
+        hybrid_energy = -(xp.log(ovlp_ratio) + cfb + cmf) / propagator.dt
+        bounded_hybrid_energy = propagator.apply_bound_hybrid(hybrid_energy.copy(), eshift)
+        importance_function = xp.exp(
+            -propagator.dt * (0.5 * (bounded_hybrid_energy + walkers.hybrid_energy) - eshift)
+        )
+        importance_magn = xp.abs(importance_function)
+        importance_phase = xp.angle(importance_function)
+        return bounded_hybrid_energy, importance_magn, importance_phase
+
+    @classmethod
+    def _print_weight_diagnostics(
+        cls, channel_name, walkers, hybrid_energy, importance_magn, importance_phase
+    ):
+        print(
+            f"# {channel_name} weight update: "
+            f"hybrid_energy[:3]={cls._format_values(cls._first_three(hybrid_energy))} "
+            f"importance_magn[:3]={cls._format_values(cls._first_three(importance_magn))} "
+            f"importance_phase[:3]={cls._format_values(cls._first_three(importance_phase))}"
+        )
+        print(
+            f"# {channel_name} updated weight[:3]="
+            f"{cls._format_values(cls._first_three(walkers.weight))}"
+        )
+
     def cast_to_cupy(self, verbose=False):
         if hasattr(self.propagator_a, "cast_to_cupy"):
             self.propagator_a.cast_to_cupy(verbose=verbose)
         if hasattr(self.propagator_b, "cast_to_cupy"):
             self.propagator_b.cast_to_cupy(verbose=verbose)
 
-    def _propagate_with_shared_xi(self, propagator, walkers, hamiltonian, trial, eshift, xi):
+    def _propagate_with_shared_xi(
+        self, channel_name, propagator, walkers, hamiltonian, trial, eshift, xi
+    ):
         synchronize()
         start_time = time.time()
         ovlp = trial.calc_greens_function(walkers)
         synchronize()
         propagator.timer.tgf += time.time() - start_time
+        self._print_channel_state(f"{channel_name} start", walkers)
 
         propagator.propagate_walkers_one_body(walkers)
+        self._print_channel_state(f"{channel_name} after first one-body", walkers)
 
         start_time = time.time()
         propagator.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
@@ -50,18 +136,27 @@ class CorrelatedPropagator:
         cfb = xp.einsum("wx,wx->w", xi, xbar) - 0.5 * xp.einsum("wx,wx->w", xbar, xbar)
 
         propagator.apply_VHS(walkers, hamiltonian, xshifted.T.copy())
+        self._print_channel_state(f"{channel_name} after two-body", walkers)
 
         propagator.propagate_walkers_one_body(walkers)
+        self._print_channel_state(f"{channel_name} after second one-body", walkers)
 
         start_time = time.time()
         ovlp_new = trial.calc_overlap(walkers)
         synchronize()
         propagator.timer.tovlp += time.time() - start_time
 
+        hybrid_energy, importance_magn, importance_phase = self._compute_weight_diagnostics(
+            propagator, walkers, ovlp, ovlp_new, cfb, cmf, eshift
+        )
+
         start_time = time.time()
         propagator.update_weight(walkers, ovlp, ovlp_new, cfb, cmf, eshift)
         synchronize()
         propagator.timer.tupdate += time.time() - start_time
+        self._print_weight_diagnostics(
+            channel_name, walkers, hybrid_energy, importance_magn, importance_phase
+        )
 
     def propagate_walkers(
         self,
@@ -81,6 +176,7 @@ class CorrelatedPropagator:
         ).reshape(correlated_walkers.walkers_A.nwalkers, hamiltonian_a.nfields)
 
         self._propagate_with_shared_xi(
+            "A",
             self.propagator_a,
             correlated_walkers.walkers_A,
             hamiltonian_a,
@@ -89,6 +185,7 @@ class CorrelatedPropagator:
             shared_xi,
         )
         self._propagate_with_shared_xi(
+            "B",
             self.propagator_b,
             correlated_walkers.walkers_B,
             hamiltonian_b,
@@ -98,6 +195,12 @@ class CorrelatedPropagator:
         )
 
         correlated_walkers.sync_combined_state()
+        print(
+            "# Combined correlated state: "
+            f"weight_A[:3]={self._format_values(self._first_three(correlated_walkers.weight_A))} "
+            f"weight_B[:3]={self._format_values(self._first_three(correlated_walkers.weight_B))} "
+            f"weight_A*weight_B[:3]={self._format_values(self._first_three(correlated_walkers.weight))}"
+        )
 
     @property
     def timer_a(self):
