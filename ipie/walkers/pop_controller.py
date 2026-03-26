@@ -632,13 +632,3 @@ def stochastic_reconfiguration(
         walkers.walkers_A.weight[:] = new_average_weight
         walkers.walkers_B.weight[:] = new_average_weight
     timer.add_non_communication()
-    if debug_copy and copy_checks:
-        for iw, src_rank, buf_norm, diff_norm in copy_checks:
-            print(
-                "# SR copy check: "
-                f"rank={comm.rank} "
-                f"walker={iw} "
-                f"src_rank={src_rank} "
-                f"recv_buf_norm={buf_norm:.12e} "
-                f"repacked_diff_norm={diff_norm:.12e}"
-            )

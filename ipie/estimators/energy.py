@@ -335,18 +335,6 @@ class CorrelatedEnergyEstimator(EstimatorBase):
             f"E_B={e_b_estimator} "
             f"E_B-E_A={e_b_estimator - e_a_estimator}"
         )
-        print(
-            "# Correlated energy estimator inputs: "
-            f"w_A[:3]={numpy.array2string(self._first_three(wt_a), precision=8, suppress_small=False)} "
-            f"w_B[:3]={numpy.array2string(self._first_three(wt_b), precision=8, suppress_small=False)} "
-            f"w_A*w_B[:3]={numpy.array2string(self._first_three(wt), precision=8, suppress_small=False)}"
-        )
-        print(
-            "# Correlated local energies: "
-            f"E_A_local[:3]={numpy.array2string(self._first_three(energyA[:, 0].real), precision=8, suppress_small=False)} "
-            f"E_B_local[:3]={numpy.array2string(self._first_three(energyB[:, 0].real), precision=8, suppress_small=False)} "
-            f"EDiff_local[:3]={numpy.array2string(self._first_three(ediff[:, 0].real), precision=8, suppress_small=False)}"
-        )
 
         self._data["EDiffNumer"] = ediff_numer
         self._data["EDiffDenom"] = ediff_denom

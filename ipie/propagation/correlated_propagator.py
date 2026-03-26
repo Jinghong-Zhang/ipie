@@ -65,15 +65,6 @@ class CorrelatedPropagator:
         return numpy.sqrt(norm_sq)
 
     @classmethod
-    def _print_channel_state(cls, label, walkers):
-        print(
-            f"# {label}: "
-            f"weight[:3]={cls._format_values(cls._first_three(walkers.weight))} "
-            f"ovlp[:3]={cls._format_values(cls._first_three(walkers.ovlp))} "
-            f"norm[:3]={cls._format_values(cls._first_three(cls._walker_norms(walkers)))}"
-        )
-
-    @classmethod
     def _compute_weight_diagnostics(cls, propagator, walkers, ovlp, ovlp_new, cfb, cmf, eshift):
         if isinstance(ovlp, tuple):
             sgn_ovlp, log_ovlp = ovlp
@@ -93,21 +84,6 @@ class CorrelatedPropagator:
         xp.clip(cosine_fac, a_min=0.0, a_max=None, out=cosine_fac)
         return bounded_hybrid_energy, importance_magn, dtheta, cosine_fac
 
-    @classmethod
-    def _print_weight_diagnostics(
-        cls, channel_name, walkers, hybrid_energy, importance_magn, cosine_fac
-    ):
-        print(
-            f"# {channel_name} weight update: "
-            f"hybrid_energy[:3]={cls._format_values(cls._first_three(hybrid_energy))} "
-            f"importance_magn[:3]={cls._format_values(cls._first_three(importance_magn))} "
-            f"cosine_fac[:3]={cls._format_values(cls._first_three(cosine_fac))}"
-        )
-        print(
-            f"# {channel_name} updated weight[:3]="
-            f"{cls._format_values(cls._first_three(walkers.weight))}"
-        )
-
     def cast_to_cupy(self, verbose=False):
         if hasattr(self.propagator_a, "cast_to_cupy"):
             self.propagator_a.cast_to_cupy(verbose=verbose)
@@ -122,10 +98,7 @@ class CorrelatedPropagator:
         ovlp = trial.calc_greens_function(walkers)
         synchronize()
         propagator.timer.tgf += time.time() - start_time
-        self._print_channel_state(f"{channel_name} start", walkers)
-
         propagator.propagate_walkers_one_body(walkers)
-        self._print_channel_state(f"{channel_name} after first one-body", walkers)
 
         start_time = time.time()
         propagator.vbias = trial.calc_force_bias(hamiltonian, walkers, walkers.mpi_handler)
@@ -140,10 +113,8 @@ class CorrelatedPropagator:
         cfb = xp.einsum("wx,wx->w", xi, xbar) - 0.5 * xp.einsum("wx,wx->w", xbar, xbar)
 
         propagator.apply_VHS(walkers, hamiltonian, xshifted.T.copy())
-        self._print_channel_state(f"{channel_name} after two-body", walkers)
 
         propagator.propagate_walkers_one_body(walkers)
-        self._print_channel_state(f"{channel_name} after second one-body", walkers)
 
         start_time = time.time()
         ovlp_new = trial.calc_overlap(walkers)
@@ -158,9 +129,6 @@ class CorrelatedPropagator:
         propagator.update_weight(walkers, ovlp, ovlp_new, cfb, cmf, eshift)
         synchronize()
         propagator.timer.tupdate += time.time() - start_time
-        self._print_weight_diagnostics(
-            channel_name, walkers, hybrid_energy, importance_magn, cosine_fac
-        )
         return dtheta, cosine_fac
 
     def propagate_walkers(
@@ -200,20 +168,8 @@ class CorrelatedPropagator:
         )
 
         correlated_walkers.sync_combined_state()
-        print(
-            "# Combined correlated state: "
-            f"weight_A[:3]={self._format_values(self._first_three(correlated_walkers.weight_A))} "
-            f"weight_B[:3]={self._format_values(self._first_three(correlated_walkers.weight_B))} "
-            f"weight_A*weight_B[:3]={self._format_values(self._first_three(correlated_walkers.weight))}"
-        )
         cosine_fac_sum = xp.cos(dtheta_a + dtheta_b)
         xp.clip(cosine_fac_sum, a_min=0.0, a_max=None, out=cosine_fac_sum)
-        cosine_fac_product = cosine_fac_a * cosine_fac_b
-        print(
-            "# Separate cosine comparison: "
-            f"cos(theta_A+theta_B)[:3]={self._format_values(self._first_three(cosine_fac_sum))} "
-            f"cos(theta_A)*cos(theta_B)[:3]={self._format_values(self._first_three(cosine_fac_product))}"
-        )
 
     @property
     def timer_a(self):
