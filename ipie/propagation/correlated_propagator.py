@@ -30,7 +30,9 @@ class CorrelatedPropagator:
             return None
         if isinstance(values, numpy.ndarray):
             return values
-        return xp.asnumpy(values)
+        if hasattr(xp, "asnumpy"):
+            return xp.asnumpy(values)
+        return numpy.asarray(values)
 
     @classmethod
     def _first_three(cls, values):
@@ -86,18 +88,20 @@ class CorrelatedPropagator:
             -propagator.dt * (0.5 * (bounded_hybrid_energy + walkers.hybrid_energy) - eshift)
         )
         importance_magn = xp.abs(importance_function)
-        importance_phase = xp.angle(importance_function)
-        return bounded_hybrid_energy, importance_magn, importance_phase
+        dtheta = (-propagator.dt * bounded_hybrid_energy - cfb).imag
+        cosine_fac = xp.cos(dtheta)
+        xp.clip(cosine_fac, a_min=0.0, a_max=None, out=cosine_fac)
+        return bounded_hybrid_energy, importance_magn, dtheta, cosine_fac
 
     @classmethod
     def _print_weight_diagnostics(
-        cls, channel_name, walkers, hybrid_energy, importance_magn, importance_phase
+        cls, channel_name, walkers, hybrid_energy, importance_magn, cosine_fac
     ):
         print(
             f"# {channel_name} weight update: "
             f"hybrid_energy[:3]={cls._format_values(cls._first_three(hybrid_energy))} "
             f"importance_magn[:3]={cls._format_values(cls._first_three(importance_magn))} "
-            f"importance_phase[:3]={cls._format_values(cls._first_three(importance_phase))}"
+            f"cosine_fac[:3]={cls._format_values(cls._first_three(cosine_fac))}"
         )
         print(
             f"# {channel_name} updated weight[:3]="
@@ -146,7 +150,7 @@ class CorrelatedPropagator:
         synchronize()
         propagator.timer.tovlp += time.time() - start_time
 
-        hybrid_energy, importance_magn, importance_phase = self._compute_weight_diagnostics(
+        hybrid_energy, importance_magn, dtheta, cosine_fac = self._compute_weight_diagnostics(
             propagator, walkers, ovlp, ovlp_new, cfb, cmf, eshift
         )
 
@@ -155,8 +159,9 @@ class CorrelatedPropagator:
         synchronize()
         propagator.timer.tupdate += time.time() - start_time
         self._print_weight_diagnostics(
-            channel_name, walkers, hybrid_energy, importance_magn, importance_phase
+            channel_name, walkers, hybrid_energy, importance_magn, cosine_fac
         )
+        return dtheta, cosine_fac
 
     def propagate_walkers(
         self,
@@ -175,7 +180,7 @@ class CorrelatedPropagator:
             hamiltonian_a.nfields * correlated_walkers.walkers_A.nwalkers,
         ).reshape(correlated_walkers.walkers_A.nwalkers, hamiltonian_a.nfields)
 
-        self._propagate_with_shared_xi(
+        dtheta_a, cosine_fac_a = self._propagate_with_shared_xi(
             "A",
             self.propagator_a,
             correlated_walkers.walkers_A,
@@ -184,7 +189,7 @@ class CorrelatedPropagator:
             eshift_a,
             shared_xi,
         )
-        self._propagate_with_shared_xi(
+        dtheta_b, cosine_fac_b = self._propagate_with_shared_xi(
             "B",
             self.propagator_b,
             correlated_walkers.walkers_B,
@@ -200,6 +205,14 @@ class CorrelatedPropagator:
             f"weight_A[:3]={self._format_values(self._first_three(correlated_walkers.weight_A))} "
             f"weight_B[:3]={self._format_values(self._first_three(correlated_walkers.weight_B))} "
             f"weight_A*weight_B[:3]={self._format_values(self._first_three(correlated_walkers.weight))}"
+        )
+        cosine_fac_sum = xp.cos(dtheta_a + dtheta_b)
+        xp.clip(cosine_fac_sum, a_min=0.0, a_max=None, out=cosine_fac_sum)
+        cosine_fac_product = cosine_fac_a * cosine_fac_b
+        print(
+            "# Separate cosine comparison: "
+            f"cos(theta_A+theta_B)[:3]={self._format_values(self._first_three(cosine_fac_sum))} "
+            f"cos(theta_A)*cos(theta_B)[:3]={self._format_values(self._first_three(cosine_fac_product))}"
         )
 
     @property

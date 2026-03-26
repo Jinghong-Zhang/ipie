@@ -111,6 +111,7 @@ class CorrelatedAFQMC:
         num_elec: Tuple[int, int],
         hamiltonianA,
         trial_wavefunctionA,
+        num_elecB: Optional[Tuple[int, int]] = None,
         hamiltonianB=None,
         trial_wavefunctionB=None,
         walkers: Optional[CorrelatedWalkers] = None,
@@ -144,6 +145,8 @@ class CorrelatedAFQMC:
             hamiltonianB = hamiltonianA
         if trial_wavefunctionB is None:
             trial_wavefunctionB = trial_wavefunctionA
+        if num_elecB is None:
+            num_elecB = num_elec
 
         params = QMCParams(
             num_walkers=num_walkers,
@@ -168,7 +171,7 @@ class CorrelatedAFQMC:
         )
 
         systemA = Generic(num_elec)
-        systemB = Generic(num_elec)
+        systemB = Generic(num_elecB)
 
         if trial_wavefunctionA.compute_trial_energy:
             trial_wavefunctionA.calculate_energy(systemA, hamiltonianA)

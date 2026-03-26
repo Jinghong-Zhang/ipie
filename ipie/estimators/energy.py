@@ -265,7 +265,9 @@ class CorrelatedEnergyEstimator(EstimatorBase):
     def _to_numpy(values):
         if isinstance(values, numpy.ndarray):
             return values
-        return xp.asnumpy(values)
+        if hasattr(xp, "asnumpy"):
+            return xp.asnumpy(values)
+        return numpy.asarray(values)
 
     @classmethod
     def _first_three(cls, values):

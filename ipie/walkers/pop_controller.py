@@ -1,4 +1,5 @@
 import time
+import os
 import h5py
 import numpy
 
@@ -598,10 +599,27 @@ def stochastic_reconfiguration(
         req = comm.Irecv(recv_buf, source=int(src_rank), tag=int(tag_recv))
         recv_reqs.append((iw, recv_buf, status, req))
 
+    debug_copy = os.environ.get("IPIE_SR_COPY_DEBUG", "0") == "1"
+    copy_checks = []
+
     # Wait on recvs and inspect their Status
     for iw, buf, status, req in recv_reqs:
         req.Wait(status)
         set_buffer(walkers, iw, buf)
+        if debug_copy and len(copy_checks) < 3:
+            repacked = get_buffer(walkers, iw)
+            if hasattr(status, "Get_source"):
+                src_rank = int(status.Get_source())
+            else:
+                src_rank = int(getattr(status, "source", comm.rank))
+            copy_checks.append(
+                (
+                    int(iw),
+                    src_rank,
+                    float(numpy.linalg.norm(buf)),
+                    float(numpy.linalg.norm(repacked - buf)),
+                )
+            )
 
     # 4) Wait on sends
     MPI.Request.Waitall(send_reqs)
@@ -614,3 +632,13 @@ def stochastic_reconfiguration(
         walkers.walkers_A.weight[:] = new_average_weight
         walkers.walkers_B.weight[:] = new_average_weight
     timer.add_non_communication()
+    if debug_copy and copy_checks:
+        for iw, src_rank, buf_norm, diff_norm in copy_checks:
+            print(
+                "# SR copy check: "
+                f"rank={comm.rank} "
+                f"walker={iw} "
+                f"src_rank={src_rank} "
+                f"recv_buf_norm={buf_norm:.12e} "
+                f"repacked_diff_norm={diff_norm:.12e}"
+            )
