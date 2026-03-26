@@ -10,6 +10,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+import numpy
+
 from ipie.propagation.continuous_base import PropagatorTimer
 from ipie.propagation.operations import propagate_one_body
 from ipie.utils.backend import arraylib as xp
@@ -45,6 +47,55 @@ class CorrelatedPropagator:
             expH1=propagator_b.expH1,
             mf_shift=propagator_b.mf_shift,
             kernel=self._make_vhs_kernel(propagator_b),
+        )
+
+    @staticmethod
+    def _to_numpy(values):
+        if values is None:
+            return None
+        if isinstance(values, numpy.ndarray):
+            return values
+        if hasattr(xp, "asnumpy"):
+            return xp.asnumpy(values)
+        return numpy.asarray(values)
+
+    @classmethod
+    def _first_three(cls, values):
+        if values is None:
+            return None
+        return cls._to_numpy(values)[:3]
+
+    @staticmethod
+    def _format_values(values):
+        if values is None:
+            return "None"
+        return numpy.array2string(values, precision=8, suppress_small=False)
+
+    @classmethod
+    def _walker_norms(cls, walkers):
+        if hasattr(walkers, "phi") and walkers.phi is not None:
+            phi = cls._to_numpy(walkers.phi)
+            return numpy.linalg.norm(phi, axis=(1, 2))
+
+        norm_sq = None
+        if hasattr(walkers, "phia") and walkers.phia is not None:
+            phia = cls._to_numpy(walkers.phia)
+            norm_sq = numpy.sum(numpy.abs(phia) ** 2, axis=(1, 2))
+        if hasattr(walkers, "phib") and walkers.phib is not None:
+            phib = cls._to_numpy(walkers.phib)
+            phib_norm_sq = numpy.sum(numpy.abs(phib) ** 2, axis=(1, 2))
+            norm_sq = phib_norm_sq if norm_sq is None else norm_sq + phib_norm_sq
+        if norm_sq is None:
+            return None
+        return numpy.sqrt(norm_sq)
+
+    @classmethod
+    def _print_channel_state(cls, label, walkers):
+        print(
+            f"# {label}: "
+            f"weight[:3]={cls._format_values(cls._first_three(walkers.weight))} "
+            f"ovlp[:3]={cls._format_values(cls._first_three(walkers.ovlp))} "
+            f"norm[:3]={cls._format_values(cls._first_three(cls._walker_norms(walkers)))}"
         )
 
     def _make_vhs_kernel(self, propagator):
@@ -130,6 +181,36 @@ class CorrelatedPropagator:
         self.timer.tfbias += time.time() - start_time
         return self._apply_bound_force_bias(xbar)
 
+    def _compute_weight_diagnostics(
+        self,
+        correlated_walkers,
+        ovlp_a,
+        ovlp_b,
+        ovlp_new_a,
+        ovlp_new_b,
+        cfb_a,
+        cfb_b,
+        cmf_a,
+        cmf_b,
+        eshift,
+    ):
+        ovlp_ratio = self._calc_overlap_ratio(ovlp_a, ovlp_new_a) * self._calc_overlap_ratio(
+            ovlp_b, ovlp_new_b
+        )
+        cfb = cfb_a + cfb_b
+        cmf = cmf_a + cmf_b
+
+        hybrid_energy = -(xp.log(ovlp_ratio) + cfb + cmf) / self.dt
+        hybrid_energy = self._apply_bound_hybrid(hybrid_energy.copy(), eshift)
+        importance_function = xp.exp(
+            -self.dt * (0.5 * (hybrid_energy + correlated_walkers.hybrid_energy) - eshift)
+        )
+        importance_magn = xp.abs(importance_function)
+        dtheta = (-self.dt * hybrid_energy - cfb).imag
+        cosine_fac = xp.cos(dtheta)
+        xp.clip(cosine_fac, a_min=0.0, a_max=None, out=cosine_fac)
+        return hybrid_energy, importance_magn, cosine_fac
+
     def _update_weight(
         self,
         correlated_walkers,
@@ -190,9 +271,13 @@ class CorrelatedPropagator:
 
         ovlp_a = self._calc_overlap_and_gf(trial_a, walkers_a)
         ovlp_b = self._calc_overlap_and_gf(trial_b, walkers_b)
+        self._print_channel_state("A start", walkers_a)
+        self._print_channel_state("B start", walkers_b)
 
         self._propagate_walkers_one_body(walkers_a, self.channel_a.expH1)
         self._propagate_walkers_one_body(walkers_b, self.channel_b.expH1)
+        self._print_channel_state("A after first one-body", walkers_a)
+        self._print_channel_state("B after first one-body", walkers_b)
 
         xbar_a = self._calc_force_bias(self.channel_a, walkers_a, hamiltonian_a, trial_a)
         xbar_b = self._calc_force_bias(self.channel_b, walkers_b, hamiltonian_b, trial_b)
@@ -213,12 +298,29 @@ class CorrelatedPropagator:
 
         self.channel_a.kernel.apply_VHS(walkers_a, hamiltonian_a, xshifted_a.T.copy())
         self.channel_b.kernel.apply_VHS(walkers_b, hamiltonian_b, xshifted_b.T.copy())
+        self._print_channel_state("A after two-body", walkers_a)
+        self._print_channel_state("B after two-body", walkers_b)
 
         self._propagate_walkers_one_body(walkers_a, self.channel_a.expH1)
         self._propagate_walkers_one_body(walkers_b, self.channel_b.expH1)
+        self._print_channel_state("A after second one-body", walkers_a)
+        self._print_channel_state("B after second one-body", walkers_b)
 
         ovlp_new_a = self._calc_overlap(trial_a, walkers_a)
         ovlp_new_b = self._calc_overlap(trial_b, walkers_b)
+
+        hybrid_energy, importance_magn, cosine_fac = self._compute_weight_diagnostics(
+            correlated_walkers,
+            ovlp_a,
+            ovlp_b,
+            ovlp_new_a,
+            ovlp_new_b,
+            cfb_a,
+            cfb_b,
+            cmf_a,
+            cmf_b,
+            eshift,
+        )
 
         start_time = time.time()
         self._update_weight(
@@ -235,6 +337,18 @@ class CorrelatedPropagator:
         )
         synchronize()
         self.timer.tupdate += time.time() - start_time
+        print(
+            "# Combined weight update: "
+            f"hybrid_energy[:3]={self._format_values(self._first_three(hybrid_energy))} "
+            f"importance_magn[:3]={self._format_values(self._first_three(importance_magn))} "
+            f"cosine_fac[:3]={self._format_values(self._first_three(cosine_fac))}"
+        )
+        print(
+            "# Combined correlated state: "
+            f"weight[:3]={self._format_values(self._first_three(correlated_walkers.weight))} "
+            f"weight_A[:3]={self._format_values(self._first_three(correlated_walkers.walkers_A.weight))} "
+            f"weight_B[:3]={self._format_values(self._first_three(correlated_walkers.walkers_B.weight))}"
+        )
 
     @property
     def timer_a(self):
