@@ -252,13 +252,20 @@ class CorrelatedEnergyEstimator(EstimatorBase):
         self._data = {
             "EDiffNumer": 0.0j,
             "EDiffDenom": 0.0j,
+            "EANumer": 0.0j,
+            "EADenom": 0.0j,
+            "EBNumer": 0.0j,
+            "EBDenom": 0.0j,
             "EDiff": 0.0j,
+            "EA": 0.0j,
+            "EB": 0.0j,
+            "EBMinusEA": 0.0j,
             "E1BodyDiff": 0.0j,
             "E2BodyDiff": 0.0j,
         }
         self._shape = (len(self.names),)
         self._data_index = {k: i for i, k in enumerate(list(self._data.keys()))}
-        self.print_to_stdout = True
+        self.print_to_stdout = False
         self.ascii_filename = filename
 
     @staticmethod
@@ -318,26 +325,12 @@ class CorrelatedEnergyEstimator(EstimatorBase):
         e_b_numer = xp.sum(wt_b * energyB[:, 0].real)
         e_b_denom = xp.sum(wt_b)
 
-        ediff_estimator = self._safe_ratio(
-            self._to_numpy(ediff_numer).item(), self._to_numpy(ediff_denom).item()
-        )
-        e_a_estimator = self._safe_ratio(
-            self._to_numpy(e_a_numer).item(), self._to_numpy(e_a_denom).item()
-        )
-        e_b_estimator = self._safe_ratio(
-            self._to_numpy(e_b_numer).item(), self._to_numpy(e_b_denom).item()
-        )
-
-        print(
-            "# Correlated energy estimator: "
-            f"EDiff={ediff_estimator} "
-            f"E_A={e_a_estimator} "
-            f"E_B={e_b_estimator} "
-            f"E_B-E_A={e_b_estimator - e_a_estimator}"
-        )
-
         self._data["EDiffNumer"] = ediff_numer
         self._data["EDiffDenom"] = ediff_denom
+        self._data["EANumer"] = e_a_numer
+        self._data["EADenom"] = e_a_denom
+        self._data["EBNumer"] = e_b_numer
+        self._data["EBDenom"] = e_b_denom
         self._data["E1BodyDiff"] = xp.sum(wt * ediff[:, 1].real)
         self._data["E2BodyDiff"] = xp.sum(wt * ediff[:, 2].real)
         return self.data
@@ -346,9 +339,22 @@ class CorrelatedEnergyEstimator(EstimatorBase):
         ix_diff = self._data_index["EDiff"]
         ix_nume = self._data_index["EDiffNumer"]
         ix_deno = self._data_index["EDiffDenom"]
-        data[ix_diff] = data[ix_nume] / data[ix_deno]
+        data[ix_diff] = self._safe_ratio(data[ix_nume], data[ix_deno])
+
+        ix_ea = self._data_index["EA"]
+        ix_ea_nume = self._data_index["EANumer"]
+        ix_ea_deno = self._data_index["EADenom"]
+        data[ix_ea] = self._safe_ratio(data[ix_ea_nume], data[ix_ea_deno])
+
+        ix_eb = self._data_index["EB"]
+        ix_eb_nume = self._data_index["EBNumer"]
+        ix_eb_deno = self._data_index["EBDenom"]
+        data[ix_eb] = self._safe_ratio(data[ix_eb_nume], data[ix_eb_deno])
+
+        ix_delta = self._data_index["EBMinusEA"]
+        data[ix_delta] = data[ix_eb] - data[ix_ea]
 
         ix_e1 = self._data_index["E1BodyDiff"]
         ix_e2 = self._data_index["E2BodyDiff"]
-        data[ix_e1] = data[ix_e1] / data[ix_deno]
-        data[ix_e2] = data[ix_e2] / data[ix_deno]
+        data[ix_e1] = self._safe_ratio(data[ix_e1], data[ix_deno])
+        data[ix_e2] = self._safe_ratio(data[ix_e2], data[ix_deno])
