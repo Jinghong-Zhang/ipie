@@ -37,6 +37,7 @@ class CorrelatedWalkers:
         self.weight_B = None
         self.ovlp_A = None
         self.ovlp_B = None
+        self.auxfield = None
 
         self.write_restart = bool(getattr(walkers_a, "write_restart", False))
         self.write_freq = getattr(walkers_a, "write_freq", None)
@@ -143,8 +144,9 @@ class CorrelatedWalkers:
         self.weight_B = self.walkers_B.weight
         self.ovlp_A = self.walkers_A.ovlp
         self.ovlp_B = self.walkers_B.ovlp
-        self.weight = self.walkers_A.weight * self.walkers_B.weight
-        self.unscaled_weight = self.walkers_A.unscaled_weight * self.walkers_B.unscaled_weight
+        self.auxfield = getattr(self.walkers_A, "auxfield", None)
+        self.weight = self.walkers_A.weight
+        self.unscaled_weight = self.walkers_A.unscaled_weight
         self.ovlp = self.walkers_A.ovlp * self.walkers_B.ovlp
         self.hybrid_energy = self.walkers_A.hybrid_energy + self.walkers_B.hybrid_energy
         self.phase = self.walkers_A.phase * self.walkers_B.phase

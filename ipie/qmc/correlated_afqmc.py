@@ -5,6 +5,8 @@
 
 """Independent correlated AFQMC driver for paired systems A and B."""
 
+import h5py
+import numpy
 import time
 import math
 import json
@@ -104,7 +106,81 @@ class CorrelatedAFQMC:
 
         self.eshiftA = 0.0
         self.eshiftB = 0.0
+        self.walker_weights_filename = None
         self.setup_timers()
+
+    @staticmethod
+    def _to_host_array(values):
+        if isinstance(values, numpy.ndarray):
+            return numpy.asarray(values.real, dtype=numpy.float64)
+        if hasattr(values, "get"):
+            return numpy.asarray(values.get().real, dtype=numpy.float64)
+        if hasattr(xp, "asnumpy"):
+            return numpy.asarray(xp.asnumpy(values).real, dtype=numpy.float64)
+        return numpy.asarray(values.real, dtype=numpy.float64)
+
+    def _initialize_weight_dump(self, filename):
+        self.walker_weights_filename = filename
+        if self.mpi_handler.rank != 0:
+            return
+
+        with h5py.File(filename, "w") as fh5:
+            fh5["num_blocks"] = self.params.num_blocks
+            fh5["num_walkers_per_rank"] = self.params.num_walkers
+            fh5["num_ranks"] = self.mpi_handler.size
+            fh5["num_walkers_total"] = self.params.total_num_walkers
+            fh5.create_dataset(
+                "weight",
+                shape=(self.params.total_num_walkers, self.params.num_blocks),
+                dtype=numpy.float64,
+            )
+            fh5.create_dataset(
+                "weight_A",
+                shape=(self.params.total_num_walkers, self.params.num_blocks),
+                dtype=numpy.float64,
+            )
+            fh5.create_dataset(
+                "weight_B",
+                shape=(self.params.total_num_walkers, self.params.num_blocks),
+                dtype=numpy.float64,
+            )
+
+    def _dump_block_weights(self, block):
+        if self.walker_weights_filename is None:
+            return
+
+        comm = self.mpi_handler.comm
+        local_weight = self._to_host_array(self.walkers.weight)
+        local_weight_a = self._to_host_array(self.walkers.walkers_A.weight)
+        local_weight_b = self._to_host_array(self.walkers.walkers_B.weight)
+
+        gathered_weight = None
+        gathered_weight_a = None
+        gathered_weight_b = None
+        if comm.rank == 0:
+            gathered_weight = numpy.empty((comm.size, self.walkers.nwalkers), dtype=local_weight.dtype)
+            gathered_weight_a = numpy.empty(
+                (comm.size, self.walkers.nwalkers), dtype=local_weight_a.dtype
+            )
+            gathered_weight_b = numpy.empty(
+                (comm.size, self.walkers.nwalkers), dtype=local_weight_b.dtype
+            )
+
+        comm.Gather(local_weight, gathered_weight, root=0)
+        comm.Gather(local_weight_a, gathered_weight_a, root=0)
+        comm.Gather(local_weight_b, gathered_weight_b, root=0)
+
+        if comm.rank == 0:
+            with h5py.File(self.walker_weights_filename, "r+") as fh5:
+                fh5["weight"][:, block] = numpy.asarray(
+                    gathered_weight.reshape(-1), dtype=numpy.float64
+                )
+                fh5["weight_A"][:, block] = numpy.asarray(
+                    gathered_weight_a.reshape(-1), dtype=numpy.float64
+                )
+                fh5["weight_B"][:, block] = numpy.asarray(
+                    gathered_weight_b.reshape(-1), dtype=numpy.float64
+                )
 
     @staticmethod
     def build(
@@ -122,7 +198,7 @@ class CorrelatedAFQMC:
         timestep: float = 0.005,
         stabilize_freq=5,
         eq_stabilize_freq=2,
-        pop_control_method="pair_branch",
+        pop_control_method="stochastic_reconfiguration_independent_repairing",
         pop_control_freq=5,
         eq_pop_control_freq=2,
         eq_timestep=None,
@@ -401,6 +477,7 @@ class CorrelatedAFQMC:
         estimator_filename=None,
         verbose=True,
         discard_weights_aftereq=False,
+        walker_weights_filename=None,
         additional_estimators: Optional[Dict[str, EstimatorBase]] = None,
     ):
         """Perform correlated AFQMC simulation using open-ended random walk."""
@@ -441,6 +518,8 @@ class CorrelatedAFQMC:
         self.get_env_info()
         self.copy_to_gpu()
         self.setup_estimators(estimator_filename, additional_estimators=additional_estimators)
+        if walker_weights_filename is not None:
+            self._initialize_weight_dump(walker_weights_filename)
 
         num_eqlb_steps = self.params.num_eq_blocks * self.params.eq_num_steps_per_block
         total_steps = self.params.num_steps_per_block * self.params.num_blocks + num_eqlb_steps
@@ -551,6 +630,8 @@ class CorrelatedAFQMC:
             start = time.time()
             if step > num_eqlb_steps:
                 if step % self.params.num_steps_per_block == 0:
+                    block = (step - num_eqlb_steps) // self.params.num_steps_per_block - 1
+                    self._dump_block_weights(block)
                     self.estimators.compute_estimators(
                         (self.systemA, self.systemB),
                         (self.hamiltonianA, self.hamiltonianB),

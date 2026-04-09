@@ -111,9 +111,15 @@ class PopController:
                 print("# Something is seriously wrong.")
             # raise ValueError
         self.total_weight = total_weight
+        
         # Todo: Just standardise information we want to send between routines.
         walkers.unscaled_weight = walkers.weight
         walkers.weight = walkers.weight / scale
+        if hasattr(walkers, "walkers_A") and hasattr(walkers, "walkers_B"):
+            walkers.walkers_A.unscaled_weight = walkers.walkers_A.weight
+            walkers.walkers_B.unscaled_weight = walkers.walkers_B.weight
+            walkers.walkers_A.weight = walkers.walkers_A.weight / scale
+            walkers.walkers_B.weight = walkers.walkers_B.weight / scale
         self.total_weight = self.target_weight
         if self.method == "comb":
             global_weights = global_weights / scale
@@ -143,6 +149,16 @@ class PopController:
                         read_walkermap=True,
                         walkermap_file=self.walkermap_filepath,
                     )
+        elif self.method == "stochastic_reconfiguration_independent_repairing":
+            stochastic_reconfiguration_independent_repairing(
+                walkers,
+                comm,
+                self.timer,
+                self.pop_control_counter,
+                store_walkermap=self.reference_run,
+                read_walkermap=(self.correlated_samp and not self.reference_run),
+                walkermap_file=self.walkermap_filepath,
+            )
         else:
             if comm.rank == 0:
                 print("Unknown population control method.")
@@ -632,3 +648,383 @@ def stochastic_reconfiguration(
         walkers.walkers_A.weight[:] = new_average_weight
         walkers.walkers_B.weight[:] = new_average_weight
     timer.add_non_communication()
+
+
+def stochastic_reconfiguration_independent_repairing(
+    walkers,
+    comm,
+    timer=PopControllerTimer(),
+    pop_control_counter=0,
+    store_walkermap=False,
+    read_walkermap=False,
+    walkermap_file=None,
+):
+    """
+    Independent population control on walkers_A and walkers_B, followed by
+    post-SR rematching based on the squared norm of the difference between
+    the last-block auxiliary fields.
+
+    Assumptions:
+      - walkers has walkers_A and walkers_B
+      - walkers.auxfield stores the last sampled shared auxiliary field
+      - pre-SR original correlated pairs share the same global index
+      - get_buffer/set_buffer move the main walker state
+      - auxfield is not necessarily included in get_buffer/set_buffer, so it is
+        explicitly reordered at the end from the saved pre-SR auxfield arrays
+    """
+    assert hasattr(walkers, "walkers_A") and hasattr(walkers, "walkers_B")
+
+    timer.start_time()
+    nwalkers = walkers.nwalkers
+    ntot = comm.size * nwalkers
+
+    # Local weights
+    local_weight_A = (
+        walkers.walkers_A.weight.get()
+        if hasattr(walkers.walkers_A.weight, "get")
+        else walkers.walkers_A.weight
+    )
+    local_weight_B = (
+        walkers.walkers_B.weight.get()
+        if hasattr(walkers.walkers_B.weight, "get")
+        else walkers.walkers_B.weight
+    )
+
+    # Save the pre-SR shared auxfields; these define the rematching metric.
+    if hasattr(walkers, "auxfield") and walkers.auxfield is not None:
+        local_aux = walkers.auxfield.get() if hasattr(walkers.auxfield, "get") else walkers.auxfield
+    elif hasattr(walkers.walkers_A, "auxfield"):
+        local_aux = (
+            walkers.walkers_A.auxfield.get()
+            if hasattr(walkers.walkers_A.auxfield, "get")
+            else walkers.walkers_A.auxfield
+        )
+    else:
+        raise AttributeError(
+            "stochastic_reconfiguration_independent_repairing requires walkers.auxfield "
+            "or walkers.walkers_A.auxfield to be defined."
+        )
+
+    local_aux = numpy.asarray(local_aux)
+    aux_shape = local_aux.shape[1:]
+    local_aux_flat = local_aux.reshape(nwalkers, -1)
+
+    # Gather weights and pre-SR auxfields to root.
+    global_weight_A = None
+    global_weight_B = None
+    global_aux = None
+    if comm.rank == 0:
+        global_weight_A = numpy.zeros((comm.size, nwalkers), dtype=local_weight_A.dtype)
+        global_weight_B = numpy.zeros((comm.size, nwalkers), dtype=local_weight_B.dtype)
+        global_aux = numpy.zeros((comm.size, nwalkers, local_aux_flat.shape[1]), dtype=local_aux_flat.dtype)
+    timer.add_non_communication()
+
+    timer.start_time()
+    comm.Gather(local_weight_A, global_weight_A, root=0)
+    comm.Gather(local_weight_B, global_weight_B, root=0)
+    comm.Gather(local_aux_flat, global_aux, root=0)
+    timer.add_communication()
+
+    # Root computes final source maps:
+    #   reordered_indices_A[dest] = pre-SR source for final A dest slot
+    #   reordered_indices_B[dest] = pre-SR source for final B dest slot
+    timer.start_time()
+    reordered_indices_A = None
+    reordered_indices_B = None
+    new_average_weight_A = None
+    new_average_weight_B = None
+
+    if comm.rank == 0:
+        flat_abs_A = numpy.abs(global_weight_A).ravel()
+        flat_abs_B = numpy.abs(global_weight_B).ravel()
+        pre_aux_flat = global_aux.reshape(ntot, -1)
+
+        total_weight_A = flat_abs_A.sum()
+        total_weight_B = flat_abs_B.sum()
+        new_average_weight_A = total_weight_A / ntot
+        new_average_weight_B = total_weight_B / ntot
+
+        if not read_walkermap:
+            # Independent SR on A
+            cumulative_weights_A = numpy.cumsum(flat_abs_A)
+            zeta = numpy.random.rand()
+            new_indices_A = numpy.zeros(ntot, dtype=numpy.int64)
+            for i in range(ntot):
+                z = (i + zeta) / ntot
+                new_indices_A[i] = numpy.searchsorted(cumulative_weights_A, z * total_weight_A)
+            reordered_indices_A, _ = minimize_communication(new_indices_A)
+
+            # Independent SR on B (raw map before repair)
+            cumulative_weights_B = numpy.cumsum(flat_abs_B)
+            new_indices_B = numpy.zeros(ntot, dtype=numpy.int64)
+            for i in range(ntot):
+                z = (i + zeta) / ntot
+                new_indices_B[i] = numpy.searchsorted(cumulative_weights_B, z * total_weight_B)
+            reordered_indices_B_raw, _ = minimize_communication(new_indices_B)
+
+            # Auxfields inherited by the post-SR populations.
+            post_aux_A = pre_aux_flat[reordered_indices_A]
+            post_aux_B = pre_aux_flat[reordered_indices_B_raw]
+
+            # Stage 1: preserve same-parent survivors first.
+            children_A = [[] for _ in range(ntot)]
+            children_B = [[] for _ in range(ntot)]
+
+            for gA, pA in enumerate(reordered_indices_A):
+                children_A[int(pA)].append(gA)
+            for gB, pB in enumerate(reordered_indices_B_raw):
+                children_B[int(pB)].append(gB)
+
+            # repair_map_B[gA] = current post-SR B slot gB that should pair with final A slot gA
+            repair_map_B = -numpy.ones(ntot, dtype=numpy.int64)
+            used_B = numpy.zeros(ntot, dtype=bool)
+
+            for parent in range(ntot):
+                listA = children_A[parent]
+                listB = children_B[parent]
+                m = min(len(listA), len(listB))
+                for t in range(m):
+                    gA = listA[t]
+                    gB = listB[t]
+                    repair_map_B[gA] = gB
+                    used_B[gB] = True
+
+            # Stage 2: match leftovers by ||auxA - auxB||^2
+            leftover_A = numpy.where(repair_map_B < 0)[0]
+            leftover_B = numpy.where(~used_B)[0]
+
+            if leftover_A.size > 0:
+                XA = post_aux_A[leftover_A]
+                XB = post_aux_B[leftover_B]
+
+                diff = XA[:, None, :] - XB[None, :, :]
+                if numpy.iscomplexobj(diff):
+                    cost = numpy.sum(numpy.abs(diff) ** 2, axis=2).real
+                else:
+                    cost = numpy.sum(diff * diff, axis=2, dtype=numpy.float64)
+
+                # Try Hungarian. Fall back to greedy if scipy is unavailable.
+                try:
+                    from scipy.optimize import linear_sum_assignment
+
+                    row_ind, col_ind = linear_sum_assignment(cost)
+                except Exception:
+                    m = cost.shape[0]
+                    used_cols = numpy.zeros(m, dtype=bool)
+                    row_ind = []
+                    col_ind = []
+                    for i in range(m):
+                        row_cost = cost[i].copy()
+                        row_cost[used_cols] = numpy.inf
+                        j = int(numpy.argmin(row_cost))
+                        used_cols[j] = True
+                        row_ind.append(i)
+                        col_ind.append(j)
+                    row_ind = numpy.asarray(row_ind, dtype=numpy.int64)
+                    col_ind = numpy.asarray(col_ind, dtype=numpy.int64)
+
+                for r, c in zip(row_ind, col_ind):
+                    gA = int(leftover_A[r])
+                    gB = int(leftover_B[c])
+                    repair_map_B[gA] = gB
+                    used_B[gB] = True
+
+            assert numpy.all(repair_map_B >= 0)
+            assert numpy.unique(repair_map_B).size == ntot
+
+            # Compose the repair directly into the final B source map.
+            reordered_indices_B = reordered_indices_B_raw[repair_map_B]
+
+            if store_walkermap:
+                assert walkermap_file is not None, "Must provide filename to store the walker maps."
+                with h5py.File(walkermap_file, "a") as f:
+                    nameA = f"walker_map_A_{pop_control_counter}"
+                    nameB = f"walker_map_B_{pop_control_counter}"
+                    if nameA in f:
+                        f[nameA][...] = reordered_indices_A
+                    else:
+                        f.create_dataset(nameA, data=reordered_indices_A)
+                    if nameB in f:
+                        f[nameB][...] = reordered_indices_B
+                    else:
+                        f.create_dataset(nameB, data=reordered_indices_B)
+        else:
+            assert walkermap_file is not None, "Must provide filename to read the walker maps."
+            with h5py.File(walkermap_file, "r") as f:
+                reordered_indices_A = f[f"walker_map_A_{pop_control_counter}"][:]
+                reordered_indices_B = f[f"walker_map_B_{pop_control_counter}"][:]
+
+    timer.add_non_communication()
+
+    # Broadcast final source maps and new weights.
+    timer.start_time()
+    reordered_indices_A = comm.bcast(reordered_indices_A, root=0)
+    reordered_indices_B = comm.bcast(reordered_indices_B, root=0)
+    new_average_weight_A = comm.bcast(new_average_weight_A, root=0)
+    new_average_weight_B = comm.bcast(new_average_weight_B, root=0)
+    timer.add_communication()
+
+    # -------------------------------------------------------------------------
+    # Move walkers_A according to reordered_indices_A
+    # -------------------------------------------------------------------------
+    timer.start_time()
+    glob_inf_A = None
+    if comm.rank == 0:
+        glob_indices = numpy.arange(ntot, dtype=numpy.int64)
+        mask = reordered_indices_A != glob_indices
+        sendidx = reordered_indices_A[mask]
+        destidx = glob_indices[mask]
+        tags = numpy.arange(sendidx.size, dtype=numpy.int64)
+        glob_inf_A = numpy.column_stack((sendidx, destidx, tags))
+    timer.add_non_communication()
+
+    timer.start_time()
+    glob_inf_A = comm.bcast(glob_inf_A, root=0)
+    timer.add_communication()
+
+    timer.start_time()
+    local_sends_A = [glob_inf_A[(glob_inf_A[:, 0] // nwalkers == i)] for i in range(comm.size)]
+    local_recvs_A = [glob_inf_A[(glob_inf_A[:, 1] // nwalkers == i)] for i in range(comm.size)]
+
+    buflis_A = {}
+    local_send_A = local_sends_A[comm.rank]
+    local_send_loc_idx_A = local_send_A[:, 0] % nwalkers if len(local_send_A) > 0 else numpy.array([], dtype=numpy.int64)
+    local_recv_A = local_recvs_A[comm.rank]
+    for i in range(nwalkers):
+        if i in local_send_loc_idx_A:
+            buflis_A[i] = get_buffer(walkers.walkers_A, i)
+    timer.add_non_communication()
+
+    comm.barrier()
+    send_reqs_A = []
+    for src_idx, dest_idx, tag in local_send_A:
+        src_loc = src_idx % nwalkers
+        dest_rk = dest_idx // nwalkers
+        buf = buflis_A[src_loc]
+        req = comm.Issend(buf, dest=int(dest_rk), tag=int(tag))
+        send_reqs_A.append(req)
+
+    walker_len_A = get_buffer(walkers.walkers_A, 0).shape[0]
+    recv_reqs_A = []
+    for src_idx, dest_idx, tag_recv in local_recv_A:
+        iw = dest_idx % nwalkers
+        src_rank = src_idx // nwalkers
+
+        recv_buf = numpy.empty(walker_len_A, dtype=numpy.complex128)
+        status = MPI.Status()
+        req = comm.Irecv(recv_buf, source=int(src_rank), tag=int(tag_recv))
+        recv_reqs_A.append((iw, recv_buf, status, req))
+
+    for iw, buf, status, req in recv_reqs_A:
+        req.Wait(status)
+        set_buffer(walkers.walkers_A, iw, buf)
+
+    MPI.Request.Waitall(send_reqs_A)
+    comm.Barrier()
+
+    # -------------------------------------------------------------------------
+    # Move walkers_B according to reordered_indices_B (already composed with repair)
+    # -------------------------------------------------------------------------
+    timer.start_time()
+    glob_inf_B = None
+    if comm.rank == 0:
+        glob_indices = numpy.arange(ntot, dtype=numpy.int64)
+        mask = reordered_indices_B != glob_indices
+        sendidx = reordered_indices_B[mask]
+        destidx = glob_indices[mask]
+        tags = numpy.arange(sendidx.size, dtype=numpy.int64)
+        glob_inf_B = numpy.column_stack((sendidx, destidx, tags))
+    timer.add_non_communication()
+
+    timer.start_time()
+    glob_inf_B = comm.bcast(glob_inf_B, root=0)
+    timer.add_communication()
+
+    timer.start_time()
+    local_sends_B = [glob_inf_B[(glob_inf_B[:, 0] // nwalkers == i)] for i in range(comm.size)]
+    local_recvs_B = [glob_inf_B[(glob_inf_B[:, 1] // nwalkers == i)] for i in range(comm.size)]
+
+    buflis_B = {}
+    local_send_B = local_sends_B[comm.rank]
+    local_send_loc_idx_B = local_send_B[:, 0] % nwalkers if len(local_send_B) > 0 else numpy.array([], dtype=numpy.int64)
+    local_recv_B = local_recvs_B[comm.rank]
+    for i in range(nwalkers):
+        if i in local_send_loc_idx_B:
+            buflis_B[i] = get_buffer(walkers.walkers_B, i)
+    timer.add_non_communication()
+
+    comm.barrier()
+    send_reqs_B = []
+    for src_idx, dest_idx, tag in local_send_B:
+        src_loc = src_idx % nwalkers
+        dest_rk = dest_idx // nwalkers
+        buf = buflis_B[src_loc]
+        req = comm.Issend(buf, dest=int(dest_rk), tag=int(tag))
+        send_reqs_B.append(req)
+
+    walker_len_B = get_buffer(walkers.walkers_B, 0).shape[0]
+    recv_reqs_B = []
+    for src_idx, dest_idx, tag_recv in local_recv_B:
+        iw = dest_idx % nwalkers
+        src_rank = src_idx // nwalkers
+
+        recv_buf = numpy.empty(walker_len_B, dtype=numpy.complex128)
+        status = MPI.Status()
+        req = comm.Irecv(recv_buf, source=int(src_rank), tag=int(tag_recv))
+        recv_reqs_B.append((iw, recv_buf, status, req))
+
+    for iw, buf, status, req in recv_reqs_B:
+        req.Wait(status)
+        set_buffer(walkers.walkers_B, iw, buf)
+
+    MPI.Request.Waitall(send_reqs_B)
+    comm.Barrier()
+
+    # -------------------------------------------------------------------------
+    # Reset weights
+    # -------------------------------------------------------------------------
+    timer.start_time()
+    walkers.walkers_A.weight[:] = new_average_weight_A
+    walkers.walkers_B.weight[:] = new_average_weight_B
+    if hasattr(walkers, "weight"):
+        # Pair-level weight convention is not unique once A/B SR are independent.
+        walkers.weight[:] = 0.5 * (new_average_weight_A + new_average_weight_B)
+    timer.add_non_communication()
+
+    # -------------------------------------------------------------------------
+    # Reorder auxfield explicitly so it stays aligned with the moved walkers.
+    # -------------------------------------------------------------------------
+    timer.start_time()
+    if comm.rank == 0:
+        pre_aux_flat = global_aux.reshape(ntot, -1)
+
+        final_aux_A = pre_aux_flat[reordered_indices_A].reshape((comm.size, nwalkers) + aux_shape)
+        final_aux_B = pre_aux_flat[reordered_indices_B].reshape((comm.size, nwalkers) + aux_shape)
+    else:
+        final_aux_A = None
+        final_aux_B = None
+
+    recv_aux_A = numpy.empty_like(local_aux)
+    recv_aux_B = numpy.empty_like(local_aux)
+    comm.Scatter(final_aux_A, recv_aux_A, root=0)
+    comm.Scatter(final_aux_B, recv_aux_B, root=0)
+
+    if hasattr(walkers.walkers_A, "auxfield") and hasattr(walkers.walkers_A.auxfield, "set"):
+        walkers.walkers_A.auxfield.set(recv_aux_A)
+    else:
+        walkers.walkers_A.auxfield = recv_aux_A.copy()
+
+    if hasattr(walkers.walkers_B, "auxfield") and hasattr(walkers.walkers_B.auxfield, "set"):
+        walkers.walkers_B.auxfield.set(recv_aux_B)
+    else:
+        walkers.walkers_B.auxfield = recv_aux_B.copy()
+
+    if hasattr(walkers, "auxfield"):
+        if hasattr(walkers.auxfield, "set"):
+            walkers.auxfield.set(recv_aux_A)
+        else:
+            walkers.auxfield = recv_aux_A.copy()
+
+    if hasattr(walkers, "sync_combined_state"):
+        walkers.sync_combined_state()
+    timer.add_communication()

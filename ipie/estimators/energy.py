@@ -265,7 +265,7 @@ class CorrelatedEnergyEstimator(EstimatorBase):
         }
         self._shape = (len(self.names),)
         self._data_index = {k: i for i, k in enumerate(list(self._data.keys()))}
-        self.print_to_stdout = False
+        self.print_to_stdout = True
         self.ascii_filename = filename
 
     @staticmethod

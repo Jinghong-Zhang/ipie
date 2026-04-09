@@ -147,6 +147,9 @@ class CorrelatedPropagator:
             1.0,
             hamiltonian_a.nfields * correlated_walkers.walkers_A.nwalkers,
         ).reshape(correlated_walkers.walkers_A.nwalkers, hamiltonian_a.nfields)
+        correlated_walkers.auxfield = shared_xi.copy()
+        correlated_walkers.walkers_A.auxfield = shared_xi.copy()
+        correlated_walkers.walkers_B.auxfield = shared_xi.copy()
 
         dtheta_a, cosine_fac_a = self._propagate_with_shared_xi(
             "A",
@@ -166,7 +169,6 @@ class CorrelatedPropagator:
             eshift_b,
             shared_xi,
         )
-
         correlated_walkers.sync_combined_state()
         cosine_fac_sum = xp.cos(dtheta_a + dtheta_b)
         xp.clip(cosine_fac_sum, a_min=0.0, a_max=None, out=cosine_fac_sum)
