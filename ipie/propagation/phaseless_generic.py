@@ -5,14 +5,13 @@ import numpy
 
 from ipie.utils.pack_numba import unpack_VHS_batch
 
-try:
+from ipie.config import config
+
+if config.get_option("use_gpu"):
     from ipie.utils.pack_numba_gpu import unpack_VHS_batch_gpu
-except:
-    pass
 
 import plum
 
-from ipie.config import config
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
 from ipie.hamiltonians.generic_base import GenericBase
