@@ -22,7 +22,9 @@ def _make_numba_cpu_kernel():
         return None
 
     @njit(cache=True)
-    def _kernel(phia, phib, inva, invb, weight, ovlp, psi0a, psi0b, delta, aux_wfac, random_fields, rhf):
+    def _kernel(
+        phia, phib, inva, invb, weight, ovlp, psi0a, psi0b, delta, aux_wfac, random_fields, rhf
+    ):
         nwalkers = phia.shape[0]
         nbasis = phia.shape[1]
         nup = phia.shape[2]
@@ -111,6 +113,26 @@ def _numba_cpu_kernel():
 class HubbardSingleSite(HirschBase):
     """Discrete Hubbard propagator with adaptive CPU, einsum, and CUDA paths."""
 
+    def __init__(
+        self,
+        time_step,
+        ene_bound_const=2.0,
+        fb_bound=1.0,
+        spin_decomp=True,
+        verbose=False,
+        backend="auto",
+    ):
+        super().__init__(
+            time_step,
+            ene_bound_const=ene_bound_const,
+            fb_bound=fb_bound,
+            spin_decomp=spin_decomp,
+            verbose=verbose,
+        )
+        if backend not in ("auto", "jax"):
+            raise ValueError(f"Unknown Hubbard backend {backend}")
+        self.backend = backend
+
     def _batched_sherman_morrison(self, ainv, u, vt):
         au = xp.einsum("wij,j->wi", ainv, u, optimize=True)
         vta = xp.einsum("wi,wij->wj", vt, ainv, optimize=True)
@@ -121,6 +143,97 @@ class HubbardSingleSite(HirschBase):
     def _site_greens_diagonal(self, inv_ovlp, phi, psi0_site, site):
         q = xp.einsum("wij,wi->wj", inv_ovlp, phi[:, site, :], optimize=True)
         return xp.einsum("j,wj->w", psi0_site.conj(), q, optimize=True)
+
+    def _draw_random_fields(self, walkers, hamiltonian):
+        if not hasattr(xp, "RawKernel"):
+            return numpy.random.random((hamiltonian.nbasis, walkers.nwalkers))
+        return xp.random.random((hamiltonian.nbasis, walkers.nwalkers), dtype=xp.float64)
+
+    def _dummy_phib(self, walkers):
+        return xp.zeros((walkers.nwalkers, walkers.nbasis, 0), dtype=xp.complex128)
+
+    def _dummy_invb(self, walkers):
+        return xp.zeros((walkers.nwalkers, 0, 0), dtype=xp.complex128)
+
+    def _jax_common_inputs(self, walkers, trial, random_fields):
+        from ipie.propagation.hubbard_jax import as_jax_array
+
+        phib = walkers.phib if walkers.phib is not None else self._dummy_phib(walkers)
+        invb = walkers.inv_ovlp_b if walkers.inv_ovlp_b is not None else self._dummy_invb(walkers)
+        return (
+            as_jax_array(walkers.phia, dtype="complex128"),
+            as_jax_array(phib, dtype="complex128"),
+            as_jax_array(walkers.inv_ovlp_a, dtype="complex128"),
+            as_jax_array(invb, dtype="complex128"),
+            as_jax_array(walkers.weight, dtype="float64"),
+            as_jax_array(walkers.ovlp, dtype="complex128"),
+            as_jax_array(trial.psi0a, dtype="complex128"),
+            as_jax_array(trial.psi0b, dtype="complex128"),
+            as_jax_array(self.delta, dtype="complex128"),
+            as_jax_array(self.aux_wfac, dtype="complex128"),
+            as_jax_array(random_fields, dtype="float64"),
+        )
+
+    def _store_jax_result(self, walkers, result, with_hybrid_energy=False):
+        from ipie.propagation.hubbard_jax import block_until_ready
+
+        result = block_until_ready(result)
+        if with_hybrid_energy:
+            phia, phib, inva, invb, weight, ovlp, hybrid_energy = result
+        else:
+            phia, phib, inva, invb, weight, ovlp = result
+            hybrid_energy = None
+
+        walkers.phia = xp.asarray(phia).copy()
+        if walkers.phib is not None:
+            walkers.phib = xp.asarray(phib).copy()
+        walkers.inv_ovlp_a = xp.asarray(inva).copy()
+        if walkers.inv_ovlp_b is not None:
+            walkers.inv_ovlp_b = xp.asarray(invb).copy()
+        walkers.weight = xp.asarray(weight).copy()
+        walkers.ovlp = xp.asarray(ovlp).copy()
+        if with_hybrid_energy:
+            walkers.hybrid_energy = xp.asarray(hybrid_energy).copy()
+
+    def _jax_two_body(self, walkers, hamiltonian, trial, random_fields=None):
+        from ipie.propagation.hubbard_jax import hubbard_single_site_two_body
+
+        if random_fields is None:
+            random_fields = self._draw_random_fields(walkers, hamiltonian)
+        result = hubbard_single_site_two_body(
+            *self._jax_common_inputs(walkers, trial, random_fields),
+            rhf=bool(walkers.rhf),
+        )
+        self._store_jax_result(walkers, result)
+
+    def _jax_full_step(self, walkers, hamiltonian, trial, eshift, random_fields=None):
+        from ipie.propagation.hubbard_jax import as_jax_array, hubbard_single_site_full_step
+
+        if walkers.ovlp is None or len(walkers.ovlp) != walkers.nwalkers:
+            walkers.ovlp = trial.calc_overlap(walkers)
+        if random_fields is None:
+            random_fields = self._draw_random_fields(walkers, hamiltonian)
+
+        common = self._jax_common_inputs(walkers, trial, random_fields)
+        result = hubbard_single_site_full_step(
+            common[0],
+            common[1],
+            common[2],
+            common[3],
+            common[4],
+            common[5],
+            as_jax_array(walkers.log_shift, dtype="float64"),
+            common[6],
+            common[7],
+            as_jax_array(self.expH1, dtype="complex128"),
+            common[8],
+            common[9],
+            common[10],
+            self.dt,
+            eshift,
+            rhf=bool(walkers.rhf),
+        )
+        self._store_jax_result(walkers, result, with_hybrid_energy=True)
 
     def _legacy_two_body(self, walkers, hamiltonian, trial, random_fields=None):
         for iw in range(walkers.nwalkers):
@@ -184,11 +297,11 @@ class HubbardSingleSite(HirschBase):
             walkers.inv_ovlp_b,
             walkers.weight,
             walkers.ovlp,
-            numpy.asarray(trial.psi0a, dtype=numpy.complex128),
-            numpy.asarray(trial.psi0b, dtype=numpy.complex128),
-            numpy.asarray(self.delta, dtype=numpy.complex128),
-            numpy.asarray(self.aux_wfac, dtype=numpy.complex128),
-            numpy.asarray(random_fields, dtype=numpy.float64),
+            numpy.asarray(to_host(trial.psi0a), dtype=numpy.complex128),
+            numpy.asarray(to_host(trial.psi0b), dtype=numpy.complex128),
+            numpy.asarray(to_host(self.delta), dtype=numpy.complex128),
+            numpy.asarray(to_host(self.aux_wfac), dtype=numpy.complex128),
+            numpy.asarray(to_host(random_fields), dtype=numpy.float64),
             bool(walkers.rhf),
         )
 
@@ -253,12 +366,8 @@ class HubbardSingleSite(HirschBase):
         key = (id(trial.psi0a), id(trial.psi0b), trial.psi0a.shape, trial.psi0b.shape)
         if getattr(self, "_trial_buffer_key", None) != key:
             self._trial_buffer_key = key
-            self._psi0a_complex = xp.ascontiguousarray(
-                xp.asarray(trial.psi0a, dtype=xp.complex128)
-            )
-            self._psi0b_complex = xp.ascontiguousarray(
-                xp.asarray(trial.psi0b, dtype=xp.complex128)
-            )
+            self._psi0a_complex = xp.ascontiguousarray(xp.asarray(trial.psi0a, dtype=xp.complex128))
+            self._psi0b_complex = xp.ascontiguousarray(xp.asarray(trial.psi0b, dtype=xp.complex128))
         return self._psi0a_complex, self._psi0b_complex
 
     def _ensure_cuda_arrays_contiguous(self, walkers):
@@ -294,7 +403,9 @@ class HubbardSingleSite(HirschBase):
         shared_mem = (2 * nocc + 1) * numpy.dtype(numpy.complex128).itemsize
         kernel((nwalkers,), (threads,), (inv, psi_site, vt, nwalkers, nocc), shared_mem=shared_mem)
 
-    def _launch_sherman_morrison_cublas_large(self, apply_kernel, inv, psi_site, vt, nwalkers, nocc):
+    def _launch_sherman_morrison_cublas_large(
+        self, apply_kernel, inv, psi_site, vt, nwalkers, nocc
+    ):
         u = xp.conj(psi_site)
         self._large_sm_au[:, :nocc] = xp.matmul(inv, u)
         self._large_sm_vta[:, :nocc] = xp.matmul(vt[:, None, :], inv)[:, 0, :]
@@ -313,11 +424,15 @@ class HubbardSingleSite(HirschBase):
     def _launch_sherman_morrison_auto(self, kernels, inv, psi_site, vt, nwalkers, nocc):
         shared_mem = (2 * nocc + 1) * numpy.dtype(numpy.complex128).itemsize
         if shared_mem <= 48 * 1024:
-            self._launch_sherman_morrison(kernels["sherman_morrison"], inv, psi_site, vt, nwalkers, nocc)
+            self._launch_sherman_morrison(
+                kernels["sherman_morrison"], inv, psi_site, vt, nwalkers, nocc
+            )
         else:
             apply_kernel, apply_shared_mem = self._large_apply_kernel(kernels)
             self._large_apply_shared_mem = apply_shared_mem
-            self._launch_sherman_morrison_cublas_large(apply_kernel, inv, psi_site, vt, nwalkers, nocc)
+            self._launch_sherman_morrison_cublas_large(
+                apply_kernel, inv, psi_site, vt, nwalkers, nocc
+            )
 
     def _cuda_two_body(self, walkers, hamiltonian, trial, random_fields):
         from ipie.propagation.kernels.gpu.hubbard import get_hubbard_single_site_kernels
@@ -334,10 +449,27 @@ class HubbardSingleSite(HirschBase):
 
         for i in range(hamiltonian.nbasis):
             site_args = (
-                walkers.phia, walkers.phib, walkers.inv_ovlp_a, walkers.inv_ovlp_b,
-                psi0a, psi0b, self.delta, self.aux_wfac, random_fields[i], walkers.weight,
-                walkers.ovlp, self._vtup, self._vtdown, self._xi, self._live, i,
-                walkers.nwalkers, hamiltonian.nbasis, walkers.nup, walkers.ndown, int(walkers.rhf),
+                walkers.phia,
+                walkers.phib,
+                walkers.inv_ovlp_a,
+                walkers.inv_ovlp_b,
+                psi0a,
+                psi0b,
+                self.delta,
+                self.aux_wfac,
+                random_fields[i],
+                walkers.weight,
+                walkers.ovlp,
+                self._vtup,
+                self._vtdown,
+                self._xi,
+                self._live,
+                i,
+                walkers.nwalkers,
+                hamiltonian.nbasis,
+                walkers.nup,
+                walkers.ndown,
+                int(walkers.rhf),
             )
             if use_parallel_site:
                 site_kernel_parallel(
@@ -348,8 +480,17 @@ class HubbardSingleSite(HirschBase):
                 )
             else:
                 site_kernel(blocks, (threads,), site_args)
-            self._launch_sherman_morrison_auto(kernels, walkers.inv_ovlp_a, psi0a[i, :], self._vtup, walkers.nwalkers, walkers.nup)
-            self._launch_sherman_morrison_auto(kernels, walkers.inv_ovlp_b, psi0b[i, :], self._vtdown, walkers.nwalkers, walkers.ndown)
+            self._launch_sherman_morrison_auto(
+                kernels, walkers.inv_ovlp_a, psi0a[i, :], self._vtup, walkers.nwalkers, walkers.nup
+            )
+            self._launch_sherman_morrison_auto(
+                kernels,
+                walkers.inv_ovlp_b,
+                psi0b[i, :],
+                self._vtdown,
+                walkers.nwalkers,
+                walkers.ndown,
+            )
 
     def _is_nvidia_gpu(self):
         if not hasattr(xp, "RawKernel"):
@@ -440,11 +581,14 @@ class HubbardSingleSite(HirschBase):
 
     def propagate_walkers_two_body(self, walkers, hamiltonian, trial):
         start_time = time.time()
+        if self.backend == "jax":
+            self._jax_two_body(walkers, hamiltonian, trial)
+            synchronize()
+            self.timer.tgf += time.time() - start_time
+            return
+
         path = self._choose_path(walkers, hamiltonian)
-        if not hasattr(xp, "RawKernel"):
-            random_fields = numpy.random.random((hamiltonian.nbasis, walkers.nwalkers))
-        else:
-            random_fields = xp.random.random((hamiltonian.nbasis, walkers.nwalkers), dtype=xp.float64)
+        random_fields = self._draw_random_fields(walkers, hamiltonian)
 
         try:
             if path == "cpu_legacy":
@@ -465,6 +609,15 @@ class HubbardSingleSite(HirschBase):
             fallback = "einsum" if path == "cuda" else "cuda"
             self._run_gpu_path_chunked(fallback, walkers, hamiltonian, trial, random_fields)
 
+        synchronize()
+        self.timer.tgf += time.time() - start_time
+
+    def propagate_walkers(self, walkers, hamiltonian, trial, eshift):
+        if self.backend != "jax":
+            super().propagate_walkers(walkers, hamiltonian, trial, eshift)
+            return
+        start_time = time.time()
+        self._jax_full_step(walkers, hamiltonian, trial, eshift)
         synchronize()
         self.timer.tgf += time.time() - start_time
 

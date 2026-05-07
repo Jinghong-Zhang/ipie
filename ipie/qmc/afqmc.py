@@ -31,6 +31,7 @@ from typing import Dict, Optional, Tuple
 from ipie.config import config
 from ipie.estimators.estimator_base import EstimatorBase
 from ipie.estimators.handler import EstimatorHandler
+from ipie.hamiltonians.hubbard import Hubbard
 from ipie.hamiltonians.utils import get_hamiltonian
 from ipie.propagation.hirsch_base import HirschBase
 from ipie.propagation.propagator import Propagator
@@ -337,6 +338,7 @@ class AFQMC(AFQMCBase):
         correlated_samp: bool = False,
         reference_run: bool = False,
         walkermap_filepath: Optional[str] = None,
+        propagator_backend: str = "auto",
         verbose=True,
         mpi_handler=None,
     ) -> "AFQMC":
@@ -383,6 +385,9 @@ class AFQMC(AFQMCBase):
             Constant to determine local energy bound.
         fb_bound : float
             Constant to determine force bias bound.
+        propagator_backend : str
+            Backend selector for propagators that support multiple implementations.
+            Currently ``"jax"`` is supported for the Hubbard single-site propagator.
         correlated_samp : bool
             Whether to use correlated sampling for population control. Default False.
         reference_run : bool
@@ -442,13 +447,23 @@ class AFQMC(AFQMCBase):
                 trial_wavefunction
             )  # any intermediates that require information from trial_wavefunction
         # TODO: this is a factory not a class
-        propagator = Propagator[type(hamiltonian)](
-            params.timestep, params.ene_bound_const, params.fb_bound
+        propagator_cls = Propagator[type(hamiltonian)]
+        propagator_kwargs = {}
+        if isinstance(hamiltonian, Hubbard):
+            propagator_kwargs["backend"] = propagator_backend
+        elif propagator_backend != "auto":
+            raise ValueError("propagator_backend is currently only supported for Hubbard.")
+
+        propagator = propagator_cls(
+            params.timestep, params.ene_bound_const, params.fb_bound, **propagator_kwargs
         )
         propagator.build(hamiltonian, trial_wavefunction, walkers, mpi_handler)
         if not math.isclose(params.timestep, params.eq_timestep, rel_tol=1e-8):
-            eq_propagator = Propagator[type(hamiltonian)](
-                params.eq_timestep, params.ene_bound_const, params.fb_bound
+            eq_propagator = propagator_cls(
+                params.eq_timestep,
+                params.ene_bound_const,
+                params.fb_bound,
+                **propagator_kwargs,
             )
             eq_propagator.build(hamiltonian, trial_wavefunction, walkers, mpi_handler)
         else:
@@ -684,7 +699,11 @@ class AFQMC(AFQMCBase):
                 self.tprop_vhs = self.propagator.timer.tvhs
                 self.tprop_gemm = self.propagator.timer.tgemm
             if debug_step and step > num_eqlb_steps:
-                weights = self.walkers.weight.get() if hasattr(self.walkers.weight, "get") else self.walkers.weight
+                weights = (
+                    self.walkers.weight.get()
+                    if hasattr(self.walkers.weight, "get")
+                    else self.walkers.weight
+                )
                 print(f"[new:step_prop] step={step} weights={weights}")
 
             start_clip = time.time()
@@ -701,7 +720,11 @@ class AFQMC(AFQMCBase):
                     self.walkers.weight, a_min=-wbound, a_max=wbound, out=self.walkers.weight
                 )  # in-place clipping
                 if debug_step:
-                    weights = self.walkers.weight.get() if hasattr(self.walkers.weight, "get") else self.walkers.weight
+                    weights = (
+                        self.walkers.weight.get()
+                        if hasattr(self.walkers.weight, "get")
+                        else self.walkers.weight
+                    )
                     print(f"[new:step_clip] step={step} wbound={wbound} weights={weights}")
 
             synchronize()

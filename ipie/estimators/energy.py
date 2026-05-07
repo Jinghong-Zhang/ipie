@@ -233,7 +233,7 @@ class EnergyEstimator(EstimatorBase):
         self.debug_max_walkers = int(os.environ.get("IPIE_DEBUG_ESTIMATOR_MAX_WALKERS", "1"))
 
     def compute_estimator(self, system=None, walkers=None, hamiltonian=None, trial=None):
-        trial.calc_greens_function(walkers)
+        trial.calc_greens_function(walkers, build_full=isinstance(hamiltonian, Hubbard))
         # Need to be able to dispatch here
         energy = local_energy(system, hamiltonian, walkers, trial)
         if self.debug_estimator:
