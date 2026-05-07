@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from ipie.addons.self_consistent.trial_generation import MixedOneRDMAccumulator
+from ipie.addons.self_consistent.trial_generation import MixedOneRDMElementEstimator
+from ipie.addons.self_consistent.trial_generation import MixedOneRDMEstimator
 from ipie.addons.self_consistent.trial_generation import generate_self_consistent_trial
 
-__all__ = ["generate_self_consistent_trial"]
+__all__ = [
+    "MixedOneRDMAccumulator",
+    "MixedOneRDMElementEstimator",
+    "MixedOneRDMEstimator",
+    "generate_self_consistent_trial",
+]

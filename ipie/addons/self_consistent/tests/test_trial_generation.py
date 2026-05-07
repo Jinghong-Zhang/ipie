@@ -2,10 +2,14 @@ import numpy
 import pytest
 
 from ipie.addons.self_consistent.trial_generation import (
+    MixedOneRDMAccumulator,
+    MixedOneRDMElementEstimator,
+    MixedOneRDMEstimator,
     build_ipie_single_det_trial,
     compute_mixed_1rdm_from_ipie_walkers,
     generate_self_consistent_trial,
     green_to_density,
+    mixed_1rdm_numerators_from_ipie_walkers,
     natural_orbitals_from_rho,
 )
 from ipie.hamiltonians.hubbard import Hubbard
@@ -77,6 +81,82 @@ def test_mixed_1rdm_trace_from_zero_temperature_ipie_walkers():
 
 
 @pytest.mark.unit
+def test_mixed_1rdm_accumulator_matches_repeated_walker_average():
+    nelec = (2, 1)
+    _hamiltonian, trial, walkers = _build_tiny_hubbard_case(nelec=nelec)
+
+    rho_a, rho_b = compute_mixed_1rdm_from_ipie_walkers(
+        trial, walkers, nelec, green_convention="ipie_default"
+    )
+    accumulator = MixedOneRDMAccumulator(nelec, green_convention="ipie_default")
+    accumulator.update(trial, walkers)
+    accumulator.update(trial, walkers)
+    rho_a_acc, rho_b_acc = accumulator.finalize()
+
+    assert accumulator.num_samples == 2
+    numpy.testing.assert_allclose(rho_a_acc, rho_a)
+    numpy.testing.assert_allclose(rho_b_acc, rho_b)
+
+
+@pytest.mark.unit
+def test_mixed_1rdm_estimator_outputs_block_numerators():
+    nelec = (2, 1)
+    _hamiltonian, trial, walkers = _build_tiny_hubbard_case(nelec=nelec)
+    estimator = MixedOneRDMEstimator(
+        nelec,
+        nbasis=trial.nbasis,
+        green_convention="ipie_default",
+    )
+
+    data = estimator.compute_estimator(walkers=walkers, trial=trial)
+    rho_a_num, rho_b_num, denom = mixed_1rdm_numerators_from_ipie_walkers(
+        trial,
+        walkers,
+        nelec,
+        green_convention="ipie_default",
+    )
+
+    matrix_size = trial.nbasis * trial.nbasis
+    assert data.shape == (2 * matrix_size + 1,)
+    numpy.testing.assert_allclose(data[:matrix_size].reshape(trial.nbasis, trial.nbasis), rho_a_num)
+    numpy.testing.assert_allclose(
+        data[matrix_size : 2 * matrix_size].reshape(trial.nbasis, trial.nbasis),
+        rho_b_num,
+    )
+    numpy.testing.assert_allclose(data[-1], denom)
+
+
+@pytest.mark.unit
+def test_mixed_1rdm_element_estimator_outputs_normalized_element():
+    nelec = (2, 1)
+    _hamiltonian, trial, walkers = _build_tiny_hubbard_case(nelec=nelec)
+    estimator = MixedOneRDMElementEstimator(
+        nelec,
+        element=(0, 0),
+        green_convention="ipie_default",
+    )
+
+    data = estimator.compute_estimator(walkers=walkers, trial=trial)
+    estimator.post_reduce_hook(data)
+    rho_a, rho_b = compute_mixed_1rdm_from_ipie_walkers(
+        trial,
+        walkers,
+        nelec,
+        green_convention="ipie_default",
+    )
+
+    assert list(estimator.names) == [
+        "RhoA00Numer",
+        "RhoB00Numer",
+        "RhoDenom",
+        "RhoA00",
+        "RhoB00",
+    ]
+    numpy.testing.assert_allclose(data[3], rho_a[0, 0])
+    numpy.testing.assert_allclose(data[4], rho_b[0, 0])
+
+
+@pytest.mark.unit
 def test_self_consistency_wrapper_with_mocked_afqmc_run():
     nelec = (2, 1)
     nmo = 4
@@ -116,6 +196,45 @@ def test_self_consistency_wrapper_with_mocked_afqmc_run():
     assert history[0]["energy_mean"] == -1.0
     assert history[-1]["rho_change"] == pytest.approx(0.0)
     assert history[-1]["subspace_change"] == pytest.approx(0.0)
+    numpy.testing.assert_allclose(final_trial.psi0a @ final_trial.psi0a.T, target_a @ target_a.T)
+    numpy.testing.assert_allclose(final_trial.psi0b @ final_trial.psi0b.T, target_b @ target_b.T)
+
+
+@pytest.mark.unit
+def test_self_consistency_wrapper_prefers_averaged_rho_result():
+    nelec = (2, 1)
+    nmo = 4
+    hamiltonian, trial, _walkers = _build_tiny_hubbard_case(nelec=nelec, nbasis=nmo)
+    target_a = numpy.eye(nmo)[:, [1, 2]]
+    target_b = numpy.eye(nmo)[:, [3]]
+
+    class Result:
+        def __init__(self):
+            self.rho_a = target_a @ target_a.T
+            self.rho_b = target_b @ target_b.T
+            self.energy_mean = -1.0
+            self.rho_num_samples = 7
+
+    calls = []
+
+    def run_afqmc_once(hamiltonian, trial, afqmc_options):
+        calls.append(trial)
+        return Result()
+
+    final_trial, history = generate_self_consistent_trial(
+        hamiltonian,
+        trial,
+        run_afqmc_once,
+        {},
+        nelec,
+        max_iter=2,
+        rho_tol=1.0e-12,
+        subspace_tol=1.0e-12,
+        verbose=False,
+    )
+
+    assert len(calls) == 2
+    assert history[0]["rho_num_samples"] == 7
     numpy.testing.assert_allclose(final_trial.psi0a @ final_trial.psi0a.T, target_a @ target_a.T)
     numpy.testing.assert_allclose(final_trial.psi0b @ final_trial.psi0b.T, target_b @ target_b.T)
 
