@@ -248,18 +248,30 @@ class PhaselessKptISDF(PhaselessKptBase):
                 assert len(Lx.shape) == 3 # nwalkers, nq, nisdf
 
                 start_time = time.time()
-                Temp = xp.zeros(walkers.phia.shape, dtype=walkers.phia.dtype)
-                xp.copyto(Temp, walkers.phia)
-                for n in range(1, self.exp_nmax + 1):
-                    Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Lconjx, Temp, hamiltonian.ikpq_mat, hamiltonian.ikmq_mat, hamiltonian.unique_k) / n  # matmul use much less GPU memory than einsum
-                    walkers.phia += Temp
-                del Temp
                 if walkers.ndown > 0 and not walkers.rhf:
-                    Temp = xp.zeros(walkers.phib.shape, dtype=walkers.phib.dtype)
-                    xp.copyto(Temp, walkers.phib)
+                    # the contraction is independent along the occupied index, so both
+                    # spins can share one Taylor expansion with larger GEMMs
+                    nocca = walkers.phia.shape[-1] // nk
+                    noccb = walkers.phib.shape[-1] // nk
+                    Temp = xp.concatenate(
+                        (
+                            walkers.phia.reshape(nwalkers, nk * nbsf, nk, nocca),
+                            walkers.phib.reshape(nwalkers, nk * nbsf, nk, noccb),
+                        ),
+                        axis=3,
+                    ).reshape(nwalkers, nk * nbsf, nk * (nocca + noccb))
                     for n in range(1, self.exp_nmax + 1):
                         Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Lconjx, Temp, hamiltonian.ikpq_mat, hamiltonian.ikmq_mat, hamiltonian.unique_k) / n  # matmul use much less GPU memory than einsum
-                        walkers.phib += Temp
+                        Temp_split = Temp.reshape(nwalkers, nk * nbsf, nk, nocca + noccb)
+                        walkers.phia += Temp_split[:, :, :, :nocca].reshape(nwalkers, nk * nbsf, nk * nocca)
+                        walkers.phib += Temp_split[:, :, :, nocca:].reshape(nwalkers, nk * nbsf, nk * noccb)
+                    del Temp, Temp_split
+                else:
+                    Temp = xp.zeros(walkers.phia.shape, dtype=walkers.phia.dtype)
+                    xp.copyto(Temp, walkers.phia)
+                    for n in range(1, self.exp_nmax + 1):
+                        Temp = apply_VHS_to_phi_batch(hamiltonian.cgto, Lx, Lconjx, Temp, hamiltonian.ikpq_mat, hamiltonian.ikmq_mat, hamiltonian.unique_k) / n  # matmul use much less GPU memory than einsum
+                        walkers.phia += Temp
                     del Temp
             else:
                 start_time = time.time()
@@ -353,10 +365,13 @@ def construct_full_l_batch_for_gemm(Lx, Lconjx, kpq_mat, kmq_mat, unique_qs):
     return full_l
 
 
-def contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_reshape, nw, nk, nisdf, nbsf, nocc):
-    intermediate_mem = nw * nk**2 * nisdf * nocc * 16 * 2 /1024**3
-    max_mem = 4.0
-    num_chunks = ceil(intermediate_mem / max_mem)
+def contract_lowmem_vhs_walkers_from_l_batch(
+    l_batch, cgto_slice, phi_for_cgto, nw, nk, nisdf, nbsf, nocc, max_mem=4.0
+):
+    # besides the two buff regions, each iteration materializes two transpose
+    # copies of the same chunk size, so the peak is ~4 chunk-sized buffers
+    intermediate_mem = nw * nk**2 * nisdf * nocc * 16 * 4 /1024**3
+    num_chunks = max(1, ceil(intermediate_mem / max_mem))
     nisdf_per_chunk = ceil(nisdf / num_chunks)
     nisdf_left = nisdf
     slices_isdf = []
@@ -368,14 +383,13 @@ def contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_reshape, n
         slices_isdf.append(slice(i_chunk * nisdf_per_chunk, i_chunk * nisdf_per_chunk + nisdf_chunk))
     max_dim = max(nisdf_per_chunk, nbsf)
     buff = xp.empty(2 * nw * nk**2 * nocc * max_dim, dtype=xp.complex128)
-    phi_reshape = phi_reshape.transpose(1, 2, 0, 3, 4).reshape(nk, nbsf, nw * nk * nocc)
     result = xp.zeros((nw, nk, nbsf, nk, nocc), dtype=xp.complex128)
     for i_sls in slices_isdf:
         nisdf_chunk = i_sls.stop - i_sls.start
         cgto_slice_P = cgto_slice[:, i_sls, :]
         size_cgtophi = nk**2 * nisdf_chunk * nw * nocc
         cgtophi = buff[:size_cgtophi].reshape(nk, nisdf_chunk, nw * nk * nocc)
-        xp.matmul(cgto_slice_P, phi_reshape, out=cgtophi)
+        xp.matmul(cgto_slice_P, phi_for_cgto, out=cgtophi)
         l_batch_slice = l_batch[:, i_sls].reshape(nw * nisdf_chunk, nk, nk)
         cgtophi = cgtophi.reshape(nk, nisdf_chunk, nw, nk, nocc).transpose(2, 1, 0, 3, 4).reshape(nw * nisdf_chunk, nk, nk * nocc)
         size_Lxcgtophi = nk**2 * nisdf_chunk * nw * nocc
@@ -477,6 +491,7 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
     num_nisdf_chunks = max(1, math.ceil(mem_cost / max_mem))
     nisdf_chunk_size = math.ceil(nisdf / num_nisdf_chunks)
     nisdf_left = nisdf
+    phi_for_cgto = phi.reshape(nwalkers, nk, nbsf, nk, nocc).transpose(1, 2, 0, 3, 4).reshape(nk, nbsf, nwalkers * nk * nocc)
     for i in range(num_nisdf_chunks):
         if nisdf_left == 0:
             break
@@ -487,14 +502,14 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
         l_batch = construct_full_l_batch_for_gemm(
             Lx_chunk, Lconjx_chunk, kpq_mat, kmq_mat, unique_qs
         )
-        phi_reshape = phi.reshape(nwalkers, nk, nbsf, nk, -1)
         cgto_slice = cgto[:, i * nisdf_chunk_size: i * nisdf_chunk_size + nisdf_chunk, :]
         # out = contract('wKkP, kPp, KPr, wKrQi -> wkpQi', fullLpLconjx, cgto_slice.conj(), cgto_slice, phi_reshape, options=network_opts)
-        out = contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_reshape, nwalkers, nk, nisdf_chunk, nbsf, nocc)
+        out = contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_for_cgto, nwalkers, nk, nisdf_chunk, nbsf, nocc)
 
-        del l_batch, cgto_slice, phi_reshape
+        del l_batch, cgto_slice
         outphi += out.reshape(nwalkers, nk * nbsf, -1)
         del out
+    del phi_for_cgto
     xp._default_memory_pool.free_all_blocks()
     return outphi
 
