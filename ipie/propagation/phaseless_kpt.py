@@ -326,6 +326,67 @@ def construct_full_Lx_batch(Lx, kpq_mat, unique_qs):
     fullLconjx[:, row_idx, col_idx, :] = data
 
     return fullLconjx
+
+
+def construct_full_l_batch_for_gemm(Lx, Lconjx, kpq_mat, kmq_mat, unique_qs):
+    """
+    Construct the dense k-point coupling matrix in the layout consumed by GEMM.
+    """
+    nwalkers = Lx.shape[0]
+    nk = kpq_mat.shape[1]
+    pchunk = Lx.shape[-1]
+    full_l = xp.zeros((nwalkers, pchunk, nk, nk), dtype=Lx.dtype)
+
+    q_idx = unique_qs[:, None]
+    k_idx = xp.arange(nk)[None, :]
+    row_idx = xp.broadcast_to(k_idx, (len(unique_qs), nk))
+    data = xp.broadcast_to(
+        Lx.transpose(0, 2, 1)[:, :, :, None], (nwalkers, pchunk, len(unique_qs), nk)
+    )
+    full_l[:, :, row_idx, kpq_mat[q_idx, k_idx]] = data
+
+    data_conj = xp.broadcast_to(
+        Lconjx.transpose(0, 2, 1)[:, :, :, None],
+        (nwalkers, pchunk, len(unique_qs), nk),
+    )
+    full_l[:, :, row_idx, kmq_mat[q_idx, k_idx]] += data_conj
+    return full_l
+
+
+def contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_reshape, nw, nk, nisdf, nbsf, nocc):
+    intermediate_mem = nw * nk**2 * nisdf * nocc * 16 * 2 /1024**3
+    max_mem = 4.0
+    num_chunks = ceil(intermediate_mem / max_mem)
+    nisdf_per_chunk = ceil(nisdf / num_chunks)
+    nisdf_left = nisdf
+    slices_isdf = []
+    for i_chunk in range(num_chunks):
+        if nisdf_left == 0:
+            break
+        nisdf_chunk = min(nisdf_left, nisdf_per_chunk)
+        nisdf_left -= nisdf_chunk
+        slices_isdf.append(slice(i_chunk * nisdf_per_chunk, i_chunk * nisdf_per_chunk + nisdf_chunk))
+    max_dim = max(nisdf_per_chunk, nbsf)
+    buff = xp.empty(2 * nw * nk**2 * nocc * max_dim, dtype=xp.complex128)
+    phi_reshape = phi_reshape.transpose(1, 2, 0, 3, 4).reshape(nk, nbsf, nw * nk * nocc)
+    result = xp.zeros((nw, nk, nbsf, nk, nocc), dtype=xp.complex128)
+    for i_sls in slices_isdf:
+        nisdf_chunk = i_sls.stop - i_sls.start
+        cgto_slice_P = cgto_slice[:, i_sls, :]
+        size_cgtophi = nk**2 * nisdf_chunk * nw * nocc
+        cgtophi = buff[:size_cgtophi].reshape(nk, nisdf_chunk, nw * nk * nocc)
+        xp.matmul(cgto_slice_P, phi_reshape, out=cgtophi)
+        l_batch_slice = l_batch[:, i_sls].reshape(nw * nisdf_chunk, nk, nk)
+        cgtophi = cgtophi.reshape(nk, nisdf_chunk, nw, nk, nocc).transpose(2, 1, 0, 3, 4).reshape(nw * nisdf_chunk, nk, nk * nocc)
+        size_Lxcgtophi = nk**2 * nisdf_chunk * nw * nocc
+        Lx_cgtophi = buff[size_cgtophi:size_cgtophi + size_Lxcgtophi].reshape(nw * nisdf_chunk, nk, nk * nocc)
+        xp.matmul(l_batch_slice, cgtophi, out=Lx_cgtophi)
+        Lx_cgtophi = Lx_cgtophi.reshape(nw, nisdf_chunk, nk, nk, nocc).transpose(2, 0, 3, 4, 1).reshape(nk, nw * nk * nocc, nisdf_chunk)
+        size_result = nw * nk**2 * nocc * nbsf
+        temp = buff[:size_result].reshape(nk, nw * nk * nocc, nbsf)
+        xp.matmul(Lx_cgtophi, cgto_slice_P.conj(), out=temp)
+        result += temp.reshape(nk, nw, nk, nocc, nbsf).transpose(1, 0, 4, 2, 3)
+    return result
         
 def contract_lowmem_vhs_walkers(fullLpLconjx, cgto_slice, phi_reshape, nw, nk, nisdf, nbsf, nocc):
     # we need to slice over the P index
@@ -423,15 +484,15 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
         nisdf_left -= nisdf_chunk
         Lx_chunk = Lx[:, :, i * nisdf_chunk_size: i * nisdf_chunk_size + nisdf_chunk]
         Lconjx_chunk = Lconjx[:, :, i * nisdf_chunk_size: i * nisdf_chunk_size + nisdf_chunk]
-        full_Lx = construct_full_Lx_batch(Lx_chunk, kpq_mat, unique_qs)
-        full_Lconjx = construct_full_Lx_batch(Lconjx_chunk, kmq_mat, unique_qs)
-        fullLpLconjx = full_Lx + full_Lconjx
+        l_batch = construct_full_l_batch_for_gemm(
+            Lx_chunk, Lconjx_chunk, kpq_mat, kmq_mat, unique_qs
+        )
         phi_reshape = phi.reshape(nwalkers, nk, nbsf, nk, -1)
         cgto_slice = cgto[:, i * nisdf_chunk_size: i * nisdf_chunk_size + nisdf_chunk, :]
         # out = contract('wKkP, kPp, KPr, wKrQi -> wkpQi', fullLpLconjx, cgto_slice.conj(), cgto_slice, phi_reshape, options=network_opts)
-        out = contract_lowmem_vhs_walkers(fullLpLconjx, cgto_slice, phi_reshape, nwalkers, nk, nisdf_chunk, nbsf, nocc)
+        out = contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_reshape, nwalkers, nk, nisdf_chunk, nbsf, nocc)
 
-        del full_Lx, full_Lconjx, fullLpLconjx, cgto_slice, phi_reshape
+        del l_batch, cgto_slice, phi_reshape
         outphi += out.reshape(nwalkers, nk * nbsf, -1)
         del out
     xp._default_memory_pool.free_all_blocks()
