@@ -484,12 +484,13 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
     nknocc = phi.shape[-1]
     nocc = nknocc // nk
     outphi = xp.zeros_like(phi)
-    # calculate intermediate array memory
-    mem_cost = nwalkers * nisdf * nisdf * nknocc * 16 * 4/ 1024**3
-    # max_mem = 80 percent of available memory
-    max_mem = 0.3 * xp.cuda.Device().mem_info[0] / 1024**3
-    num_nisdf_chunks = max(1, math.ceil(mem_cost / max_mem))
-    nisdf_chunk_size = math.ceil(nisdf / num_nisdf_chunks)
+    # the outer loop only materializes l_batch, O(nw*nk^2) per ISDF point; the
+    # inner kernel bounds its own intermediates, so give l_batch a quarter of
+    # the memory allowance and keep outer chunks as large as possible
+    max_mem_bytes = int(0.3 * xp.cuda.Device().mem_info[0])
+    bytes_per_isdf = nwalkers * nk * nk * 16
+    nisdf_chunk_size = max(1, min(nisdf, max_mem_bytes // (4 * bytes_per_isdf)))
+    num_nisdf_chunks = math.ceil(nisdf / nisdf_chunk_size)
     nisdf_left = nisdf
     phi_for_cgto = phi.reshape(nwalkers, nk, nbsf, nk, nocc).transpose(1, 2, 0, 3, 4).reshape(nk, nbsf, nwalkers * nk * nocc)
     for i in range(num_nisdf_chunks):

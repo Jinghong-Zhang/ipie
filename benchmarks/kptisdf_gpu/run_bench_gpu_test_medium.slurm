@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH -J kptamd_bench_test_med
+#SBATCH -p gpu_test
+#SBATCH --gres=gpu:1
+#SBATCH -c 8
+#SBATCH --mem=48G
+#SBATCH -t 03:00:00
+#SBATCH --account=joonholee_lab
+#SBATCH -o /n/home10/jhzhang/code/ipie_kptafqmc_amd_commit/benchmarks/kptisdf_gpu/results/%x-%j.out
+
+set -x
+module load cuda/12.4.1-fasrc01
+export PYTHONPATH=/n/home10/jhzhang/code/ipie_kptafqmc_amd_commit:$PYTHONPATH
+export IPIE_USE_GPU=1
+PY=/n/home10/jhzhang/.conda/envs/ipierun/bin/python
+cd /n/home10/jhzhang/code/ipie_kptafqmc_amd_commit/benchmarks/kptisdf_gpu
+
+nvidia-smi --query-gpu=name,memory.total --format=csv
+
+# medium isolated benchmarks (duplicate of the queued A100 job, sized for 20GB)
+$PY bench_vhs_optimizations.py --mode both --repeats 3 --warmups 1 \
+    --case 8,100,9,32
+
+# fake AFQMC, alternating order to cancel kernel-cache warmup bias
+$PY fake_kptisdf_afqmc.py --kmesh 2,2,2 --nbasis 100 --nocc 9 --nwalkers 32 \
+    --nblocks 3 --nsteps 5 --propagation old
+$PY fake_kptisdf_afqmc.py --kmesh 2,2,2 --nbasis 100 --nocc 9 --nwalkers 32 \
+    --nblocks 3 --nsteps 5 --propagation new
+$PY fake_kptisdf_afqmc.py --kmesh 2,2,2 --nbasis 100 --nocc 9 --nwalkers 32 \
+    --nblocks 3 --nsteps 5 --propagation old
+$PY fake_kptisdf_afqmc.py --kmesh 2,2,2 --nbasis 100 --nocc 9 --nwalkers 32 \
+    --nblocks 3 --nsteps 5 --propagation new

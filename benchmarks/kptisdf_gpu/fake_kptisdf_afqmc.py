@@ -83,9 +83,15 @@ def complex_rand(shape, scale):
     return scale * (rng.standard_normal(shape) + 1.0j * rng.standard_normal(shape))
 
 
-# fractional k-point grid; find_self_inverse_set/find_Qplus operate on these
+# fractional k-point grid in (-0.5, 0.5] as required by BZ_to_1BZ matching
+def frac_grid(n):
+    c = np.fft.fftfreq(n)
+    c[c == -0.5] = 0.5
+    return c
+
+
 kpoints = (
-    np.array(np.meshgrid(*[np.arange(n) / n for n in mesh], indexing="ij"))
+    np.array(np.meshgrid(*[frac_grid(n) for n in mesh], indexing="ij"))
     .reshape(3, -1)
     .T.copy()
 )
