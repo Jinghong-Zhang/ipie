@@ -23,6 +23,10 @@ from ipie.utils.cuquantum_backend import (
 )
 
 
+def _kptisdf_max_mem_gb(default_fraction=0.30):
+    return max(default_fraction * xp.cuda.Device().mem_info[0] / 1024**3, 0.01)
+
+
 @jit(nopython=True, fastmath=True)
 def construct_VHS_kernel_symm(chol, sqrt_dt, xshifted, nk, nbasis, nwalkers, ikpq_mat, Sset, Qplus):
 
@@ -438,10 +442,11 @@ class PhaselessKptISDF(PhaselessKptBase):
             raise NotImplementedError
 
     def contract_cholM_xshifted(self, hamiltonian, xshifted):
-        cholM = hamiltonian.cholM  # q, P, gamma
+        return self.contract_cholM_xshifted_cupy(hamiltonian, xshifted)
+
+    def _shifted_fields_for_cholm(self, hamiltonian, xshifted):
         x = 0.5 * (1j * xshifted[0] + xshifted[1])  # w, gamma, q
         xconj = 0.5 * (1j * xshifted[0] - xshifted[1])  # w, gamma, q
-        # print("ikpq_S", ikpq_S)
         idx_lenS = xp.arange(len(hamiltonian.Sset))
         idx_lenQ = xp.arange(len(hamiltonian.Qplus)) + len(hamiltonian.Sset)
 
@@ -452,6 +457,21 @@ class PhaselessKptISDF(PhaselessKptBase):
 
         xtot = xp.concatenate((xS, xQ), axis=-1)
         xconjtot = xp.concatenate((xconjS, xconjQ), axis=-1)
+        return xtot, xconjtot
+
+    def contract_cholM_xshifted_cupy(self, hamiltonian, xshifted):
+        cholM = hamiltonian.cholM  # q, P, gamma
+        xtot, xconjtot = self._shifted_fields_for_cholm(hamiltonian, xshifted)
+        cholM_T = cholM.transpose(0, 2, 1)
+        cholMx = xp.matmul(xtot.transpose(2, 0, 1), cholM_T).transpose(1, 0, 2)
+        cholMxconj = xp.matmul(
+            xconjtot.transpose(2, 0, 1), cholM_T.conj()
+        ).transpose(1, 0, 2)
+        return cholMx, cholMxconj
+
+    def contract_cholM_xshifted_old_cuquantum(self, hamiltonian, xshifted):
+        cholM = hamiltonian.cholM  # q, P, gamma
+        xtot, xconjtot = self._shifted_fields_for_cholm(hamiltonian, xshifted)
         handle = cutensornet.create()
         network_opts = NetworkOptions(handle=handle)
         cholMx = contract("qPg, wgq -> wqP", cholM, xtot, options=network_opts)
@@ -483,7 +503,9 @@ def construct_full_Lx_batch(Lx, kpq_mat, unique_qs):
     return fullLconjx
 
 
-def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle):
+def apply_VHS_to_phi_batch_old_cuquantum(
+    cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle
+):
     """
     Apply VHS to phi in batch.
     """
@@ -528,6 +550,75 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, h
         del out
     xp._default_memory_pool.free_all_blocks()
     return outphi
+
+
+def apply_VHS_to_phi_batch_cupy(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle=None):
+    """
+    Apply VHS to phi with staged CuPy GEMMs.
+
+    This evaluates the same contraction as the cuTensorNet path,
+    ``wKkP,kPp,KPr,wKrQi->wkpQi``, but chunks the ISDF dimension and
+    exposes the three dense matrix multiplications directly to cuBLAS.
+    """
+    nwalkers = Lx.shape[0]
+    nk = kpq_mat.shape[1]
+    nbsf = cgto.shape[2]
+    nisdf = Lx.shape[-1]
+    nknocc = phi.shape[-1]
+    nocc = nknocc // nk
+    dtype = phi.dtype
+    itemsize = xp.dtype(dtype).itemsize
+    max_mem_bytes = int(_kptisdf_max_mem_gb(default_fraction=0.30) * 1024**3)
+
+    # Largest temporary is cgtophi/Lx_cgtophi, both O(nw * nk^2 * nocc * Pchunk).
+    elems_per_isdf = max(1, 2 * nwalkers * nk * nk * nocc + nwalkers * nk * nk)
+    nisdf_chunk_size = max(1, min(nisdf, max_mem_bytes // (elems_per_isdf * itemsize)))
+
+    outphi = xp.zeros_like(phi)
+    phi_reshape = phi.reshape(nwalkers, nk, nbsf, nk, nocc)
+    phi_for_cgto = xp.ascontiguousarray(
+        phi_reshape.transpose(1, 2, 0, 3, 4).reshape(nk, nbsf, nwalkers * nk * nocc)
+    )
+
+    for start in range(0, nisdf, nisdf_chunk_size):
+        stop = min(start + nisdf_chunk_size, nisdf)
+        pchunk = stop - start
+        Lx_chunk = Lx[:, :, start:stop]
+        Lconjx_chunk = Lconjx[:, :, start:stop]
+        full_Lx = construct_full_Lx_batch(Lx_chunk, kpq_mat, unique_qs)
+        full_Lconjx = construct_full_Lx_batch(Lconjx_chunk, kmq_mat, unique_qs)
+        fullLpLconjx = full_Lx + full_Lconjx
+        cgto_slice = cgto[:, start:stop, :]
+
+        cgtophi = xp.empty((nk, pchunk, nwalkers * nk * nocc), dtype=dtype)
+        xp.matmul(cgto_slice, phi_for_cgto, out=cgtophi)
+
+        l_batch = fullLpLconjx.transpose(0, 3, 2, 1).reshape(nwalkers * pchunk, nk, nk)
+        cgtophi = cgtophi.reshape(nk, pchunk, nwalkers, nk, nocc)
+        cgtophi = cgtophi.transpose(2, 1, 0, 3, 4).reshape(
+            nwalkers * pchunk, nk, nk * nocc
+        )
+        lx_cgtophi = xp.empty((nwalkers * pchunk, nk, nk * nocc), dtype=dtype)
+        xp.matmul(l_batch, cgtophi, out=lx_cgtophi)
+
+        lx_cgtophi = lx_cgtophi.reshape(nwalkers, pchunk, nk, nk, nocc)
+        lx_cgtophi = lx_cgtophi.transpose(2, 0, 3, 4, 1).reshape(
+            nk, nwalkers * nk * nocc, pchunk
+        )
+        tmp = xp.empty((nk, nwalkers * nk * nocc, nbsf), dtype=dtype)
+        xp.matmul(lx_cgtophi, cgto_slice.conj(), out=tmp)
+        out = tmp.reshape(nk, nwalkers, nk, nocc, nbsf).transpose(1, 0, 4, 2, 3)
+        outphi += out.reshape(nwalkers, nk * nbsf, nknocc)
+
+        del full_Lx, full_Lconjx, fullLpLconjx, cgtophi, l_batch, lx_cgtophi, tmp, out
+
+    return outphi
+
+
+def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle):
+    return apply_VHS_to_phi_batch_cupy(
+        cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle
+    )
 
 
 def construct_VHS_batch(cgto, Lx, Lconjx, kpq_mat, kmq_mat, unique_qs, handle):
