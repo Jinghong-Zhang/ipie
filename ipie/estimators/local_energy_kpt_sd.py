@@ -648,11 +648,13 @@ def kpt_isdf_exx_lowk_q(halfrot_cgtoa, phikr_kpq, M_PQ_iq, phiki_kpq, cgto, GaT,
             phij_kpq_Q = phiki_kpq[:, Q, :].transpose(0, 2, 1).conj()  # k'+q, j, Q
             TQP = xp.matmul(TQP_s1, phij_kpq_Q)  # K, wPK', Q
             # exx[w] += sum TPQ[k,w,Q,k',P] M[P,Q] TQP[k',w,P,k,Q]
-            Z = TQP.reshape(nk, nw, nP, nk, nQ).transpose(3, 1, 4, 0, 2)  # k, w, Q, k', P
-            Z = Z * M_PQ_iq[P, Q].T[None, None, :, None, :]
-            Z *= TPQ.reshape(nk, nw, nQ, nk, nP)
-            exx += Z.sum(axis=(0, 2, 3, 4))
-            del Z, TPQ, TQP
+            # (contiguous transpose copies keep the product coalesced)
+            TPQ = TPQ.reshape(nk, nw, nQ, nk, nP).transpose(1, 0, 3, 4, 2).reshape(nw, nk * nk, nP, nQ)
+            TQP = TQP.reshape(nk, nw, nP, nk, nQ).transpose(1, 3, 0, 2, 4).reshape(nw, nk * nk, nP, nQ)
+            Tsq = xp.sum(TPQ * TQP, axis=1)  # w, P, Q
+            M_sliced = M_PQ_iq[P, Q].astype(xp.complex128, copy=False)
+            exx += Tsq.reshape(nw, nP * nQ) @ M_sliced.ravel()
+            del Tsq, TPQ, TQP
     return exx
 
 def kpt_isdf_exx_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sset, Qplus, algo=None, max_mem_gb=None):
