@@ -8,7 +8,12 @@ from ipie.estimators.kernels import exchange_reduction
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 from ipie.config import config
-from ipie.utils.contract_gf_cgto import contract_gf_cgto12_kpq_k, contract_gf_cgto12_k_kpq, slice_gf_k_kpq_given_q, slice_gf_kpq_k_given_q
+from ipie.utils.contract_gf_cgto import (
+    slice_gf_k_kpq_qlis,
+    slice_gf_kpq_k_qlis,
+    slice_cgto_kpq,
+)
+from ipie.propagation.force_bias import contract_qkPp_kPr_qkwpr_to_qwP_cupy
 
 from ipie.systems.generic import Generic
 from ipie.hamiltonians.kpt_hamiltonian import KptComplexChol, KptComplexCholSymm, KptISDF
@@ -455,308 +460,244 @@ def kpt_symmchol_ecoul_kernel_uhf(rchola, rcholb, rcholbara, rcholbarb, Ghalfa, 
         ecoul[iw] = dot(X[iw], Xbar[iw])
     return 0.5 * ecoul / nk
 
-def kpt_isdf_ecoul_kernel_gpu(MPQ, halfrot_cgtoa, halfrot_cgtob, cgto, Ghalfa_batch, Ghalfb_batch, kpq_mat, Sset, Qplus):
-    nk = cgto.shape[0]
-    nwalkers = Ghalfa_batch.shape[0]
-    ecoul = xp.zeros(nwalkers, dtype=numpy.complex128)
-    for iq in range(len(Sset)):
-        iq_real = Sset[iq]
-        MPQ_iq = MPQ[iq]
-        ikpq = kpq_mat[iq_real]
-        cgto_kpq = cgto[ikpq]
-        rcgtoa_kpq = halfrot_cgtoa[ikpq]
-        rcgtob_kpq = halfrot_cgtob[ikpq]
-        ga_k_kpq = slice_gf_k_kpq_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        gb_k_kpq = slice_gf_k_kpq_given_q(Ghalfb_batch, iq_real, kpq_mat)
-        v1_wP = contract_gf_cgto12_k_kpq(ga_k_kpq, halfrot_cgtoa, cgto_kpq, iq_real) + contract_gf_cgto12_k_kpq(gb_k_kpq, halfrot_cgtob, cgto_kpq, iq_real)
-        del ga_k_kpq
-        del gb_k_kpq
-        ga_kpq_k = slice_gf_kpq_k_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        gb_kpq_k = slice_gf_kpq_k_given_q(Ghalfb_batch, iq_real, kpq_mat)
-        # v2_wP = contract_gf_cgto12_kpq_k(Ghalfa_batch, halfrot_cgtoa, cgto, iq_real, kpq_mat) + contract_gf_cgto12_kpq_k(Ghalfb_batch, halfrot_cgtob, cgto, iq_real, kpq_mat)
-        v2_wP = contract_gf_cgto12_kpq_k(ga_kpq_k, rcgtoa_kpq, cgto, iq_real) + contract_gf_cgto12_kpq_k(gb_kpq_k, rcgtob_kpq, cgto, iq_real)
-        del ga_kpq_k
-        del gb_kpq_k
-        ecoul += xp.sum((v1_wP @ MPQ_iq) * v2_wP, axis=1)
+def _available_device_mem_gb():
+    """Free device memory in GB, counting CuPy pool blocks as free."""
+    if not config.get_option("use_gpu"):
+        return 4.0
+    free_bytes = xp.cuda.Device().mem_info[0]
+    pool_bytes = xp.get_default_memory_pool().free_bytes()
+    return (free_bytes + pool_bytes) / 1024**3
 
-    for iq in range(len(Sset), len(Sset) + len(Qplus)):
-        iq_real = Qplus[iq - len(Sset)]
-        MPQ_iq = MPQ[iq]
-        ikpq = kpq_mat[iq_real]
-        cgto_kpq = cgto[ikpq]
-        rcgtoa_kpq = halfrot_cgtoa[ikpq]
-        rcgtob_kpq = halfrot_cgtob[ikpq]
-        ga_k_kpq = slice_gf_k_kpq_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        gb_k_kpq = slice_gf_k_kpq_given_q(Ghalfb_batch, iq_real, kpq_mat)
-        v1_wP = contract_gf_cgto12_k_kpq(ga_k_kpq, halfrot_cgtoa, cgto_kpq, iq_real) + contract_gf_cgto12_k_kpq(gb_k_kpq, halfrot_cgtob, cgto_kpq, iq_real)
-        del ga_k_kpq
-        del gb_k_kpq
-        ga_kpq_k = slice_gf_kpq_k_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        gb_kpq_k = slice_gf_kpq_k_given_q(Ghalfb_batch, iq_real, kpq_mat)
-        v2_wP = contract_gf_cgto12_kpq_k(ga_kpq_k, rcgtoa_kpq, cgto, iq_real) + contract_gf_cgto12_kpq_k(gb_kpq_k, rcgtob_kpq, cgto, iq_real)
-        del ga_kpq_k
-        del gb_kpq_k
-        ecoul += 2. * xp.sum((v1_wP @ MPQ_iq) * v2_wP, axis=1)
+def _kpt_isdf_ecoul_batch(MPQ_block, iq_lis, halfrot_lis, cgto, ghalf_lis, kpq_mat, max_mem_gb):
+    """Coulomb contribution of a batch of q points (no weight or prefactor).
+
+    halfrot_lis / ghalf_lis hold the per-spin half-rotated cgto (k, P, i) and
+    Green's functions (w, k, i, k', p); spins are fused along the occupied
+    index so each contraction is a single chunked-GEMM kernel call.
+    """
+    cgto_kpq = slice_cgto_kpq(cgto, kpq_mat, iq_lis)
+    # v1[q, w, P] = sum_{k,i,r} rcgto*[k,P,i] cgto[k+q,P,r] G[w,k,i,k+q,r]
+    g_lis = [slice_gf_k_kpq_qlis(g, iq_lis, kpq_mat).transpose(0, 1, 2, 4, 3) for g in ghalf_lis]
+    g_k_kpq = g_lis[0] if len(g_lis) == 1 else xp.concatenate(g_lis, axis=-1)
+    del g_lis
+    h_lis = [h.conj() for h in halfrot_lis]
+    halfrot_cat = h_lis[0] if len(h_lis) == 1 else xp.concatenate(h_lis, axis=-1)
+    v1 = contract_qkPp_kPr_qkwpr_to_qwP_cupy(cgto_kpq, halfrot_cat, g_k_kpq, max_mem=max_mem_gb)
+    del g_k_kpq, halfrot_cat
+    # v2[q, w, P] = sum_{k,i,r} rcgto*[k+q,P,i] cgto[k,P,r] G[w,k+q,i,k,r]
+    g_lis = [slice_gf_kpq_k_qlis(g, iq_lis, kpq_mat) for g in ghalf_lis]
+    g_kpq_k = g_lis[0] if len(g_lis) == 1 else xp.concatenate(g_lis, axis=3)
+    del g_lis
+    h_lis = [slice_cgto_kpq(h, kpq_mat, iq_lis).conj() for h in halfrot_lis]
+    rcgto_kpq_cat = h_lis[0] if len(h_lis) == 1 else xp.concatenate(h_lis, axis=-1)
+    v2 = contract_qkPp_kPr_qkwpr_to_qwP_cupy(rcgto_kpq_cat, cgto, g_kpq_k, max_mem=max_mem_gb)
+    del g_kpq_k, rcgto_kpq_cat
+    return xp.sum(xp.matmul(v1, MPQ_block) * v2, axis=(0, 2))
+
+def _kpt_isdf_ecoul_all_q(MPQ, halfrot_lis, cgto, ghalf_lis, kpq_mat, Sset, Qplus, max_mem_gb):
+    nk = cgto.shape[0]
+    nbsf = cgto.shape[-1]
+    nwalkers = ghalf_lis[0].shape[0]
+    nocc_tot = sum(g.shape[2] for g in ghalf_lis)
+    if max_mem_gb is None:
+        max_mem_gb = 0.25 * _available_device_mem_gb()
+    budget_bytes = int(max(float(max_mem_gb), 0.05) * 1024**3)
+    per_q_bytes = 4 * nk * nwalkers * nocc_tot * nbsf * 16
+    nq_chunk = max(1, budget_bytes // per_q_bytes)
+    ecoul = xp.zeros(nwalkers, dtype=numpy.complex128)
+    nS = len(Sset)
+    for start in range(0, nS, nq_chunk):
+        stop = min(start + nq_chunk, nS)
+        ecoul += _kpt_isdf_ecoul_batch(
+            MPQ[start:stop], Sset[start:stop], halfrot_lis, cgto, ghalf_lis, kpq_mat, max_mem_gb
+        )
+    for start in range(0, len(Qplus), nq_chunk):
+        stop = min(start + nq_chunk, len(Qplus))
+        ecoul += 2.0 * _kpt_isdf_ecoul_batch(
+            MPQ[nS + start : nS + stop], Qplus[start:stop], halfrot_lis, cgto, ghalf_lis, kpq_mat, max_mem_gb
+        )
+    return ecoul
+
+def kpt_isdf_ecoul_kernel_gpu(MPQ, halfrot_cgtoa, halfrot_cgtob, cgto, Ghalfa_batch, Ghalfb_batch, kpq_mat, Sset, Qplus, max_mem_gb=None):
+    nk = cgto.shape[0]
+    ecoul = _kpt_isdf_ecoul_all_q(
+        MPQ,
+        [halfrot_cgtoa, halfrot_cgtob],
+        cgto,
+        [Ghalfa_batch, Ghalfb_batch],
+        kpq_mat,
+        Sset,
+        Qplus,
+        max_mem_gb,
+    )
     return 0.5 * ecoul / nk
 
-def kpt_isdf_ecoul_rhf_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sset, Qplus):
+def kpt_isdf_ecoul_rhf_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sset, Qplus, max_mem_gb=None):
     nk = cgto.shape[0]
-    nwalkers = Ghalfa_batch.shape[0]
-    ecoul = xp.zeros(nwalkers, dtype=numpy.complex128)
-    for iq in range(len(Sset)):
-        iq_real = Sset[iq]
-        MPQ_iq = MPQ[iq]
-        ikpq = kpq_mat[iq_real]
-        cgto_kpq = cgto[ikpq]
-        rcgtoa_kpq = halfrot_cgtoa[ikpq]
-        ga_k_kpq = slice_gf_k_kpq_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        v1_wP = contract_gf_cgto12_k_kpq(ga_k_kpq, halfrot_cgtoa, cgto_kpq, iq_real)
-        del ga_k_kpq
-        ga_kpq_k = slice_gf_kpq_k_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        v2_wP = contract_gf_cgto12_kpq_k(ga_kpq_k, rcgtoa_kpq, cgto, iq_real)
-        del ga_kpq_k
-        ecoul += xp.sum((v1_wP @ MPQ_iq) * v2_wP, axis=1)
-
-    for iq in range(len(Sset), len(Sset) + len(Qplus)):
-        iq_real = Qplus[iq - len(Sset)]
-        MPQ_iq = MPQ[iq]
-        ikpq = kpq_mat[iq_real]
-        cgto_kpq = cgto[ikpq]
-        rcgtoa_kpq = halfrot_cgtoa[ikpq]
-        ga_k_kpq = slice_gf_k_kpq_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        v1_wP = contract_gf_cgto12_k_kpq(ga_k_kpq, halfrot_cgtoa, cgto_kpq, iq_real)
-        del ga_k_kpq
-        ga_kpq_k = slice_gf_kpq_k_given_q(Ghalfa_batch, iq_real, kpq_mat)
-        v2_wP = contract_gf_cgto12_kpq_k(ga_kpq_k, rcgtoa_kpq, cgto, iq_real)
-        del ga_kpq_k
-        ecoul += 2. * xp.sum((v1_wP @ MPQ_iq) * v2_wP, axis=1)
+    ecoul = _kpt_isdf_ecoul_all_q(
+        MPQ, [halfrot_cgtoa], cgto, [Ghalfa_batch], kpq_mat, Sset, Qplus, max_mem_gb
+    )
     return 2. * ecoul / nk
 
-def contract_psi_G_psi(psiiP_slice, psiqQ_slice, G, buff, nP, nQ):
-    nw, nk, nocc, nbsf = G.shape[0], G.shape[1], G.shape[2], G.shape[4]
-    G = G.transpose(3, 0, 1, 2, 4).reshape(nk, nw * nk * nocc, nbsf)  # k', wki, q
-    size_Gpsi = nw * nocc * nk**2 * nQ
-    Gpsi = buff[:size_Gpsi].reshape(nk, nw * nocc * nk, nQ)
-    xp.matmul(G, psiqQ_slice, out=Gpsi)  # k', wki, Q
-    Gpsi = Gpsi.reshape(nk, nw, nk, nocc, nQ).transpose(2, 1, 4, 0, 3).reshape(nk, nw * nQ * nk, nocc) # k, wQk', i
-    size_TPQ = nk**2 * nw * nP * nQ
-    TPQ = buff[:size_TPQ].reshape(nk, nw * nQ * nk, nP)
-    xp.matmul(Gpsi, psiiP_slice, out=TPQ)
-    return TPQ
+def kpt_isdf_exx_largek_q(halfrot_cgtoa, phikr_kpq, M_PQ_iq, phiki_kpq, cgto, Ghalfa_batch, GkpqT, max_mem_gb=4.0):
+    """Exchange contribution of one q point (large-nk algorithm).
 
-def X_contract_cupy_lowk(halfrot_cgtoa, phikr_kpq, M_PQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, buff1, buff2, slices_isdf):
-    # low k algorithm
-    nw = Ga_chunk.shape[0]
+    Evaluates 'kPi, kPp, PQ, KQj, KQq, wkiKq, wKjkp -> w' with the
+    walker-independent GEMM A = (rcgto* x cgto_kpq) @ M hoisted out of the
+    walker loop.
+
+    GkpqT : (K, j, w, k, p) contiguous transpose of
+        Ghalf[w, kpq[K], j, kpq[k], p].
+    """
+    nw, nk, nocc, _, nbsf = Ghalfa_batch.shape
+    nisdf = M_PQ_iq.shape[0]
+    itemsize = 16
+    budget = int(max(float(max_mem_gb), 0.05) * 1024**3)
+    exx = xp.zeros(nw, dtype=xp.complex128)
+    Ga_flat = Ghalfa_batch.reshape(nw, -1)
+
+    # Q chunk sized by the walker-independent intermediates (A, its transpose
+    # copy and the rho chunks); P chunk bounds the rho build the same way
+    nQ_chunk = max(1, min(nisdf, budget // (4 * nk * nocc * nbsf * itemsize)))
+    nP_chunk = nQ_chunk
+    # walker chunk sized by B (and its transpose copy) plus the G slice and D
+    per_w_bytes = nk * nk * nbsf * (2 * nQ_chunk + 3 * nocc) * itemsize
+    nw_chunk = max(1, min(nw, budget // max(per_w_bytes, 1)))
+
+    for qstart in range(0, nisdf, nQ_chunk):
+        qstop = min(qstart + nQ_chunk, nisdf)
+        nQ = qstop - qstart
+        # A[kip, Q] = sum_P rcgto*[k,P,i] cgto_kpq[k,P,p] M[P,Q]
+        A = xp.zeros((nk * nocc * nbsf, nQ), dtype=xp.complex128)
+        for pstart in range(0, nisdf, nP_chunk):
+            pstop = min(pstart + nP_chunk, nisdf)
+            rho = halfrot_cgtoa[:, pstart:pstop, :, None].conj() * phikr_kpq[:, pstart:pstop, None, :]  # k, P, i, p
+            rho = rho.transpose(0, 2, 3, 1).reshape(nk * nocc * nbsf, pstop - pstart)
+            A += rho @ M_PQ_iq[pstart:pstop, qstart:qstop].astype(xp.complex128, copy=False)
+            del rho
+        A = A.reshape(nk, nocc, nbsf, nQ).transpose(0, 3, 2, 1).reshape(nk * nQ, nbsf, nocc)  # kQ, p, i
+        psi_kQj = xp.ascontiguousarray(phiki_kpq[:, qstart:qstop, :].conj())  # K, Q, j
+        cgto_Q = cgto[:, qstart:qstop, :]  # K, Q, q
+        for wstart in range(0, nw, nw_chunk):
+            wstop = min(wstart + nw_chunk, nw)
+            wchunk = wstop - wstart
+            Gk = xp.ascontiguousarray(GkpqT[:, :, wstart:wstop]).reshape(nk, nocc, wchunk * nk * nbsf)
+            B = xp.matmul(psi_kQj, Gk)  # K, Q, wkp
+            del Gk
+            B = B.reshape(nk, nQ, wchunk, nk, nbsf).transpose(3, 1, 2, 0, 4).reshape(nk * nQ, wchunk * nk, nbsf)  # kQ, wK, p
+            C = xp.matmul(B, A)  # kQ, wK, i
+            del B
+            C = C.reshape(nk, nQ, wchunk, nk, nocc).transpose(3, 0, 2, 4, 1).reshape(nk, nk * wchunk * nocc, nQ)  # K, kwi, Q
+            D = xp.matmul(C, cgto_Q)  # K, kwi, q
+            del C
+            D = D.reshape(nk, nk, wchunk, nocc, nbsf).transpose(2, 1, 3, 0, 4).reshape(wchunk, -1)  # w, kiKq
+            exx[wstart:wstop] += xp.sum(D * Ga_flat[wstart:wstop], axis=-1)
+            del D
+    return exx
+
+def _psi_G_psi_stage1(GT, psi_qQ, nw, nk, nocc):
+    """First GEMM of psi+ . G . psi: (k', wki, q) @ (k', q, Q) -> (k, wQk', i)."""
+    nQ = psi_qQ.shape[-1]
+    Gpsi = xp.matmul(GT, psi_qQ)  # k', wki, Q
+    Gpsi = Gpsi.reshape(nk, nw, nk, nocc, nQ).transpose(2, 1, 4, 0, 3).reshape(nk, nw * nQ * nk, nocc)
+    return Gpsi  # k, wQk', i
+
+def kpt_isdf_exx_lowk_q(halfrot_cgtoa, phikr_kpq, M_PQ_iq, phiki_kpq, cgto, GaT, GkpqT, nw, nocc, max_mem_gb=4.0):
+    """Exchange contribution of one q point (low-nk algorithm).
+
+    The psi+ . G . psi contractions are split so the GEMM that depends on only
+    one ISDF chunk index is hoisted out of the double chunk loop, and the
+    (P, Q) reduction is fused into two elementwise passes plus a sum.
+
+    GaT : (k', w*k*i, q) contiguous transpose of Ghalf (q-independent).
+    GkpqT : same layout for the doubly-shifted Green's function of this q.
+    """
     nk = cgto.shape[0]
-    exx = xp.zeros((nw,), dtype=xp.complex128)
+    nisdf = M_PQ_iq.shape[0]
+    itemsize = 16
+    budget = int(max(float(max_mem_gb), 0.05) * 1024**3)
+    exx = xp.zeros(nw, dtype=xp.complex128)
 
-    for ia, P in enumerate(slices_isdf): # ia is the chunk index
-        psi_iP_k = halfrot_cgtoa[:, P, :].transpose(0, 2, 1).conj()  # k, i, P
-        phip_kpq_P = phikr_kpq[:, P, :].transpose(0, 2, 1) # k+q, p, P
+    # chunk both ISDF indices so the (k, w, Q, k', P) intermediates fit
+    nchunk = max(1, min(nisdf, int(sqrt(budget / max(4 * nk * nk * nw * itemsize, 1)))))
+    slices_isdf = [slice(s, min(s + nchunk, nisdf)) for s in range(0, nisdf, nchunk)]
+
+    # the stage-1 GEMM of T_PQ depends only on the Q chunk; cache it across
+    # the P loop when the full set fits in the budget
+    stage1_bytes = nk * nk * nw * nocc * nisdf * itemsize
+    cache_stage1 = stage1_bytes <= budget
+    TPQ_stage1 = None
+    if cache_stage1:
+        TPQ_stage1 = [
+            _psi_G_psi_stage1(GaT, cgto[:, Q, :].transpose(0, 2, 1), nw, nk, nocc)
+            for Q in slices_isdf
+        ]
+
+    for P in slices_isdf:
         nP = P.stop - P.start
-        # for ib, Q in enumerate(slices_isdf[ia:], start=ia): # only compute upper triangle
+        psi_iP_k = halfrot_cgtoa[:, P, :].transpose(0, 2, 1).conj()  # k, i, P
+        phip_kpq_P = phikr_kpq[:, P, :].transpose(0, 2, 1)  # k+q, p, P
+        TQP_s1 = _psi_G_psi_stage1(GkpqT, phip_kpq_P, nw, nk, nocc)  # K, wPK', j
         for ib, Q in enumerate(slices_isdf):
             nQ = Q.stop - Q.start
-            psi_iQ_kp = cgto[:, Q, :].transpose(0, 2, 1)  # k', q, Q
-            phij_kpq_Q = phiki_kpq[:, Q, :].transpose(0, 2, 1).conj() # k'+q, j, Q
-            TPQ = contract_psi_G_psi(psi_iP_k, psi_iQ_kp, Ga_chunk, buff1, nP, nQ)
-            TQP_kpq = contract_psi_G_psi(phij_kpq_Q, phip_kpq_P, G_kpq_kprimepq_chunk, buff2, nQ, nP)
-            TPQ = TPQ.reshape(nk, nw, nQ, nk, nP).transpose(1, 0, 3, 4, 2).reshape(nw, nk * nk, nP, nQ)  # wkk', P, Q
-            TQP_kpq = TQP_kpq.reshape(nk, nw, nP, nk, nQ).transpose(1, 3, 0, 2, 4).reshape(nw, nk * nk, nP, nQ)  # wkk', P, Q
-            Tsq = xp.sum(TPQ * TQP_kpq, axis=1) # w, P, Q
-            M_PQ_iq_sliced = M_PQ_iq[P, Q].astype(xp.complex128, copy=False)  # P, Q
-            exx += (Tsq.reshape(nw, nP * nQ) @ M_PQ_iq_sliced.ravel())
+            if cache_stage1:
+                TPQ_s1 = TPQ_stage1[ib]
+            else:
+                TPQ_s1 = _psi_G_psi_stage1(GaT, cgto[:, Q, :].transpose(0, 2, 1), nw, nk, nocc)
+            TPQ = xp.matmul(TPQ_s1, psi_iP_k)  # k, wQk', P
+            phij_kpq_Q = phiki_kpq[:, Q, :].transpose(0, 2, 1).conj()  # k'+q, j, Q
+            TQP = xp.matmul(TQP_s1, phij_kpq_Q)  # K, wPK', Q
+            # exx[w] += sum TPQ[k,w,Q,k',P] M[P,Q] TQP[k',w,P,k,Q]
+            Z = TQP.reshape(nk, nw, nP, nk, nQ).transpose(3, 1, 4, 0, 2)  # k, w, Q, k', P
+            Z = Z * M_PQ_iq[P, Q].T[None, None, :, None, :]
+            Z *= TPQ.reshape(nk, nw, nQ, nk, nP)
+            exx += Z.sum(axis=(0, 2, 3, 4))
+            del Z, TPQ, TQP
     return exx
 
-def contraction_exx(halfrot_cgtoa, phikr_kpq, M_PQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, nw, max_mem = 4.0):
-    # slice over Q in the outside loop
-    exx = 0.0 + 0.0j
-    intermediate_mem = (nbsf * nisdf * nk**2 * nw + nbsf * nisdf * nk * nocc * nw) * 16 / 1024**3  # GB
-    num_chunks = ceil(intermediate_mem / max_mem)
-    nisdf_per_chunk = ceil(nisdf / num_chunks)
-    nisdf_left = nisdf
-    slices_isdf = []
-    for i_chunk in range(num_chunks):
-        if nisdf_left == 0:
-            break
-        nisdf_chunk = min(nisdf_left, nisdf_per_chunk)
-        nisdf_left -= nisdf_chunk
-        slices_isdf.append(slice(i_chunk * nisdf_per_chunk, i_chunk * nisdf_per_chunk + nisdf_chunk))
-    buff1 = xp.empty(nk * nocc * nbsf * nisdf_per_chunk, dtype=xp.complex128)
-    max_dim = max(nisdf_per_chunk, nocc)
-    buff2 = xp.empty(max_dim * nbsf * nk**2 * nw, dtype=xp.complex128)
-    # 1. psi^k_iP psi^k+[q]_pP -> rho^{k, [q]}_{ipP}
-    mem_rhokPip = nk * nocc * nisdf * nbsf * 16 / 1024**3  # GB
-    if mem_rhokPip < max_mem:
-        rho_kpq_ipP = halfrot_cgtoa.conj()[:, :, :, xp.newaxis] * phikr_kpq[:, :, xp.newaxis, :] # k, P, i, p
-        rho_kpq_ipP = rho_kpq_ipP.transpose(0, 2, 3, 1).reshape(nk * nocc * nbsf, nisdf)
-        G_kpq_kprimepq_chunk = G_kpq_kprimepq_chunk.transpose(1, 2, 0, 3, 4).reshape(nk, nocc, nw * nk * nbsf) # k', j, wkp
-        Ga_chunk = Ga_chunk.reshape(nw, -1)
-        # 2. rho^{k, [q]}_{ipP} M^{P, Q}_{iq} -> rho^{k, [q]}_{iQp}
-        for i_sls in slices_isdf:
-            nisdf_chunk = i_sls.stop - i_sls.start
-            M_PQ_iq_sliced = M_PQ_iq[:, i_sls]
-            size_A = nk * nocc * nisdf_chunk * nbsf
-            A_kipQ = buff1[:size_A].reshape(nk * nocc * nbsf, nisdf_chunk)
-            xp.matmul(rho_kpq_ipP, M_PQ_iq_sliced, out=A_kipQ)  # kip, Q
-            psi_kQj = phiki_kpq.conj()[:, i_sls, :] # k', Q, j
-            size_B = nisdf_chunk * nbsf * nk**2 * nw
-            B_kpQwkp = buff2[:size_B].reshape(nk, nisdf_chunk, nw * nk * nbsf)
-            xp.matmul(psi_kQj, G_kpq_kprimepq_chunk, out=B_kpQwkp)  # k', Q, wkp
-            B_kpQwkp = B_kpQwkp.reshape(nk, nisdf_chunk, nw, nk, nbsf).transpose(3, 1, 2, 0, 4).reshape(nk * nisdf_chunk, nw*nk, nbsf) # kQ, wk', p
-            A_kipQ = A_kipQ.reshape(nk, nocc, nbsf, nisdf_chunk).transpose(0, 3, 2, 1).reshape(nk * nisdf_chunk, nbsf, nocc) # kQ, p, i
-            size_C = nk**2 * nisdf_chunk * nw * nocc
-            C_kQwkpi = buff2[:size_C].reshape(nk * nisdf_chunk, nw * nk, nocc)
-            xp.matmul(B_kpQwkp, A_kipQ, out=C_kQwkpi)  # kQ, wk', i
-            C_kQwkpi = C_kQwkpi.reshape(nk, nisdf_chunk, nw, nk, nocc).transpose(3, 0, 2, 4, 1).reshape(nk, nk * nw * nocc, nisdf_chunk) #k', kwi, Q
-            size_D = nw * nk**2 * nocc * nbsf
-            D_kpkwiq = buff2[:size_D].reshape(nk, nk * nw * nocc, nbsf)
-            xp.matmul(C_kQwkpi, cgto[:, i_sls, :], out=D_kpkwiq) # k', kwi, q
-            D_kpkwiq = D_kpkwiq.reshape(nk, nk, nw, nocc, nbsf).transpose(2, 1, 3, 0, 4).reshape(nw, -1)
-            exx += xp.sum(D_kpkwiq * Ga_chunk, axis=-1)
-    else:
-        G_kpq_kprimepq_chunk = G_kpq_kprimepq_chunk.transpose(1, 2, 0, 3, 4).reshape(nk, nocc, nw * nk * nbsf) # k', j, wkp
-        Ga_chunk = Ga_chunk.reshape(nw, -1)
-        # 2. rho^{k, [q]}_{ipP} M^{P, Q}_{iq} -> rho^{k, [q]}_{iQp}
-        for i_sls in slices_isdf:
-            nisdf_chunk = i_sls.stop - i_sls.start
-            A_kipQ = xp.zeros((nk * nocc * nbsf, nisdf_chunk), dtype=xp.complex128)
-            for j_sls in slices_isdf:
-                nisdf_chunk_P = j_sls.stop - j_sls.start
-                rho_kpq_ipP = halfrot_cgtoa.conj()[:, j_sls, :, xp.newaxis] * phikr_kpq[:, j_sls, xp.newaxis, :] # k, P, i, p
-                rho_kpq_ipP = rho_kpq_ipP.transpose(0, 2, 3, 1).reshape(nk * nocc * nbsf, nisdf_chunk_P)
-                M_PQ_iq_sliced = M_PQ_iq[j_sls, i_sls]
-                size_A = nk * nocc * nisdf_chunk * nbsf
-                temp = buff1[:size_A].reshape(nk * nocc * nbsf, nisdf_chunk)
-                xp.matmul(rho_kpq_ipP, M_PQ_iq_sliced, out=temp)  # kip, Q
-                A_kipQ += temp
-            psi_kQj = phiki_kpq.conj()[:, i_sls, :] # k', Q, j
-            size_B = nisdf_chunk * nbsf * nk**2 * nw
-            B_kpQwkp = buff2[:size_B].reshape(nk, nisdf_chunk, nw * nk * nbsf)
-            xp.matmul(psi_kQj, G_kpq_kprimepq_chunk, out=B_kpQwkp)  # k', Q, wkp
-            B_kpQwkp = B_kpQwkp.reshape(nk, nisdf_chunk, nw, nk, nbsf).transpose(3, 1, 2, 0, 4).reshape(nk * nisdf_chunk, nw*nk, nbsf) # kQ, wk', p
-            A_kipQ = A_kipQ.reshape(nk, nocc, nbsf, nisdf_chunk).transpose(0, 3, 2, 1).reshape(nk * nisdf_chunk, nbsf, nocc) # kQ, p, i
-            size_C = nk**2 * nisdf_chunk * nw * nocc
-            C_kQwkpi = buff2[:size_C].reshape(nk * nisdf_chunk, nw * nk, nocc)
-            xp.matmul(B_kpQwkp, A_kipQ, out=C_kQwkpi)  # kQ, wk', i
-            C_kQwkpi = C_kQwkpi.reshape(nk, nisdf_chunk, nw, nk, nocc).transpose(3, 0, 2, 4, 1).reshape(nk, nk * nw * nocc, nisdf_chunk) #k', kwi, Q
-            size_D = nw * nk**2 * nocc * nbsf
-            D_kpkwiq = buff2[:size_D].reshape(nk, nk * nw * nocc, nbsf)
-            xp.matmul(C_kQwkpi, cgto[:, i_sls, :], out=D_kpkwiq) # k', kwi, q
-            D_kpkwiq = D_kpkwiq.reshape(nk, nk, nw, nocc, nbsf).transpose(2, 1, 3, 0, 4).reshape(nw, -1)
-            exx += xp.sum(D_kpkwiq * Ga_chunk, axis=-1)
-    return exx
-
-def kpt_isdf_exx_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sset, Qplus):
+def kpt_isdf_exx_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sset, Qplus, algo=None, max_mem_gb=None):
     nwalker, nk, nocc, _, nbsf = Ghalfa_batch.shape
     nisdf = MPQ.shape[-1]
-    if nbsf > 8 * nk:
-        # lowk algo
-        exx = xp.zeros((nwalker,), dtype=xp.complex128)
-        nisdf = MPQ.shape[-1]
+    if max_mem_gb is None:
+        max_mem_gb = 0.25 * _available_device_mem_gb()
+    if algo is None:
+        # per-q FLOP model: the large-k path pays a walker-independent
+        # nk*nocc*nbsf*nisdf^2 GEMM but only 3 walker-dependent GEMMs of
+        # nk^2*nw*nocc*nbsf*nisdf; the low-k path scales as nisdf^2 per walker
+        flops_largek = nk * nocc * nbsf * nisdf**2 + 3 * nk**2 * nwalker * nocc * nbsf * nisdf
+        flops_lowk = 2 * nk**2 * nwalker * nocc * nisdf**2 + 2 * nk**2 * nwalker * nocc * nbsf * nisdf
+        algo = "largek" if flops_largek <= flops_lowk else "lowk"
 
-        w_idx = xp.arange(nwalker)[:, None, None, None, None]  # shape (W,1,1,1,1)
-        k_idx = xp.arange(nk)[None, :, None, None, None]  # shape (1,nk,1,1,1)
-        i_idx = xp.arange(nocc)[None, None, :, None, None]  # shape (1,1,nocc,1,1)
-        kprime_idx = xp.arange(nk)[None, None, None, :, None]  # shape (1,1,1,nk,1)
-        p_idx = xp.arange(nbsf)[None, None, None, None, :] # shape (1,1,1,1,nbsf)
-   
-        intermediate_mem = nisdf * nisdf * nk**2 * nwalker * 3 * 16 / 1024**3
-        max_mem = 8.0
-        num_chunks = ceil(intermediate_mem / max_mem)
-        num_chunk_per_dim = ceil(num_chunks ** 0.5)
-        nisdf_per_chunk = ceil(nisdf / num_chunk_per_dim)
-        nisdf_left = nisdf
-        slices_isdf = []
-        for i_chunk in range(num_chunks):
-            if nisdf_left == 0:
-                break
-            nisdf_chunk = min(nisdf_left, nisdf_per_chunk)
-            nisdf_left -= nisdf_chunk
-            slices_isdf.append(slice(i_chunk * nisdf_per_chunk, i_chunk * nisdf_per_chunk + nisdf_chunk))
-        max_dim = max(nisdf_per_chunk, nocc)
-        buff1 = xp.empty(nwalker * nk**2 * max_dim**2, dtype=xp.complex128)
-        buff2 = xp.empty(nwalker * nk**2 * max_dim**2, dtype=xp.complex128)
-        for iq in range(len(Sset)):
-            iq_real = Sset[iq]
-            ikpq = kpq_mat[iq_real]
-            phikr_kpq = cgto[ikpq]
-            phiki_kpq = halfrot_cgtoa[ikpq]
-            kpq_idx = kpq_mat[k_idx, iq_real]
-            kprimepq_idx = kpq_mat[kprime_idx, iq_real]
-            G_kpq_kprimepq_chunk = Ghalfa_batch[w_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
-            MPQ_iq = MPQ[iq]
-            exx_iq = X_contract_cupy_lowk(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ghalfa_batch, G_kpq_kprimepq_chunk, buff1, buff2, slices_isdf)
-            exx -= exx_iq
-
-        for iq in range(len(Sset), len(Sset) + len(Qplus)):
-            iq_real = Qplus[iq - len(Sset)]
-            ikpq = kpq_mat[iq_real]
-            phikr_kpq = cgto[ikpq]
-            phiki_kpq = halfrot_cgtoa[ikpq]
-            kpq_idx = kpq_mat[k_idx, iq_real]
-            kprimepq_idx = kpq_mat[kprime_idx, iq_real]
-            G_kpq_kprimepq_chunk = Ghalfa_batch[w_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
-            MPQ_iq = MPQ[iq]
-            exx_iq = X_contract_cupy_lowk(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ghalfa_batch, G_kpq_kprimepq_chunk, buff1, buff2, slices_isdf)
-            exx -= 2. * exx_iq
-
-    else:
-        # large k algo
-        w_idx = xp.arange(nwalker)[:, None, None, None, None]  # shape (W,1,1,1,1)
-        k_idx = xp.arange(nk)[None, :, None, None, None]  # shape (1,nk,1,1,1)
-        i_idx = xp.arange(nocc)[None, None, :, None, None]  # shape (1,1,nocc,1,1)
-        kprime_idx = xp.arange(nk)[None, None, None, :, None]  # shape (1,1,1,nk,1)
-        p_idx = xp.arange(nbsf)[None, None, None, None, :] # shape (1,1,1,1,nbsf)
-
-        exx = xp.zeros(nwalker, dtype=numpy.complex128)
-
-        if nk < 64:
-            intermediate_mem = nwalker * nisdf * nk * nk * nbsf * 6 * 16 / 1024 ** 3
+    exx = xp.zeros(nwalker, dtype=numpy.complex128)
+    GaT = None
+    if algo == "lowk":
+        GaT = xp.ascontiguousarray(Ghalfa_batch.transpose(3, 0, 1, 2, 4)).reshape(
+            nk, nwalker * nk * nocc, nbsf
+        )
+    nS = len(Sset)
+    for iq in range(nS + len(Qplus)):
+        iq_real = Sset[iq] if iq < nS else Qplus[iq - nS]
+        weight = 1.0 if iq < nS else 2.0
+        ikpq = kpq_mat[iq_real]
+        phikr_kpq = cgto[ikpq]
+        phiki_kpq = halfrot_cgtoa[ikpq]
+        # G_kpq[w, K, j, k, p] = Ghalf[w, kpq[K], j, kpq[k], p]
+        G_kpq = Ghalfa_batch.take(ikpq, axis=1).take(ikpq, axis=3)
+        if algo == "largek":
+            GkpqT = xp.ascontiguousarray(G_kpq.transpose(1, 2, 0, 3, 4))  # K, j, w, k, p
+            del G_kpq
+            exx -= weight * kpt_isdf_exx_largek_q(
+                halfrot_cgtoa, phikr_kpq, MPQ[iq], phiki_kpq, cgto, Ghalfa_batch, GkpqT, max_mem_gb
+            )
         else:
-            intermediate_mem = nwalker * nisdf * nk * nbsf * 6 * 16 / 1024 ** 3
-        free_bytes = xp.cuda.Device().mem_info[0]
-        free_gb = free_bytes / 1024**3.0
-        max_mem = .7 * free_gb
-        num_chunks = max(1, ceil(intermediate_mem / max_mem))
-        chunk_size = ceil(nwalker / num_chunks)
-        nw_left = nwalker
-        for i_chunk in range(num_chunks):
-            if nw_left == 0:
-                break
-            n_chunk = min(nw_left, chunk_size)
-            nw_left -= n_chunk
-            w_sls = xp.arange(nwalker)[i_chunk * chunk_size: i_chunk * chunk_size + n_chunk]
-            Ga_chunk = Ghalfa_batch[w_sls]
-            w_chunk_idx = xp.arange(n_chunk)[:, None, None, None, None]  # shape (W_chunk,1,1,1,1)
-
-            for iq in range(len(Sset)):
-                iq_real = Sset[iq]
-                ikpq = kpq_mat[iq_real]
-                phikr_kpq = cgto[ikpq]
-                phiki_kpq = halfrot_cgtoa[ikpq]
-                kpq_idx = kpq_mat[k_idx, iq_real]
-                kprimepq_idx = kpq_mat[kprime_idx, iq_real]
-                G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
-                MPQ_iq = MPQ[iq]
-                # exx[w_sls] -= contract('kPi, kPp, PQ, KQj, KQq, wkiKq, wKjkp -> w', halfrot_cgtoa.conj(), phikr_kpq, MPQ_iq, phiki_kpq.conj(), cgto, Ga_chunk, G_kpq_kprimepq_chunk, options=network_opts)
-                exx[w_sls] -= contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
-                xp.cuda.get_current_stream().synchronize()
-                del G_kpq_kprimepq_chunk
-
-            for iq in range(len(Sset), len(Sset) + len(Qplus)):
-                iq_real = Qplus[iq - len(Sset)]
-                ikpq = kpq_mat[iq_real]
-                phikr_kpq = cgto[ikpq]
-                phiki_kpq = halfrot_cgtoa[ikpq]
-                kpq_idx = kpq_mat[k_idx, iq_real]
-                kprimepq_idx = kpq_mat[kprime_idx, iq_real]
-                G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
-                MPQ_iq = MPQ[iq]
-                exx[w_sls] -= 2. * contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
-                xp.cuda.get_current_stream().synchronize()
-                del G_kpq_kprimepq_chunk
-
+            GkpqT = xp.ascontiguousarray(G_kpq.transpose(3, 0, 1, 2, 4)).reshape(
+                nk, nwalker * nk * nocc, nbsf
+            )
+            del G_kpq
+            exx -= weight * kpt_isdf_exx_lowk_q(
+                halfrot_cgtoa, phikr_kpq, MPQ[iq], phiki_kpq, cgto, GaT, GkpqT, nwalker, nocc, max_mem_gb
+            )
+        del GkpqT
     return 0.5 * exx / nk
 
 
@@ -993,11 +934,11 @@ def local_energy_kpt_single_det_uhf_isdf_gpu(system, hamiltonian, walkers, trial
     nbeta = trial.nbeta
     nbasis = hamiltonian.nbasis
 
+    kdiag = xp.arange(nk)
     if walkers.rhf:
         ghalfa = walkers.Ghalfa.reshape(nwalkers, nk, nalpha, nk, nbasis)
-        diagGhalfa = xp.zeros((nwalkers, nk, nalpha, nbasis), dtype=numpy.complex128)
-        for ik in range(nk):
-            diagGhalfa[:, ik, :, :] = ghalfa[:, ik, :, ik, :]
+        # advanced indexing puts the k axis first: (nk, nw, nocc, nbsf)
+        diagGhalfa = ghalfa[:, kdiag, :, kdiag, :].transpose(1, 0, 2, 3)
         diagGhalfa = diagGhalfa.reshape(nwalkers, nk * nalpha * nbasis)
         e1b = 2. * diagGhalfa.dot(trial._rH1a.ravel())
         e1b /= nk
@@ -1012,11 +953,8 @@ def local_energy_kpt_single_det_uhf_isdf_gpu(system, hamiltonian, walkers, trial
         ghalfa = walkers.Ghalfa.reshape(nwalkers, nk, nalpha, nk, nbasis)
         ghalfb = walkers.Ghalfb.reshape(nwalkers, nk, nbeta, nk, nbasis)
 
-        diagGhalfa = xp.zeros((nwalkers, nk, nalpha, nbasis), dtype=numpy.complex128)
-        diagGhalfb = xp.zeros((nwalkers, nk, nbeta, nbasis), dtype=numpy.complex128)
-        for ik in range(nk):
-            diagGhalfa[:, ik, :, :] = ghalfa[:, ik, :, ik, :]
-            diagGhalfb[:, ik, :, :] = ghalfb[:, ik, :, ik, :]
+        diagGhalfa = ghalfa[:, kdiag, :, kdiag, :].transpose(1, 0, 2, 3)
+        diagGhalfb = ghalfb[:, kdiag, :, kdiag, :].transpose(1, 0, 2, 3)
         diagGhalfa = diagGhalfa.reshape(nwalkers, nk * nalpha * nbasis)
         diagGhalfb = diagGhalfb.reshape(nwalkers, nk * nbeta * nbasis)
         e1b = diagGhalfa.dot(trial._rH1a.ravel())
@@ -1026,8 +964,23 @@ def local_energy_kpt_single_det_uhf_isdf_gpu(system, hamiltonian, walkers, trial
 
         ecoul = kpt_isdf_ecoul_kernel_gpu(hamiltonian.MPQ, trial._rcgtoa, trial._rcgtob, hamiltonian.cgto, ghalfa, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
 
-        exxa = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtoa, hamiltonian.cgto, ghalfa, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
-        exxb = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtob, hamiltonian.cgto, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+        spin_degenerate = getattr(trial, "_rcgto_spin_degenerate", None)
+        if spin_degenerate is None:
+            spin_degenerate = trial._rcgtoa is trial._rcgtob or (
+                trial._rcgtoa.shape == trial._rcgtob.shape
+                and bool(xp.all(trial._rcgtoa == trial._rcgtob))
+            )
+            trial._rcgto_spin_degenerate = spin_degenerate
+        if spin_degenerate:
+            # same half-rotated orbitals for both spins: one exx call on the
+            # walker-concatenated Green's function instead of two
+            ghalf_both = xp.concatenate((ghalfa, ghalfb), axis=0)
+            exx_both = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtoa, hamiltonian.cgto, ghalf_both, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+            exxa = exx_both[:nwalkers]
+            exxb = exx_both[nwalkers:]
+        else:
+            exxa = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtoa, hamiltonian.cgto, ghalfa, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
+            exxb = kpt_isdf_exx_kernel_gpu(hamiltonian.MPQ, trial._rcgtob, hamiltonian.cgto, ghalfb, hamiltonian.ikpq_mat, hamiltonian.Sset, hamiltonian.Qplus)
 
         e2b = ecoul + exxa + exxb
 
@@ -1036,5 +989,4 @@ def local_energy_kpt_single_det_uhf_isdf_gpu(system, hamiltonian, walkers, trial
     energy[:, 1] = e1b
     energy[:, 2] = e2b
 
-    xp._default_memory_pool.free_all_blocks()
     return energy

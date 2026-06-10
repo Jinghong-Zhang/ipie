@@ -34,6 +34,7 @@ from ipie.utils.mpi import MPIHandler
 from ipie.walkers.uhf_walkers import UHFWalkers
 
 import legacy_kernels
+import legacy_energy_kernels
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--kmesh", default="2,2,2")
@@ -47,6 +48,7 @@ parser.add_argument("--nsteps", type=int, default=5)
 parser.add_argument("--timestep", type=float, default=0.005)
 parser.add_argument("--seed", type=int, default=114514)
 parser.add_argument("--propagation", choices=("old", "new"), default="new")
+parser.add_argument("--energy", choices=("old", "new"), default="new")
 parser.add_argument("--scratch", default="/n/netscratch/joonholee_lab/Lab/jhzhang/benchmarks_kptisdf_amd")
 args = parser.parse_args()
 
@@ -57,6 +59,8 @@ xp.cuda.Device(rank % gpu_number_per_node).use()
 
 if args.propagation == "old":
     legacy_kernels.patch_old_propagation()
+if args.energy == "old":
+    legacy_energy_kernels.patch_old_energy()
 
 mesh = [int(x) for x in args.kmesh.split(",")]
 nk = int(np.prod(mesh))
@@ -71,7 +75,8 @@ assert occ_ratio < 0.2, (
 )
 
 scratch_dir = os.path.join(
-    args.scratch, f"fake_nk{nk}_nbsf{nbasis}_no{nocc}_nw{args.nwalkers}_{args.propagation}"
+    args.scratch,
+    f"fake_nk{nk}_nbsf{nbasis}_no{nocc}_nw{args.nwalkers}_{args.propagation}_e{args.energy}",
 )
 os.makedirs(scratch_dir, exist_ok=True)
 os.chdir(scratch_dir)
@@ -117,7 +122,8 @@ cupy.get_default_memory_pool().free_all_blocks()
 
 if rank == 0:
     print(f"# fake KptISDF: nk={nk} nbasis={nbasis} nisdf={nisdf} naux={naux} "
-          f"nocc={nocc} nwalkers={args.nwalkers} nq={nq} propagation={args.propagation}")
+          f"nocc={nocc} nwalkers={args.nwalkers} nq={nq} "
+          f"propagation={args.propagation} energy={args.energy}")
 
 handler = MPIHandler(nmembers=1)
 system = Generic(nelec=(nocc, nocc))
@@ -195,6 +201,7 @@ timer = afqmc.propagator.timer
 result = {
     "event": "afqmc_timing",
     "propagation": args.propagation,
+    "energy": args.energy,
     "nk": nk,
     "nbasis": nbasis,
     "nisdf": nisdf,

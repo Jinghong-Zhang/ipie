@@ -45,6 +45,18 @@ def slice_gf_kpq_k_qlis(gf, iq_lis, kpq_mat):
     gf_kpq_lis = gf[:, kpq, :, ik_q, :]
     return gf_kpq_lis
 
+def slice_gf_k_kpq_qlis(gf, iq_lis, kpq_mat):
+    """
+    slice the Green's function G^{w}_{pk, rk+q} to g^{w}_{kpr} for a list of q
+    Returns:
+        gf_k_kpq: the sliced Green's function G[q, k, w, p, r]
+    """
+    nk = gf.shape[1]
+    ik_q = xp.repeat(xp.arange(nk), len(iq_lis)).reshape(nk, len(iq_lis)).T
+    kpq = kpq_mat[iq_lis]
+    gf_k_kpq_lis = gf[:, ik_q, :, kpq, :]
+    return gf_k_kpq_lis
+
 def slice_cgto_kpq(cgto, kpq_mat, iq_lis):
     nq = len(iq_lis)
     nk = cgto.shape[0]
