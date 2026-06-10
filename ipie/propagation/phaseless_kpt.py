@@ -491,6 +491,9 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
     bytes_per_isdf = nwalkers * nk * nk * 16
     nisdf_chunk_size = max(1, min(nisdf, max_mem_bytes // (4 * bytes_per_isdf)))
     num_nisdf_chunks = math.ceil(nisdf / nisdf_chunk_size)
+    # let the inner kernel use real headroom instead of a fixed 4 GB so its
+    # chunks stay large when nocc and nk^2 grow
+    inner_max_mem = max(4.0, 0.1 * xp.cuda.Device().mem_info[0] / 1024**3)
     nisdf_left = nisdf
     phi_for_cgto = phi.reshape(nwalkers, nk, nbsf, nk, nocc).transpose(1, 2, 0, 3, 4).reshape(nk, nbsf, nwalkers * nk * nocc)
     for i in range(num_nisdf_chunks):
@@ -505,7 +508,7 @@ def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
         )
         cgto_slice = cgto[:, i * nisdf_chunk_size: i * nisdf_chunk_size + nisdf_chunk, :]
         # out = contract('wKkP, kPp, KPr, wKrQi -> wkpQi', fullLpLconjx, cgto_slice.conj(), cgto_slice, phi_reshape, options=network_opts)
-        out = contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_for_cgto, nwalkers, nk, nisdf_chunk, nbsf, nocc)
+        out = contract_lowmem_vhs_walkers_from_l_batch(l_batch, cgto_slice, phi_for_cgto, nwalkers, nk, nisdf_chunk, nbsf, nocc, max_mem=inner_max_mem)
 
         del l_batch, cgto_slice
         outphi += out.reshape(nwalkers, nk * nbsf, -1)
