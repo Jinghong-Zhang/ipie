@@ -401,3 +401,117 @@ def patch_old_energy():
     le.kpt_isdf_ecoul_rhf_kernel_gpu = kpt_isdf_ecoul_rhf_kernel_gpu
     le.kpt_isdf_exx_kernel_gpu = kpt_isdf_exx_kernel_gpu
     le.local_energy_kpt_single_det_uhf_isdf_gpu = local_energy_kpt_single_det_uhf_isdf_gpu
+
+# Same frozen kernel but with the low-k/large-k branch forced by the caller
+# instead of the nbsf > 8*nk heuristic (used by the algorithm-regime sweep).
+def kpt_isdf_exx_kernel_gpu_forced(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sset, Qplus, algo):
+    nwalker, nk, nocc, _, nbsf = Ghalfa_batch.shape
+    nisdf = MPQ.shape[-1]
+    if algo == "lowk":
+        # lowk algo
+        exx = xp.zeros((nwalker,), dtype=xp.complex128)
+        nisdf = MPQ.shape[-1]
+
+        w_idx = xp.arange(nwalker)[:, None, None, None, None]  # shape (W,1,1,1,1)
+        k_idx = xp.arange(nk)[None, :, None, None, None]  # shape (1,nk,1,1,1)
+        i_idx = xp.arange(nocc)[None, None, :, None, None]  # shape (1,1,nocc,1,1)
+        kprime_idx = xp.arange(nk)[None, None, None, :, None]  # shape (1,1,1,nk,1)
+        p_idx = xp.arange(nbsf)[None, None, None, None, :] # shape (1,1,1,1,nbsf)
+   
+        intermediate_mem = nisdf * nisdf * nk**2 * nwalker * 3 * 16 / 1024**3
+        max_mem = 8.0
+        num_chunks = ceil(intermediate_mem / max_mem)
+        num_chunk_per_dim = ceil(num_chunks ** 0.5)
+        nisdf_per_chunk = ceil(nisdf / num_chunk_per_dim)
+        nisdf_left = nisdf
+        slices_isdf = []
+        for i_chunk in range(num_chunks):
+            if nisdf_left == 0:
+                break
+            nisdf_chunk = min(nisdf_left, nisdf_per_chunk)
+            nisdf_left -= nisdf_chunk
+            slices_isdf.append(slice(i_chunk * nisdf_per_chunk, i_chunk * nisdf_per_chunk + nisdf_chunk))
+        max_dim = max(nisdf_per_chunk, nocc)
+        buff1 = xp.empty(nwalker * nk**2 * max_dim**2, dtype=xp.complex128)
+        buff2 = xp.empty(nwalker * nk**2 * max_dim**2, dtype=xp.complex128)
+        for iq in range(len(Sset)):
+            iq_real = Sset[iq]
+            ikpq = kpq_mat[iq_real]
+            phikr_kpq = cgto[ikpq]
+            phiki_kpq = halfrot_cgtoa[ikpq]
+            kpq_idx = kpq_mat[k_idx, iq_real]
+            kprimepq_idx = kpq_mat[kprime_idx, iq_real]
+            G_kpq_kprimepq_chunk = Ghalfa_batch[w_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
+            MPQ_iq = MPQ[iq]
+            exx_iq = X_contract_cupy_lowk(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ghalfa_batch, G_kpq_kprimepq_chunk, buff1, buff2, slices_isdf)
+            exx -= exx_iq
+
+        for iq in range(len(Sset), len(Sset) + len(Qplus)):
+            iq_real = Qplus[iq - len(Sset)]
+            ikpq = kpq_mat[iq_real]
+            phikr_kpq = cgto[ikpq]
+            phiki_kpq = halfrot_cgtoa[ikpq]
+            kpq_idx = kpq_mat[k_idx, iq_real]
+            kprimepq_idx = kpq_mat[kprime_idx, iq_real]
+            G_kpq_kprimepq_chunk = Ghalfa_batch[w_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
+            MPQ_iq = MPQ[iq]
+            exx_iq = X_contract_cupy_lowk(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ghalfa_batch, G_kpq_kprimepq_chunk, buff1, buff2, slices_isdf)
+            exx -= 2. * exx_iq
+
+    else:
+        # large k algo
+        w_idx = xp.arange(nwalker)[:, None, None, None, None]  # shape (W,1,1,1,1)
+        k_idx = xp.arange(nk)[None, :, None, None, None]  # shape (1,nk,1,1,1)
+        i_idx = xp.arange(nocc)[None, None, :, None, None]  # shape (1,1,nocc,1,1)
+        kprime_idx = xp.arange(nk)[None, None, None, :, None]  # shape (1,1,1,nk,1)
+        p_idx = xp.arange(nbsf)[None, None, None, None, :] # shape (1,1,1,1,nbsf)
+
+        exx = xp.zeros(nwalker, dtype=numpy.complex128)
+
+        if nk < 64:
+            intermediate_mem = nwalker * nisdf * nk * nk * nbsf * 6 * 16 / 1024 ** 3
+        else:
+            intermediate_mem = nwalker * nisdf * nk * nbsf * 6 * 16 / 1024 ** 3
+        free_bytes = xp.cuda.Device().mem_info[0]
+        free_gb = free_bytes / 1024**3.0
+        max_mem = .7 * free_gb
+        num_chunks = max(1, ceil(intermediate_mem / max_mem))
+        chunk_size = ceil(nwalker / num_chunks)
+        nw_left = nwalker
+        for i_chunk in range(num_chunks):
+            if nw_left == 0:
+                break
+            n_chunk = min(nw_left, chunk_size)
+            nw_left -= n_chunk
+            w_sls = xp.arange(nwalker)[i_chunk * chunk_size: i_chunk * chunk_size + n_chunk]
+            Ga_chunk = Ghalfa_batch[w_sls]
+            w_chunk_idx = xp.arange(n_chunk)[:, None, None, None, None]  # shape (W_chunk,1,1,1,1)
+
+            for iq in range(len(Sset)):
+                iq_real = Sset[iq]
+                ikpq = kpq_mat[iq_real]
+                phikr_kpq = cgto[ikpq]
+                phiki_kpq = halfrot_cgtoa[ikpq]
+                kpq_idx = kpq_mat[k_idx, iq_real]
+                kprimepq_idx = kpq_mat[kprime_idx, iq_real]
+                G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
+                MPQ_iq = MPQ[iq]
+                # exx[w_sls] -= contract('kPi, kPp, PQ, KQj, KQq, wkiKq, wKjkp -> w', halfrot_cgtoa.conj(), phikr_kpq, MPQ_iq, phiki_kpq.conj(), cgto, Ga_chunk, G_kpq_kprimepq_chunk, options=network_opts)
+                exx[w_sls] -= contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
+                xp.cuda.get_current_stream().synchronize()
+                del G_kpq_kprimepq_chunk
+
+            for iq in range(len(Sset), len(Sset) + len(Qplus)):
+                iq_real = Qplus[iq - len(Sset)]
+                ikpq = kpq_mat[iq_real]
+                phikr_kpq = cgto[ikpq]
+                phiki_kpq = halfrot_cgtoa[ikpq]
+                kpq_idx = kpq_mat[k_idx, iq_real]
+                kprimepq_idx = kpq_mat[kprime_idx, iq_real]
+                G_kpq_kprimepq_chunk = Ga_chunk[w_chunk_idx, kpq_idx, i_idx, kprimepq_idx, p_idx]
+                MPQ_iq = MPQ[iq]
+                exx[w_sls] -= 2. * contraction_exx(halfrot_cgtoa, phikr_kpq, MPQ_iq, phiki_kpq, cgto, Ga_chunk, G_kpq_kprimepq_chunk, nk, nbsf, nisdf, nocc, n_chunk)
+                xp.cuda.get_current_stream().synchronize()
+                del G_kpq_kprimepq_chunk
+
+    return 0.5 * exx / nk
