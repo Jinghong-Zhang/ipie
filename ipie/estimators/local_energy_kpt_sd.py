@@ -663,12 +663,18 @@ def kpt_isdf_exx_kernel_gpu(MPQ, halfrot_cgtoa, cgto, Ghalfa_batch, kpq_mat, Sse
     if max_mem_gb is None:
         max_mem_gb = 0.25 * _available_device_mem_gb()
     if algo is None:
-        # per-q FLOP model: the large-k path pays a walker-independent
+        # per-q cost model: the large-k path pays a walker-independent
         # nk*nocc*nbsf*nisdf^2 GEMM but only 3 walker-dependent GEMMs of
-        # nk^2*nw*nocc*nbsf*nisdf; the low-k path scales as nisdf^2 per walker
+        # nk^2*nw*nocc*nbsf*nisdf; the low-k path scales as nisdf^2 per walker.
+        # The low-k reduction also streams the (nw, nk^2, nP, nQ) product
+        # tensors through memory (bandwidth-bound, ~48*nw*nk^2*nisdf^2 bytes),
+        # which dominates its runtime well past the pure-FLOP crossover; charge
+        # it as flop-equivalents with a coefficient calibrated on an H200 sweep
+        # (nk 8-125, nbsf 20-1000; feasible range 88-1231, mispick <= 8%).
         flops_largek = nk * nocc * nbsf * nisdf**2 + 3 * nk**2 * nwalker * nocc * nbsf * nisdf
         flops_lowk = 2 * nk**2 * nwalker * nocc * nisdf**2 + 2 * nk**2 * nwalker * nocc * nbsf * nisdf
-        algo = "largek" if flops_largek <= flops_lowk else "lowk"
+        bw_penalty_lowk = 330 * nwalker * nk**2 * nisdf**2
+        algo = "largek" if flops_largek <= flops_lowk + bw_penalty_lowk else "lowk"
 
     exx = xp.zeros(nwalker, dtype=numpy.complex128)
     GaT = None

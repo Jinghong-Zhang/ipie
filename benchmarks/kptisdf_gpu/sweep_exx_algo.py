@@ -196,11 +196,13 @@ for nk, nbsf, nocc, nw in cells:
     rcgto = device_complex_rand((nk, nisdf, nocc), 1.0 / np.sqrt(nisdf))
     Ga = device_complex_rand((nw, nk, nocc, nk, nbsf), 1.0 / np.sqrt(nk * nbsf))
 
-    # what the live FLOP model in the new kernel would pick
+    # what the live cost model in the new kernel would pick (FLOPs plus the
+    # calibrated bandwidth penalty for the low-k product-tensor traffic)
     flops_largek = nk * nocc * nbsf * nisdf**2 + 3 * nk**2 * nw * nocc * nbsf * nisdf
     flops_lowk = 2 * nk**2 * nw * nocc * nisdf**2 + 2 * nk**2 * nw * nocc * nbsf * nisdf
-    result["model_algo"] = "largek" if flops_largek <= flops_lowk else "lowk"
-    result["model_flop_ratio"] = flops_largek / flops_lowk
+    cost_lowk = flops_lowk + 330 * nw * nk**2 * nisdf**2
+    result["model_algo"] = "largek" if flops_largek <= cost_lowk else "lowk"
+    result["model_flop_ratio"] = flops_largek / cost_lowk
     result["old_heuristic_algo"] = "lowk" if nbsf > 8 * nk else "largek"
 
     variants = {
