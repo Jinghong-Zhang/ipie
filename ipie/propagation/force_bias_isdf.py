@@ -118,9 +118,10 @@ def contract_qkPp_kPr_qkwpr_to_qwP_cupy(
     for wstart in range(0, nwalkers, walker_chunk):
         wstop = min(wstart + walker_chunk, nwalkers)
         wchunk = wstop - wstart
-        g_slice = xp.ascontiguousarray(g_qkwpr[:, :, wstart:wstop, :, :])
         g_mat = xp.ascontiguousarray(
-            g_slice.transpose(0, 1, 3, 2, 4).reshape(nq, nk, nocc, wchunk * nbasis)
+            g_qkwpr[:, :, wstart:wstop, :, :]
+            .transpose(0, 1, 3, 2, 4)
+            .reshape(nq, nk, nocc, wchunk * nbasis)
         )
 
         available = max(max_mem_bytes - g_mat.nbytes, min_t_bytes_per_isdf)
@@ -143,7 +144,7 @@ def contract_qkPp_kPr_qkwpr_to_qwP_cupy(
                 0, 2, 1
             )
             del rcgto_chunk, contracted
-        del g_slice, g_mat
+        del g_mat
     return out
 
 
@@ -171,6 +172,14 @@ def _contract_force_bias_x(rcgto_qkPp, halfrot_cgto, g_qkwpr, max_mem):
 
 def _contract_force_bias_chol(X_qwP, cholM_qPg):
     return xp.matmul(X_qwP, cholM_qPg).transpose(1, 2, 0)
+
+
+def _contract_force_bias_spin_sum(
+    rcgtoa_qkPp, ga_qkwpr, rcgtob_qkPp, gb_qkwpr, halfrot_cgto, max_mem
+):
+    rcgto_qkPp = xp.concatenate((rcgtoa_qkPp, rcgtob_qkPp), axis=-1)
+    g_qkwpr = xp.concatenate((ga_qkwpr, gb_qkwpr), axis=3)
+    return _contract_force_bias_x(rcgto_qkPp, halfrot_cgto, g_qkwpr, max_mem)
 
 
 def construct_force_bias_kptisdf_batch_single_det(
@@ -352,16 +361,12 @@ def construct_force_bias_kptisdf_batch_single_det(
                     gb_kmq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikmq_mat)
                     rcgtoa_kmq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikmq_mat, q_sls)
                     rcgtob_kmq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikmq_mat, q_sls)
-                    X_wPa = _contract_force_bias_x(
+                    X_wP = _contract_force_bias_spin_sum(
                         rcgtoa_kmq.conj(),
-                        hamiltonian.halfrot_cgto,
                         ga_kmq,
-                        max_mem,
-                    )
-                    X_wPb = _contract_force_bias_x(
                         rcgtob_kmq.conj(),
-                        hamiltonian.halfrot_cgto,
                         gb_kmq,
+                        hamiltonian.halfrot_cgto,
                         max_mem,
                     )
                     L_q = hamiltonian.cholM[
@@ -369,7 +374,7 @@ def construct_force_bias_kptisdf_batch_single_det(
                     ]
                     vbias_plus[
                         :, :, i * nq_chunk_Sset_size : i * nq_chunk_Sset_size + nq_chunk
-                    ] += 1j * _contract_force_bias_chol(X_wPa + X_wPb, L_q)
+                    ] += 1j * _contract_force_bias_chol(X_wP, L_q)
 
             num_nq_chunks_Qplus = max(1, ceil(mem_cost_Qplus / max_mem))
             nq_chunk_Qplus_size = ceil(len(hamiltonian.Qplus) / num_nq_chunks_Qplus)
@@ -389,28 +394,20 @@ def construct_force_bias_kptisdf_batch_single_det(
                     gb_kpq = slice_gf_kpq_k_qlis(Ghalfb_reshape, q_sls, hamiltonian.ikpq_mat)
                     rcgtoa_kpq = slice_cgto_kpq(trial._rcgtoa, hamiltonian.ikpq_mat, q_sls)
                     rcgtob_kpq = slice_cgto_kpq(trial._rcgtob, hamiltonian.ikpq_mat, q_sls)
-                    X_wPa = _contract_force_bias_x(
+                    X_wP = _contract_force_bias_spin_sum(
                         rcgtoa_kmq.conj(),
-                        hamiltonian.halfrot_cgto,
                         ga_kmq,
-                        max_mem,
-                    )
-                    X_wPb = _contract_force_bias_x(
                         rcgtob_kmq.conj(),
-                        hamiltonian.halfrot_cgto,
                         gb_kmq,
+                        hamiltonian.halfrot_cgto,
                         max_mem,
                     )
-                    Y_wPa = _contract_force_bias_x(
+                    Y_wP = _contract_force_bias_spin_sum(
                         rcgtoa_kpq.conj(),
-                        hamiltonian.halfrot_cgto,
                         ga_kpq,
-                        max_mem,
-                    )
-                    Y_wPb = _contract_force_bias_x(
                         rcgtob_kpq.conj(),
-                        hamiltonian.halfrot_cgto,
                         gb_kpq,
+                        hamiltonian.halfrot_cgto,
                         max_mem,
                     )
                     L_q = hamiltonian.cholM[
@@ -419,8 +416,8 @@ def construct_force_bias_kptisdf_batch_single_det(
                         + nq_chunk
                         + len(hamiltonian.Sset)
                     ]
-                    v1 = _contract_force_bias_chol(X_wPa + X_wPb, L_q)
-                    v2 = _contract_force_bias_chol(Y_wPa + Y_wPb, L_q.conj())
+                    v1 = _contract_force_bias_chol(X_wP, L_q)
+                    v2 = _contract_force_bias_chol(Y_wP, L_q.conj())
                     vbias_plus[
                         :,
                         :,

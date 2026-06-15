@@ -377,10 +377,9 @@ class PhaselessKptISDF(PhaselessKptBase):
                 start_time = time.time()
                 Temp = xp.zeros(walkers.phia.shape, dtype=walkers.phia.dtype)
                 xp.copyto(Temp, walkers.phia)
-                handle = cutensornet.create()
                 for n in range(1, self.exp_nmax + 1):
                     Temp = (
-                        apply_VHS_to_phi_batch(
+                        apply_VHS_to_phi_batch_cupy(
                             hamiltonian.cgto,
                             Lx,
                             Lconjx,
@@ -388,7 +387,6 @@ class PhaselessKptISDF(PhaselessKptBase):
                             hamiltonian.ikpq_mat,
                             hamiltonian.ikmq_mat,
                             hamiltonian.unique_k,
-                            handle,
                         )
                         / n
                     )  # matmul use much less GPU memory than einsum
@@ -399,7 +397,7 @@ class PhaselessKptISDF(PhaselessKptBase):
                     xp.copyto(Temp, walkers.phib)
                     for n in range(1, self.exp_nmax + 1):
                         Temp = (
-                            apply_VHS_to_phi_batch(
+                            apply_VHS_to_phi_batch_cupy(
                                 hamiltonian.cgto,
                                 Lx,
                                 Lconjx,
@@ -407,13 +405,11 @@ class PhaselessKptISDF(PhaselessKptBase):
                                 hamiltonian.ikpq_mat,
                                 hamiltonian.ikmq_mat,
                                 hamiltonian.unique_k,
-                                handle,
                             )
                             / n
                         )  # matmul use much less GPU memory than einsum
                         walkers.phib += Temp
                     del Temp
-                cutensornet.destroy(handle)
             else:
                 start_time = time.time()
                 Lx, Lconjx = self.contract_cholM_xshifted(hamiltonian, xshifted)
@@ -503,6 +499,35 @@ def construct_full_Lx_batch(Lx, kpq_mat, unique_qs):
     return fullLconjx
 
 
+def construct_full_l_batch_for_gemm(Lx, Lconjx, kpq_mat, kmq_mat, unique_qs):
+    """
+    Construct the dense k-point coupling matrix in the layout consumed by GEMM.
+
+    The contraction path needs ``fullLpLconjx.transpose(0, 3, 2, 1)`` with
+    shape ``(nwalkers, nisdf_chunk, nk, nk)``. Building that layout directly
+    avoids materializing separate Lx/Lconjx tensors and a large transpose.
+    """
+    nwalkers = Lx.shape[0]
+    nk = kpq_mat.shape[1]
+    pchunk = Lx.shape[-1]
+    full_l = xp.zeros((nwalkers, pchunk, nk, nk), dtype=Lx.dtype)
+
+    q_idx = unique_qs[:, None]
+    k_idx = xp.arange(nk)[None, :]
+    row_idx = xp.broadcast_to(k_idx, (len(unique_qs), nk))
+    data = xp.broadcast_to(
+        Lx.transpose(0, 2, 1)[:, :, :, None], (nwalkers, pchunk, len(unique_qs), nk)
+    )
+    full_l[:, :, row_idx, kpq_mat[q_idx, k_idx]] = data
+
+    data_conj = xp.broadcast_to(
+        Lconjx.transpose(0, 2, 1)[:, :, :, None],
+        (nwalkers, pchunk, len(unique_qs), nk),
+    )
+    full_l[:, :, row_idx, kmq_mat[q_idx, k_idx]] += data_conj
+    return full_l
+
+
 def apply_VHS_to_phi_batch_old_cuquantum(
     cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle
 ):
@@ -552,7 +577,7 @@ def apply_VHS_to_phi_batch_old_cuquantum(
     return outphi
 
 
-def apply_VHS_to_phi_batch_cupy(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle=None):
+def apply_VHS_to_phi_batch_cupy(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs):
     """
     Apply VHS to phi with staged CuPy GEMMs.
 
@@ -585,15 +610,14 @@ def apply_VHS_to_phi_batch_cupy(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_
         pchunk = stop - start
         Lx_chunk = Lx[:, :, start:stop]
         Lconjx_chunk = Lconjx[:, :, start:stop]
-        full_Lx = construct_full_Lx_batch(Lx_chunk, kpq_mat, unique_qs)
-        full_Lconjx = construct_full_Lx_batch(Lconjx_chunk, kmq_mat, unique_qs)
-        fullLpLconjx = full_Lx + full_Lconjx
+        l_batch = construct_full_l_batch_for_gemm(
+            Lx_chunk, Lconjx_chunk, kpq_mat, kmq_mat, unique_qs
+        ).reshape(nwalkers * pchunk, nk, nk)
         cgto_slice = cgto[:, start:stop, :]
 
         cgtophi = xp.empty((nk, pchunk, nwalkers * nk * nocc), dtype=dtype)
         xp.matmul(cgto_slice, phi_for_cgto, out=cgtophi)
 
-        l_batch = fullLpLconjx.transpose(0, 3, 2, 1).reshape(nwalkers * pchunk, nk, nk)
         cgtophi = cgtophi.reshape(nk, pchunk, nwalkers, nk, nocc)
         cgtophi = cgtophi.transpose(2, 1, 0, 3, 4).reshape(
             nwalkers * pchunk, nk, nk * nocc
@@ -610,15 +634,9 @@ def apply_VHS_to_phi_batch_cupy(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_
         out = tmp.reshape(nk, nwalkers, nk, nocc, nbsf).transpose(1, 0, 4, 2, 3)
         outphi += out.reshape(nwalkers, nk * nbsf, nknocc)
 
-        del full_Lx, full_Lconjx, fullLpLconjx, cgtophi, l_batch, lx_cgtophi, tmp, out
+        del cgtophi, l_batch, lx_cgtophi, tmp, out
 
     return outphi
-
-
-def apply_VHS_to_phi_batch(cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle):
-    return apply_VHS_to_phi_batch_cupy(
-        cgto, Lx, Lconjx, phi, kpq_mat, kmq_mat, unique_qs, handle
-    )
 
 
 def construct_VHS_batch(cgto, Lx, Lconjx, kpq_mat, kmq_mat, unique_qs, handle):
