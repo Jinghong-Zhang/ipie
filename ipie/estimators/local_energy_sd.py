@@ -364,31 +364,35 @@ def ecorrcoul_lno_real_rchol_uhf(chola_pinned, chola, Ga_pinned, Ga, Gb_pinned, 
 
 @jit(nopython=True, fastmath=True)
 def ecorrxx_lno_real_rchol(chola_pinned, chola, Ga_pinned, Ga):
+    """Fragment (pinned-orbital) exchange energy: one occupied index restricted to
+    the pinned set.  exx[w,I] = 0.5 * sum_X sum_j T_p[I,j] T_f[j,I], where
+    T_p[I,j] = sum_b chola_pinned[X,I,b] G[w,j,b]  and
+    T_f[j,I] = sum_b chola[X,j,b]        G_pinned[w,I,b].
+    Reduces to exx_kernel_batch_real_rchol summed over I when pinned == full occ.
+
+    chola_pinned: [X, I, b]   pinned half-rotated cholesky (fragment occ rows)
+    chola:        [X, j, b]   full-occ half-rotated cholesky
+    Ga_pinned:    [w, I, b]   walker Ghalf, fragment occ rows
+    Ga:           [w, j, b]   walker Ghalf, all occ
     """
-    chola_pinned: [X, I, b]
-    chola: [X, j, a]
-    Ga_pinned: [w, I, a]
-    Ga: [w, j, b]
-    """
-    # sort out cupy later
-    zeros = numpy.zeros
-    dot = numpy.dot
     naux = chola.shape[0]
     nwalkers = Ga.shape[0]
     ngroup = chola_pinned.shape[1]
-    exx = zeros((nwalkers, ngroup), dtype=numpy.complex128)
+    nocc = chola.shape[1]
+    exx = numpy.zeros((nwalkers, ngroup), dtype=numpy.complex128)
     for iw in range(nwalkers):
-        Gpinned_real = Ga_pinned[iw].real.copy()
-        Gpinned_imag = Ga_pinned[iw].imag.copy()
-        Greal = Ga[iw].real.copy()
-        Gimag = Ga[iw].imag.copy()
+        Gp_re = numpy.ascontiguousarray(Ga_pinned[iw].T.real)  # [b, I]
+        Gp_im = numpy.ascontiguousarray(Ga_pinned[iw].T.imag)
+        Gf_re = numpy.ascontiguousarray(Ga[iw].T.real)         # [b, j]
+        Gf_im = numpy.ascontiguousarray(Ga[iw].T.imag)
         for jx in range(naux):
+            Tp = chola_pinned[jx].dot(Gf_re) + 1j * chola_pinned[jx].dot(Gf_im)  # [I, j]
+            Tf = chola[jx].dot(Gp_re) + 1j * chola[jx].dot(Gp_im)                # [j, I]
             for I in range(ngroup):
-                T_pinned = numpy.outer(chola_pinned[jx, I], Gpinned_real) + 1j * numpy.outer(chola_pinned[jx, I], Gpinned_imag) # iw, jx, I, b, a
-                T = Greal.T.dot(chola[jx]) + 1j * Gimag.T.dot(chola[jx]) # iw, jx, b, a
-                T_pinned_reshape = T_pinned.ravel()
-                T = T.ravel()
-                exx[iw, I] += T_pinned_reshape.dot(T)
+                s = 0.0 + 0.0j
+                for j in range(nocc):
+                    s += Tp[I, j] * Tf[j, I]
+                exx[iw, I] += s
     exx *= 0.5
     return exx
 
