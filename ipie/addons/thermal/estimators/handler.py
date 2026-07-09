@@ -102,6 +102,8 @@ class ThermalEstimatorHandler(EstimatorHandler):
         self._shapes = []
         self._offsets = {}
         self.json_string = "{}"
+        # Required by the inherited EstimatorHandler.print_block.
+        self.shift_source = "HybridEnergy"
         # TODO: Replace this, should be built outside
         for obs in observables:
             try:

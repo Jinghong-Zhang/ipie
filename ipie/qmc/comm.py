@@ -124,6 +124,7 @@ class FakeReq:
 class MPI:
     COMM_WORLD = FakeComm()
     SUM = None
+    MAX = None
     COMM_SPLIT_TYPE_SHARED = None
     COMM_TYPE_SHARED = None
     DOUBLE = None
