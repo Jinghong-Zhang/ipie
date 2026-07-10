@@ -30,7 +30,10 @@ except ModuleNotFoundError:
 
 from ipie.config import MPI
 from ipie.addons.thermal.estimators.thermal import one_rdm_from_G
-from ipie.addons.thermal.estimators.generic import local_energy_generic_cholesky
+from ipie.addons.thermal.estimators.generic import (
+    exchange_energy_real_cholesky,
+    local_energy_generic_cholesky,
+)
 from ipie.addons.thermal.utils.testing import build_generic_test_case_handlers
 
 from ipie.legacy.estimators.thermal import one_rdm_from_G as legacy_one_rdm_from_G
@@ -39,6 +42,26 @@ from ipie.legacy.estimators.generic import (
 )
 
 comm = MPI.COMM_WORLD
+
+
+@pytest.mark.unit
+def test_exchange_energy_real_cholesky():
+    nbasis = 7
+    nchol = 11
+    rng = numpy.random.default_rng(81)
+    chol = rng.standard_normal((nchol, nbasis, nbasis))
+    PaT = rng.standard_normal((nbasis, nbasis)) + 1.0j * rng.standard_normal((nbasis, nbasis))
+    PbT = rng.standard_normal((nbasis, nbasis)) + 1.0j * rng.standard_normal((nbasis, nbasis))
+
+    expected = 0.0j
+    for L in chol:
+        Ta = PaT @ L
+        Tb = PbT @ L
+        expected += numpy.trace(Ta @ Ta) + numpy.trace(Tb @ Tb)
+    expected *= 0.5
+
+    result = exchange_energy_real_cholesky(chol, PaT, PbT)
+    numpy.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.skipif(_no_cython, reason="Need to build cython modules.")

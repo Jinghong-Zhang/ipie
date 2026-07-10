@@ -75,6 +75,7 @@ class ThermofieldWalkers(BaseWalkers):
 
         self.Ga = numpy.zeros((nwalkers, nbasis, nbasis), dtype=numpy.complex128)
         self.Gb = numpy.zeros((nwalkers, nbasis, nbasis), dtype=numpy.complex128)
+        self._identity = numpy.eye(nbasis)
 
         for iw in range(nwalkers):
             self.update_walker_cache(trial, iw)
@@ -106,12 +107,17 @@ class ThermofieldWalkers(BaseWalkers):
 
     def update_walker_cache(self, trial, iw):
         """Recompute cached overlap and Green's functions of walker `iw`."""
-        G = trial.calc_greens_function(self.Qmat[iw], self.log_d[iw], self.Tmat[iw])
-        I = numpy.eye(self.nbasis)
+        log_ovlp, G = trial.calc_log_overlap_and_greens_function(
+            self.Qmat[iw], self.log_d[iw], self.Tmat[iw]
+        )
+        self.set_walker_cache(iw, log_ovlp, G)
+
+    def set_walker_cache(self, iw, log_ovlp, G):
+        """Install a precomputed guide overlap and transition Green's function."""
         # Hole convention: Ga = I - P.T with P = G_spec.T, i.e. Ga = I - G_spec.
-        self.Ga[iw] = I - G[0]
-        self.Gb[iw] = I - G[1]
-        self.log_ovlp[iw] = trial.calc_log_overlap(self.Qmat[iw], self.log_d[iw], self.Tmat[iw])
+        self.Ga[iw] = self._identity - G[0]
+        self.Gb[iw] = self._identity - G[1]
+        self.log_ovlp[iw] = log_ovlp
 
     def stabilize(self):
         """Refactor Delta = Q D T by column-pivoted QR (physical no-op).

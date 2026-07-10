@@ -134,7 +134,7 @@ def principal_log_phase(log_z):
     return log_z.real + 1j * (numpy.mod(log_z.imag + numpy.pi, 2.0 * numpy.pi) - numpy.pi)
 
 
-def stabilized_inverse_one_plus(Q, log_d_left, X, log_d_right, V, Vinv=None):
+def stabilized_inverse_one_plus(Q, log_d_left, X, log_d_right, V, Vinv=None, log_det_V=None):
     r"""Stable (log det, inverse) of I + A with A = Q e^{Dl} X e^{Dr} V.
 
     Q, X, V are bounded matrices; the diagonal scales enter only in the log
@@ -161,6 +161,8 @@ def stabilized_inverse_one_plus(Q, log_d_left, X, log_d_right, V, Vinv=None):
     Qinv = numpy.linalg.inv(Q)
     if Vinv is None:
         Vinv = numpy.linalg.inv(V)
+    if log_det_V is None:
+        log_det_V = _log_complex_det(V)
 
     bracket = (numpy.exp(-dbar_l)[:, None] * (Qinv @ Vinv)) * numpy.exp(-dbar_r)[None, :]
     bracket += (numpy.exp(dhat_l)[:, None] * X) * numpy.exp(dhat_r)[None, :]
@@ -170,7 +172,7 @@ def stabilized_inverse_one_plus(Q, log_d_left, X, log_d_right, V, Vinv=None):
         + numpy.sum(dbar_l)
         + _log_complex_det(bracket)
         + numpy.sum(dbar_r)
-        + _log_complex_det(V)
+        + log_det_V
     )
     inv = (
         Vinv
@@ -192,14 +194,30 @@ def factored_pair_log_overlap(Q_left, log_d_left, T_left, Q_right, log_d_right, 
     which is evaluated with the two-sided stabilized splitting of
     :func:`stabilized_inverse_one_plus`.
     """
-    log_det, _ = stabilized_inverse_one_plus(
+    log_det, _ = factored_pair_log_overlap_and_greens_function(
+        Q_left, log_d_left, T_left, Q_right, log_d_right, T_right
+    )
+    return log_det
+
+
+def factored_pair_log_overlap_and_greens_function(
+    Q_left, log_d_left, T_left, Q_right, log_d_right, T_right
+):
+    r"""Log overlap and transition Green's function for a QDT-factored pair.
+
+    Both quantities depend on the same stabilized inverse.  Computing them
+    together avoids repeating the matrix products, inversions, and
+    determinants needed by :func:`stabilized_inverse_one_plus`.
+    """
+    M = Q_right.shape[-1]
+    log_det, inv = stabilized_inverse_one_plus(
         Q_right,
         log_d_right,
         T_right @ T_left.conj().T,
         log_d_left,
         Q_left.conj().T,
     )
-    return principal_log_phase(log_det)
+    return principal_log_phase(log_det), numpy.eye(M) - inv
 
 
 def factored_pair_greens_function(Q_left, log_d_left, T_left, Q_right, log_d_right, T_right):
@@ -213,15 +231,10 @@ def factored_pair_greens_function(Q_left, log_d_left, T_left, Q_right, log_d_rig
 
     with the inverse evaluated by :func:`stabilized_inverse_one_plus`.
     """
-    M = Q_right.shape[-1]
-    _, inv = stabilized_inverse_one_plus(
-        Q_right,
-        log_d_right,
-        T_right @ T_left.conj().T,
-        log_d_left,
-        Q_left.conj().T,
+    _, G = factored_pair_log_overlap_and_greens_function(
+        Q_left, log_d_left, T_left, Q_right, log_d_right, T_right
     )
-    return numpy.eye(M) - inv
+    return G
 
 
 def thermofield_wick_normal_ordered_square(L, G):

@@ -101,6 +101,28 @@ def test_stabilization_preserves_physical_state():
 
 
 @pytest.mark.unit
+def test_propagation_reuses_overlap_factorization():
+    """Each walker update factorizes one matrix per spin, not per observable."""
+    M = 4
+    _, hamiltonian, trial, walkers, propagator = build_noninteracting_setup(
+        M, beta=1.0, mu=0.1, timestep=0.05, nwalkers=3
+    )
+    original = trial._stabilized_spin_block
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    trial._stabilized_spin_block = counted
+    numpy.random.seed(7)
+    propagator.propagate_walkers(walkers, hamiltonian, trial)
+
+    assert calls == 2 * walkers.nwalkers
+
+
+@pytest.mark.unit
 def test_force_bias_sign_finite_difference_real_chol():
     """Test 7: d/dx log S_T(B(x) Delta)|_{x=0} = i sqrt(dt) sum_s Tr(L G_T,s),
     matching vbias from construct_force_bias, and the code's shifted fields

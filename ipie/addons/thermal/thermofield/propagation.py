@@ -83,13 +83,15 @@ class ThermofieldPhaseless(PhaselessGeneric):
                 B = self.BH1[s] @ BV @ self.BH1[s]  # Symmetric Trotter split.
                 Q_new[s] = B @ walkers.Qmat[iw, s]
 
-            log_ovlp_new = trial.calc_log_overlap(Q_new, walkers.log_d[iw], walkers.Tmat[iw])
+            log_ovlp_new, G_new = trial.calc_log_overlap_and_greens_function(
+                Q_new, walkers.log_d[iw], walkers.Tmat[iw]
+            )
             self.update_walker_weight(walkers, iw, log_ovlp_new, cfb[iw], cmf[iw])
 
             # Commit the new walker state and refresh cached overlap and
             # mixed Green's function (consumed by the force bias next slice).
             walkers.Qmat[iw] = Q_new
-            walkers.update_walker_cache(trial, iw)
+            walkers.set_walker_cache(iw, log_ovlp_new, G_new)
 
     def update_walker_weight(self, walkers, iw, log_ovlp_new, cfb, cmf):
         """Update walker `iw` following the legacy FT-AFQMC hybrid update.

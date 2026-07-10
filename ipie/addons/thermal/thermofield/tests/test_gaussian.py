@@ -22,6 +22,7 @@ import pytest
 from ipie.addons.thermal.thermofield.gaussian import (
     factored_pair_greens_function,
     factored_pair_log_overlap,
+    factored_pair_log_overlap_and_greens_function,
     thermofield_greens_function,
     thermofield_log_overlap,
     thermofield_one_rdm,
@@ -119,6 +120,11 @@ def test_factored_pair_formulas_match_plain():
     assert numpy.exp(log_S) == pytest.approx(thermofield_overlap(Lambda, Delta_R), rel=1e-11)
     G = factored_pair_greens_function(QL, dL, TL, QR, dR, TR)
     numpy.testing.assert_allclose(G, thermofield_greens_function(Lambda, Delta_R), atol=1e-11)
+    log_S_combined, G_combined = factored_pair_log_overlap_and_greens_function(
+        QL, dL, TL, QR, dR, TR
+    )
+    assert log_S_combined == pytest.approx(log_S, abs=1e-12)
+    numpy.testing.assert_allclose(G_combined, G, atol=1e-12)
 
 
 @pytest.mark.unit

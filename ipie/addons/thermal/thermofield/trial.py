@@ -87,6 +87,11 @@ class ThermofieldThermalTrial:
             eps[s], C[s] = numpy.linalg.eigh(k_trial[s])
         self.eps_T = eps
         self.C_T = C
+        self.C_T_dagger = C.conj().transpose(0, 2, 1)
+        self.log_det_C_T_dagger = numpy.zeros(2, dtype=numpy.complex128)
+        for s in range(2):
+            sign, logabs = numpy.linalg.slogdet(self.C_T_dagger[s])
+            self.log_det_C_T_dagger[s] = logabs + numpy.log(sign)
 
         # Direct D_T = exp(-beta k_T / 2) for moderate beta*|eps| (may overflow
         # for extreme arguments; the stabilized methods below never use it).
@@ -130,7 +135,15 @@ class ThermofieldThermalTrial:
         C = self.C_T[s]
         d = numpy.zeros(self.nbasis) if log_d is None else log_d[s]
         X = C if Tmat is None else Tmat[s] @ C
-        return stabilized_inverse_one_plus(Qmat[s], d, X, -a, C.conj().T, Vinv=C)
+        return stabilized_inverse_one_plus(
+            Qmat[s],
+            d,
+            X,
+            -a,
+            self.C_T_dagger[s],
+            Vinv=C,
+            log_det_V=self.log_det_C_T_dagger[s],
+        )
 
     def calc_log_overlap(self, Qmat, log_d=None, Tmat=None):
         r"""Complex log of the guide overlap S_T(Delta).
@@ -153,11 +166,24 @@ class ThermofieldThermalTrial:
         log_ovlp : complex
             sum_s log det(I + D_T[s]^dagger Delta[s]).
         """
+        log_ovlp, _ = self.calc_log_overlap_and_greens_function(Qmat, log_d, Tmat)
+        return log_ovlp
+
+    def calc_log_overlap_and_greens_function(self, Qmat, log_d=None, Tmat=None):
+        r"""Return the guide log overlap and mixed Green's function together.
+
+        The two quantities use the same stabilized inverse for each spin.
+        This combined path is used when refreshing walker caches so that the
+        factorization is performed once rather than once per observable.
+        """
         log_ovlp = 0.0 + 0.0j
+        G = numpy.zeros((2, self.nbasis, self.nbasis), dtype=numpy.complex128)
+        I = numpy.eye(self.nbasis)
         for s in range(2):
-            log_det, _ = self._stabilized_spin_block(Qmat, log_d, Tmat, s)
+            log_det, inv = self._stabilized_spin_block(Qmat, log_d, Tmat, s)
             log_ovlp += log_det
-        return principal_log_phase(log_ovlp)
+            G[s] = I - inv
+        return principal_log_phase(log_ovlp), G
 
     def calc_greens_function(self, Qmat, log_d=None, Tmat=None):
         r"""Mixed transition Green's function G_T(Delta) per spin.
@@ -171,10 +197,5 @@ class ThermofieldThermalTrial:
         G : :class:`numpy.ndarray`
             Shape (2, nbasis, nbasis).
         """
-        nbasis = self.nbasis
-        G = numpy.zeros((2, nbasis, nbasis), dtype=numpy.complex128)
-        I = numpy.eye(nbasis)
-        for s in range(2):
-            _, inv = self._stabilized_spin_block(Qmat, log_d, Tmat, s)
-            G[s] = I - inv
+        _, G = self.calc_log_overlap_and_greens_function(Qmat, log_d, Tmat)
         return G

@@ -45,8 +45,7 @@ from ipie.addons.thermal.estimators.generic import local_energy_generic_cholesky
 from ipie.addons.thermal.estimators.particle_number import particle_number
 from ipie.addons.thermal.estimators.thermal import one_rdm_from_G
 from ipie.addons.thermal.thermofield.gaussian import (
-    factored_pair_greens_function,
-    factored_pair_log_overlap,
+    factored_pair_log_overlap_and_greens_function,
 )
 from ipie.addons.thermal.thermofield.walkers import ThermofieldWalkers
 from ipie.estimators.energy import EnergyEstimator
@@ -197,8 +196,9 @@ def replica_pair_quantities(hamiltonian, walkers_left, walkers_right, i, j):
             walkers_right.log_d[j, s],
             walkers_right.Tmat[j, s],
         )
-        log_S += factored_pair_log_overlap(*args)
-        P[s] = factored_pair_greens_function(*args).T
+        log_overlap_spin, G = factored_pair_log_overlap_and_greens_function(*args)
+        log_S += log_overlap_spin
+        P[s] = G.T
     energy = local_energy_generic_cholesky(hamiltonian, P)
     nav = particle_number(P)
     return log_S, energy, nav
