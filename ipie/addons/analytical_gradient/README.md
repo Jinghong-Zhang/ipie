@@ -26,16 +26,24 @@ numpy and scipy only; torch is imported solely inside the parity test.
 
 ## Usage
 
-See `examples/23-analytical_gradient/run_h2_gradient.py`.  The driver returns
-per-AD-block `(energy, gradient, weight, weight-gradient)` arrays; average the
-gradients weighted by the block weights.  Two estimator choices, controlled by
-`num_steps_per_block`:
+See `examples/23-analytical_gradient/run_h2_gradient.py`.  Three estimator
+modes:
 
-- `num_steps_per_block == ad_block_size`: final-time mixed-estimator
-  derivative (recommended; converges exponentially in `ad_block_size * dt`).
-- `num_steps_per_block < ad_block_size`: adafqmc-style sub-block averaging
-  (converges more slowly, as early-imaginary-time sub-blocks contaminate the
-  average).
+- **`run_along_path` (path-continuous, recommended)**: forward mode needs no
+  AD blocks (there is no computational graph), so tangents ride the whole
+  trajectory, the energy-shift feedback is differentiated through, and the
+  gradient is sampled at every measurement like the energy.  Its defining
+  verification identity: with the same auxiliary fields and the SR walker map
+  frozen (record/replay of the resampling indices — SR is not
+  differentiated), the central finite difference of every measured E_i and
+  W_i equals the analytical dE_i and dW_i for arbitrarily many blocks
+  (`qmc/tests/test_fd_along_path.py`; ~2e-10 over a 500-step H2 path).
+- `run` with `num_steps_per_block == ad_block_size`: block-detached
+  final-time mixed-estimator derivative (converges exponentially in
+  `ad_block_size * dt`).
+- `run` with `num_steps_per_block < ad_block_size`: adafqmc-style sub-block
+  averaging (kept for exact parity with the AD addon; converges more slowly,
+  as early-imaginary-time sub-blocks contaminate the average).
 
 The a.e.-derivative semantics at non-smooth operations (cosine projection,
 force-bias/weight caps, reconfiguration, detached energy shifts) are identical
