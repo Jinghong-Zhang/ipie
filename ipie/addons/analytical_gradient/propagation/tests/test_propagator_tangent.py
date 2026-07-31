@@ -169,6 +169,28 @@ def test_single_step_tangent_vs_fd_caps_off():
 
 
 @pytest.mark.unit
+def test_xbar_override_self_consistency():
+    """Overriding the force bias with the natural (capped) value reproduces the
+    step exactly; last_xbar exposes the value used."""
+    ham, trial, rng = make_ham_and_trial(seed=83)
+    phi = np.array([trial.psi] * NW, dtype=np.complex128)
+    phi += 0.1 * (rng.standard_normal(phi.shape) + 1j * rng.standard_normal(phi.shape))
+    weight = rng.uniform(0.5, 2.0, NW)
+    x = rng.standard_normal((NW, NCHOL))
+
+    prop = GradPropagator(DT, ham, trial, 1)
+    walkers = GradWalkers(NW, phi, np.zeros_like(phi), weight, np.zeros(NW))
+    out = prop.propagate_walkers(walkers, ham, trial, x)
+    xbar_used = prop.last_xbar.copy()
+
+    prop2 = GradPropagator(DT, ham, trial, 1)
+    walkers2 = GradWalkers(NW, phi.copy(), np.zeros_like(phi), weight.copy(), np.zeros(NW))
+    out2 = prop2.propagate_walkers(walkers2, ham, trial, x, xbar_override=xbar_used)
+    np.testing.assert_array_equal(out2.phi, out.phi)
+    np.testing.assert_array_equal(out2.weight, out.weight)
+
+
+@pytest.mark.unit
 def test_single_step_weight_cap_tangent_vs_fd():
     ham, trial, rng = make_ham_and_trial(seed=79)
     phi = np.array([trial.psi] * NW, dtype=np.complex128)

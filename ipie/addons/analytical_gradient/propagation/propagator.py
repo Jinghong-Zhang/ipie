@@ -146,8 +146,15 @@ class GradPropagator:
         # sub-block, until the first sub-block energy update zeroes it.
         self.energy_estimate, self.denergy_estimate = trial.eval_energy_with_tangent(ham)
 
-    def propagate_walkers(self, walkers, ham, trial, x):
-        """One propagation step; x is the injected (nwalkers, nchol) field array."""
+    def propagate_walkers(self, walkers, ham, trial, x, xbar_override=None):
+        """One propagation step; x is the injected (nwalkers, nchol) field array.
+
+        xbar_override, if given, replaces the (capped) force bias with a fixed
+        array and zeroes its tangent.  The importance function is exact for any
+        shift, so this is a sampling-gauge choice; correlated-sampling runs use
+        it to replay the base run's force bias (exposed on self.last_xbar) so
+        the stochastic two-body propagation is identical across systems.
+        """
         phi, dphi = walkers.phi, walkers.dphi
 
         # Force bias from the pre-step Green's function.
@@ -158,6 +165,10 @@ class GradPropagator:
         xbar, dxbar, fb_cap_mask = apply_bound_force_bias_with_tangent(
             xbar, dxbar, self.fbbound
         )
+        if xbar_override is not None:
+            xbar = xbar_override
+            dxbar = np.zeros_like(xbar)
+        self.last_xbar = xbar
 
         # First half one-body step (tangent consumes pre-update phi).
         dphi = np.einsum("pq,wqr->wpr", self.dexpH1, phi) + np.einsum(
