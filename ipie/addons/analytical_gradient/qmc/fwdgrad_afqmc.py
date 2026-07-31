@@ -172,6 +172,65 @@ class FwdGradAFQMC:
         E, dE = block_average_with_tangent(etots, detots, wts, dwts)
         return E, dE, np.sum(wts), np.sum(dwts), walkers.detached_copy()
 
+    def run_along_path(
+        self, ham, trial, num_measurements, walkers=None, obs_const=0.0, sr_replay=None
+    ):
+        """Path-continuous forward mode: tangents ride the whole trajectory.
+
+        No AD blocks: dphi and dweight are never reset, the energy-shift
+        feedback is differentiated through (denergy_estimate = detot at each
+        update), and the gradient is sampled at every measurement (every
+        num_steps_per_block steps) exactly like the energy.  Stochastic
+        reconfiguration keeps its exact pathwise semantics (weight tangents
+        identically zero after resampling, state tangents gathered).
+
+        Verification identity: with the same field stream and the SR map
+        frozen (sr_replay = the base run's recorded index arrays, exposed on
+        self.sr_record), the central finite difference of every measured
+        E_i and W_i across lambda = +/- eps equals the returned dE_i and dW_i,
+        for arbitrarily many measurements along the path.
+
+        Walkers are not equilibrated here; pass equilibrated walkers (e.g.
+        from equilibrate_walkers) or the trial-initialized default is used.
+        Returns (energies, gradients, weights, wtsgrads, walkers) with one
+        entry per measurement; gradients include obs_const.
+        """
+        if walkers is None:
+            walkers = initialize_walkers(trial, self.params.num_walkers)
+        prop = GradPropagator(
+            self.params.timestep,
+            ham,
+            trial,
+            self.params.num_steps_per_block,
+            debug=self.debug,
+        )
+        sr_queue = None if sr_replay is None else [np.asarray(x) for x in sr_replay]
+        self.sr_record = []
+        energies = np.zeros(num_measurements)
+        gradients = np.zeros(num_measurements)
+        weights = np.zeros(num_measurements)
+        wtsgrads = np.zeros(num_measurements)
+        for i in range(num_measurements):
+            walkers, etot, detot, totw, dtotw = prop.propagate_block(
+                i,
+                walkers,
+                ham,
+                trial,
+                self.params.stabilize_freq,
+                self.params.pop_control_freq,
+                self.fields,
+                detach_eshift=False,
+                sr_indices_queue=sr_queue,
+                sr_record=self.sr_record,
+            )
+            energies[i] = etot
+            gradients[i] = detot + obs_const
+            weights[i] = totw
+            wtsgrads[i] = dtotw
+        if self.debug:
+            self.last_diagnostics = prop.diagnostics
+        return energies, gradients, weights, wtsgrads, walkers
+
     def run(self, ham, trial, obs_const=0.0, verbose=False):
         """Full calculation: equilibrate then num_ad_blocks gradient blocks.
 

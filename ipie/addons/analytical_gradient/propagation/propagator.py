@@ -251,6 +251,9 @@ class GradPropagator:
         pop_control_freq,
         fields,
         eshift_override=None,
+        detach_eshift=True,
+        sr_indices_queue=None,
+        sr_record=None,
     ):
         """A sub-block of prop_block_size steps, with the exact adafqmc schedule.
 
@@ -263,6 +266,17 @@ class GradPropagator:
         differentiated function), finite-difference checks must freeze this
         sequence at its lambda = 0 values to evaluate the same function the
         tangents differentiate.
+
+        detach_eshift=False instead differentiates through the energy-shift
+        feedback (denergy_estimate = detot), used by the path-continuous mode
+        where nothing is detached; its finite-difference counterpart then needs
+        no eshift freezing at all.
+
+        sr_indices_queue, if given, replays recorded reconfiguration index
+        arrays (popping one per SR event) instead of recomputing them — the
+        frozen-SR-map semantics of common-random-number verification.  The
+        uniform is still consumed to keep the field stream aligned.  Every SR
+        index array used is appended to sr_record when provided.
         """
         etot = detot = totw = dtotw = None
         for i in range(self.prop_block_size):
@@ -282,9 +296,13 @@ class GradPropagator:
                     walkers.weight, walkers.dweight, eloc, deloc
                 )
                 self.energy_estimate = etot if eshift_override is None else eshift_override
-                self.denergy_estimate = 0.0
+                self.denergy_estimate = 0.0 if detach_eshift else detot
             if step % pop_control_freq == pop_control_freq - 1:
-                walkers, sr_indices = stochastic_reconfiguration(walkers, fields.uniform())
+                zeta = fields.uniform()
+                replay = None if sr_indices_queue is None else sr_indices_queue.pop(0)
+                walkers, sr_indices = stochastic_reconfiguration(walkers, zeta, indices=replay)
+                if sr_record is not None:
+                    sr_record.append(np.asarray(sr_indices).copy())
                 if self.debug:
-                    self.diagnostics.append({"sr_indices": sr_indices.copy()})
+                    self.diagnostics.append({"sr_indices": np.asarray(sr_indices).copy()})
         return walkers, etot, detot, totw, dtotw

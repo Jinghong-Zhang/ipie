@@ -65,21 +65,27 @@ def reorthogonalize(walkers):
     return GradWalkers(walkers.nwalkers, Q, dphi, walkers.weight, walkers.dweight)
 
 
-def stochastic_reconfiguration(walkers, zeta):
+def stochastic_reconfiguration(walkers, zeta, indices=None):
     """Systematic resampling, mirroring adafqmc semantics exactly.
 
     The post-SR weights are identically the pre-normalized average as a
     function of lambda, so their tangent is exactly zero; state tangents flow
     through the (locally constant) gather.  Returns (walkers, indices).
+
+    If indices is given, the resampling map is replayed instead of recomputed
+    (SR as a fixed, undifferentiated gather) — used by common-random-number
+    finite-difference verification so the perturbed runs follow the base
+    run's walker map exactly.
     """
     nw = walkers.nwalkers
     weights = walkers.weight / np.sum(walkers.weight) * nw
     cumulative = np.cumsum(weights)
     total = cumulative[-1]
     average = total / nw
-    z = total * (np.arange(nw) + zeta) / nw
-    indices = np.searchsorted(cumulative, z, side="left")
-    indices = np.where(indices < nw, indices, 0)
+    if indices is None:
+        z = total * (np.arange(nw) + zeta) / nw
+        indices = np.searchsorted(cumulative, z, side="left")
+        indices = np.where(indices < nw, indices, 0)
     phi = walkers.phi[indices].copy()
     dphi = walkers.dphi[indices].copy()
     weight = np.full(nw, average, dtype=np.float64)
