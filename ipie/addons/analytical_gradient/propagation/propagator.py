@@ -242,13 +242,27 @@ class GradPropagator:
         return GradWalkers(walkers.nwalkers, phi, dphi, weight, dweight)
 
     def propagate_block(
-        self, iblock, walkers, ham, trial, stabilize_freq, pop_control_freq, fields
+        self,
+        iblock,
+        walkers,
+        ham,
+        trial,
+        stabilize_freq,
+        pop_control_freq,
+        fields,
+        eshift_override=None,
     ):
         """A sub-block of prop_block_size steps, with the exact adafqmc schedule.
 
         Returns (walkers, etot, detot, totw, dtotw) from the end-of-sub-block
         mixed estimator; energy_estimate is updated to the detached value
         (tangent zeroed), mirroring adafqmc propagate_block.
+
+        eshift_override, if given, replaces the end-of-sub-block energy_estimate
+        update value.  Because the update is detached (a constant of the
+        differentiated function), finite-difference checks must freeze this
+        sequence at its lambda = 0 values to evaluate the same function the
+        tangents differentiate.
         """
         etot = detot = totw = dtotw = None
         for i in range(self.prop_block_size):
@@ -267,7 +281,7 @@ class GradPropagator:
                 etot, detot, totw, dtotw = weighted_energy_with_tangent(
                     walkers.weight, walkers.dweight, eloc, deloc
                 )
-                self.energy_estimate = etot
+                self.energy_estimate = etot if eshift_override is None else eshift_override
                 self.denergy_estimate = 0.0
             if step % pop_control_freq == pop_control_freq - 1:
                 walkers, sr_indices = stochastic_reconfiguration(walkers, fields.uniform())
