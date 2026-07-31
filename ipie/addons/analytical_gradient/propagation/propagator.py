@@ -132,7 +132,10 @@ class GradPropagator:
         self.diagnostics = []
 
         self.mf_shift = 2j * np.einsum("pij,ij->p", ham.chol, trial.G)
-        self.dmf_shift = 2j * np.einsum("pij,ij->p", ham.dchol, trial.G)
+        self.dmf_shift = 2j * (
+            np.einsum("pij,ij->p", ham.dchol, trial.G)
+            + np.einsum("pij,ij->p", ham.chol, trial.dG)
+        )
         self.expH1, self.dexpH1 = compute_exph1_with_tangent(
             ham.h1e_mod, ham.dh1e_mod, ham.chol, ham.dchol, self.mf_shift, self.dmf_shift, dt
         )
@@ -177,8 +180,7 @@ class GradPropagator:
         phi = np.einsum("pq,wqr->wpr", self.expH1, phi)
 
         # Weight factor, assembled in log space.  RHF: overlap ratio squared.
-        S_new = trial.calc_overlap(phi)
-        dS_new = trial.calc_overlap(dphi)
+        S_new, dS_new = trial.calc_overlap_with_tangent(phi, dphi)
         sgn_old, logabs_old = np.linalg.slogdet(S_old)
         sgn_new, logabs_new = np.linalg.slogdet(S_new)
         logratio = 2.0 * (

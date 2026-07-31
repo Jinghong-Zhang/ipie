@@ -14,53 +14,85 @@
 #
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
-"""Single-determinant (RHF) trial wave function with half-rotated tangents.
+"""Single-determinant (RHF) trial wave function with forward-mode tangents.
 
-The trial itself is lambda-independent in both supported workflows (fixed
-trial, or relaxed trial with the Hamiltonian rotated so the trial is identity
-columns); lambda enters the half-rotated quantities only through the
-Hamiltonian array tangents.
+Two equivalent parameterizations of trial relaxation are supported:
+
+1. Rotated-basis (adafqmc convention): the Hamiltonian arrays are rotated to
+   the relaxed-orbital basis and carry the lambda-dependence (dh1e, dchol);
+   the trial is a fixed matrix (identity columns), dpsi = 0.
+2. Fixed-basis: the Hamiltonian integrals are lambda-independent apart from
+   h1e -> h1e + lambda*O (dchol = 0 -- for a one-body observable the two-body
+   interaction never changes), and the trial carries the orbital response,
+   psi(lambda) with tangent dpsi.
+
+Both give the same converged gradient (they differ by a lambda-dependent
+basis rotation plus an exponentially decaying initial-condition transient),
+but the fixed-basis form keeps chol untouched, which also makes finite-delta
+correlated sampling far better conditioned (the +/-delta runs share an
+identical stochastic propagator).
 """
 
 import numpy as np
 
 
 class SDTrial:
-    def __init__(self, psi, nelec0):
-        """psi: (nao, >= nelec0) orbital coefficients; must be lambda-independent."""
+    def __init__(self, psi, nelec0, dpsi=None):
+        """psi: (nao, >= nelec0) orbital coefficients; dpsi: its lambda-tangent."""
         psi = np.asarray(psi)
         self.psi = psi[:, :nelec0]
+        self.dpsi = (
+            np.zeros_like(self.psi) if dpsi is None else np.asarray(dpsi)[:, :nelec0]
+        )
         self.nelec0 = nelec0
         self.nao = psi.shape[0]
-        # Trial one-body Green's function in the adafqmc (conjugate) convention:
-        # G = psi* (psi^T psi*)^{-1} psi^T, the transpose of psi (psi^dag psi)^{-1} psi^dag.
+        # Trial one-body Green's function in the adafqmc (conjugate) convention,
+        # G = psi* (psi^T psi*)^{-1} psi^T, with its trial tangent.
         ovlp = self.psi.T @ self.psi.conj()
-        self.G = self.psi.conj() @ np.linalg.inv(ovlp) @ self.psi.T
+        dovlp = self.dpsi.T @ self.psi.conj() + self.psi.T @ self.dpsi.conj()
+        oinv = np.linalg.inv(ovlp)
+        self.G = self.psi.conj() @ oinv @ self.psi.T
+        self.dG = (
+            self.dpsi.conj() @ oinv @ self.psi.T
+            + self.psi.conj() @ oinv @ self.dpsi.T
+            - self.psi.conj() @ oinv @ dovlp @ oinv @ self.psi.T
+        )
         self.rh1 = None
         self.drh1 = None
         self.rchol = None
         self.drchol = None
 
     def half_rot(self, ham):
-        """Half-rotated one-body Hamiltonian and Cholesky vectors, with tangents."""
+        """Half-rotated one-body Hamiltonian and Cholesky vectors, with tangents
+        from both the Hamiltonian arrays and the trial."""
         psic = self.psi.conj()
+        dpsic = self.dpsi.conj()
         self.rh1 = psic.T @ ham.h1e
-        self.drh1 = psic.T @ ham.dh1e
+        self.drh1 = dpsic.T @ ham.h1e + psic.T @ ham.dh1e
         self.rchol = np.einsum("ij,aik->ajk", psic, ham.chol)
-        self.drchol = np.einsum("ij,aik->ajk", psic, ham.dchol)
+        self.drchol = np.einsum("ij,aik->ajk", dpsic, ham.chol) + np.einsum(
+            "ij,aik->ajk", psic, ham.dchol
+        )
 
     def calc_overlap(self, states):
         """S_w = psi^dag phi_w for a batch of (nwalkers, nao, nocc) states."""
         return np.einsum("ij,wik->wjk", self.psi.conj(), states)
 
+    def calc_overlap_with_tangent(self, phi, dphi):
+        """S = psi^dag phi and dS = dpsi^dag phi + psi^dag dphi."""
+        S = np.einsum("ij,wik->wjk", self.psi.conj(), phi)
+        dS = np.einsum("ij,wik->wjk", self.dpsi.conj(), phi) + np.einsum(
+            "ij,wik->wjk", self.psi.conj(), dphi
+        )
+        return S, dS
+
     def get_ghalf_with_tangent(self, phi, dphi):
         """Half-rotated Green's function Theta = phi S^{-1} and its tangent.
 
-        dTheta = dphi S^{-1} - phi S^{-1} (psi^dag dphi) S^{-1}.
-        Returns (Ghalf, dGhalf, S, dS, Sinv) so callers can reuse the overlap.
+        dTheta = dphi S^{-1} - phi S^{-1} dS S^{-1}, with dS carrying the
+        trial tangent as well.  Returns (Ghalf, dGhalf, S, dS, Sinv).
         """
-        S = self.calc_overlap(phi)
-        dS = self.calc_overlap(dphi)
+        S, dS = self.calc_overlap_with_tangent(phi, dphi)
         Sinv = np.linalg.inv(S)
         Ghalf = phi @ Sinv
         dGhalf = dphi @ Sinv - Ghalf @ (dS @ Sinv)
@@ -75,26 +107,38 @@ class SDTrial:
         )
         return vbias, dvbias
 
-    def get_trial_ghalf(self):
-        """Gtilde = psi (psi^dag psi)^{-1}, (nao, nocc); lambda-independent."""
+    def get_trial_ghalf_with_tangent(self):
+        """Gtilde = psi (psi^dag psi)^{-1}, (nao, nocc), with trial tangent."""
         ovlp = np.einsum("ij,ik->jk", self.psi.conj(), self.psi)
-        return self.psi @ np.linalg.inv(ovlp)
+        dovlp = np.einsum("ij,ik->jk", self.dpsi.conj(), self.psi) + np.einsum(
+            "ij,ik->jk", self.psi.conj(), self.dpsi
+        )
+        oinv = np.linalg.inv(ovlp)
+        G = self.psi @ oinv
+        dG = self.dpsi @ oinv - G @ (dovlp @ oinv)
+        return G, dG
 
     def eval_energy_with_tangent(self, ham):
-        """Trial energy and its tangent (through rh1/rchol only; dGtilde = 0).
+        """Trial energy and its tangent (Hamiltonian and trial contributions).
 
         Matches adafqmc get_trial_energy; requires half_rot(ham) to have been
         called with the same Hamiltonian.
         """
-        G = self.get_trial_ghalf()
+        G, dG = self.get_trial_ghalf_with_tangent()
         e1 = 2.0 * np.einsum("ij,ji->", self.rh1, G)
-        de1 = 2.0 * np.einsum("ij,ji->", self.drh1, G)
+        de1 = 2.0 * (
+            np.einsum("ij,ji->", self.drh1, G) + np.einsum("ij,ji->", self.rh1, dG)
+        )
         X = 2.0 * np.einsum("pij,ji->p", self.rchol, G)
-        dX = 2.0 * np.einsum("pij,ji->p", self.drchol, G)
+        dX = 2.0 * (
+            np.einsum("pij,ji->p", self.drchol, G) + np.einsum("pij,ji->p", self.rchol, dG)
+        )
         ej = np.dot(X, X)
         dej = 2.0 * np.dot(X, dX)
         T = np.einsum("gip,pj->gij", self.rchol, G)
-        dT = np.einsum("gip,pj->gij", self.drchol, G)
+        dT = np.einsum("gip,pj->gij", self.drchol, G) + np.einsum(
+            "gip,pj->gij", self.rchol, dG
+        )
         ex = 2.0 * np.einsum("gij,gji->", T, T)
         dex = 2.0 * (np.einsum("gij,gji->", dT, T) + np.einsum("gij,gji->", T, dT))
         e = ham.enuc + e1 + 0.5 * (ej - ex)

@@ -128,6 +128,46 @@ def test_trial_energy_tangent_vs_fd():
 
 
 @pytest.mark.unit
+def test_trial_tangent_local_energy_vs_fd():
+    """Fixed-basis parameterization: dchol = 0, trial carries dpsi; combined
+    directional FD in (h1e, psi, phi) vs the analytic tangents."""
+    ham, psi, phi, dphi = setup_system(seed=41)
+    ham = HamTangent(NOCC, NAO, ham.h1e, ham.chol, ham.enuc, dh1e=ham.dh1e)  # dchol = 0
+    rng = np.random.default_rng(43)
+    dpsi = 0.1 * rng.standard_normal(psi.shape)
+
+    trial = SDTrial(psi, NOCC, dpsi=dpsi)
+    trial.half_rot(ham)
+    Ghalf, dGhalf, _, _, _ = trial.get_ghalf_with_tangent(phi, dphi)
+    _, deloc = local_energy_with_tangent(
+        trial.rh1, trial.drh1, trial.rchol, trial.drchol, Ghalf, dGhalf, ham.enuc
+    )
+    _, dvbias = trial.calc_force_bias_with_tangent(Ghalf, dGhalf)
+    _, de_trial = trial.eval_energy_with_tangent(ham)
+
+    def value(t):
+        ham_t = HamTangent(NOCC, NAO, ham.h1e + t * ham.dh1e, ham.chol, ham.enuc)
+        trial_t = SDTrial(psi + t * dpsi, NOCC)
+        trial_t.half_rot(ham_t)
+        phi_t = phi + t * dphi
+        Gh, _, _, _, _ = trial_t.get_ghalf_with_tangent(phi_t, np.zeros_like(phi_t))
+        el, _ = local_energy_with_tangent(
+            trial_t.rh1, trial_t.drh1, trial_t.rchol, trial_t.drchol,
+            Gh, np.zeros_like(Gh), ham_t.enuc,
+        )
+        vb, _ = trial_t.calc_force_bias_with_tangent(Gh, np.zeros_like(Gh))
+        et, _ = trial_t.eval_energy_with_tangent(ham_t)
+        return el, vb, et
+
+    eps = 1e-6
+    elp, vbp, etp = value(eps)
+    elm, vbm, etm = value(-eps)
+    np.testing.assert_allclose((elp - elm) / (2 * eps), deloc, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose((vbp - vbm) / (2 * eps), dvbias, rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose((etp - etm) / (2 * eps), de_trial, rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.unit
 def test_weighted_energy_tangent_quotient_rule():
     rng = np.random.default_rng(31)
     w = rng.uniform(0.5, 2.0, NW)
