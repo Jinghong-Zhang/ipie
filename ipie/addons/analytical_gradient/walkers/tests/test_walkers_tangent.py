@@ -68,13 +68,32 @@ def gauge_invariants(ham, trial, walkers):
 
 @pytest.mark.unit
 def test_reortho_gauge_invariance():
-    """The linchpin of the fixed-R gauge: every quantity entering the estimator
-    (force bias, local energy, log-det tangent) is invariant under reortho."""
+    """The linchpin of the reortho gauge: every quantity entering the estimator
+    (force bias, local energy) is invariant under reortho, with or without the
+    in-span gauge projection; the log-det tangent alone shifts by exactly
+    -tr(M) under the projection (M = Q^dag dphi R^{-1}), which cancels in the
+    step overlap-ratio tangent."""
     ham, trial, walkers = make_walkers_and_trial()
     before = gauge_invariants(ham, trial, walkers)
-    after = gauge_invariants(ham, trial, reorthogonalize(walkers))
-    for b, a in zip(before, after):
+    after_fixed_r = gauge_invariants(ham, trial, reorthogonalize(walkers, project_gauge=False))
+    for b, a in zip(before, after_fixed_r):
         np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-11)
+
+    projected = reorthogonalize(walkers, project_gauge=True)
+    after_proj = gauge_invariants(ham, trial, projected)
+    for b, a in zip(before[:4], after_proj[:4]):  # vbias, dvbias, eloc, deloc
+        np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-11)
+    # dlogdet shifts by exactly -tr(M): reconstruct M from the two tangents.
+    unprojected = reorthogonalize(walkers, project_gauge=False)
+    Q = projected.phi
+    M = np.einsum("wji,wjk->wik", Q.conj(), unprojected.dphi)
+    np.testing.assert_allclose(
+        after_proj[4], after_fixed_r[4] - np.einsum("wii->w", M), rtol=1e-10, atol=1e-11
+    )
+    # And the projected tangent has no in-span component.
+    np.testing.assert_allclose(
+        np.einsum("wji,wjk->wik", Q.conj(), projected.dphi), 0.0, atol=1e-12
+    )
 
 
 @pytest.mark.unit

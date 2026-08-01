@@ -46,8 +46,8 @@ def initialize_walkers(trial, nwalkers):
     return GradWalkers(nwalkers, phi, dphi, weight, dweight)
 
 
-def reorthogonalize(walkers):
-    """phi <- Q from phi = QR; tangent dphi <- dphi R^{-1} (fixed-R gauge).
+def reorthogonalize(walkers, project_gauge=True):
+    """phi <- Q from phi = QR; tangent dphi <- (1 - QQ^dag) dphi R^{-1}.
 
     Treating R as lambda-independent is exact for the block estimator: the
     estimator is invariant under right-multiplication of any walker by a fixed
@@ -57,11 +57,25 @@ def reorthogonalize(walkers):
     tangent produced here differs from the QR Q-factor differential (what
     reverse-mode AD uses) by a pure gauge direction along which the estimator
     has zero derivative.
+
+    project_gauge additionally removes the in-span component Q (Q^dag dphi)
+    of the tangent — also a pure gauge change (tangents of the form phi.M are
+    exactly null for the estimator, and the tangent flow maps gauge to gauge),
+    so all computed gradients are unchanged in exact arithmetic.  It is
+    essential for conditioning in many-electron systems: the raw tangent grows
+    like exp(lambda_L tau) along a Lyapunov-unstable, almost purely in-span
+    direction (measured lambda_L ~ 13/a.u. for NH3/STO-3G), and without the
+    projection the estimator's exact cancellation of that growth is destroyed
+    by floating-point roundoff (1e-16 * |dphi|).  Reverse-mode AD through the
+    QR Q-factor performs the analogous re-gauging automatically, which is why
+    adafqmc does not exhibit the instability.
     """
     Q, R = np.linalg.qr(walkers.phi)
     dphi = np.linalg.solve(
         np.transpose(R, (0, 2, 1)), np.transpose(walkers.dphi, (0, 2, 1))
     ).transpose(0, 2, 1)
+    if project_gauge:
+        dphi = dphi - Q @ (np.transpose(Q.conj(), (0, 2, 1)) @ dphi)
     return GradWalkers(walkers.nwalkers, Q, dphi, walkers.weight, walkers.dweight)
 
 
