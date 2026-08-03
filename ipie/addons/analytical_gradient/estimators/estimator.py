@@ -18,28 +18,43 @@
 
 import numpy as np
 
+from ipie.addons.analytical_gradient.utils.linalg import flatten_ghalf, rmatmul
+
 
 def local_energy_with_tangent(rh1, drh1, rchol, drchol, Ghalf, dGhalf, enuc):
     """Per-walker local energy and its tangent.
 
     E_loc = enuc + 2 Tr(rh1 Theta) + 1/2 (E_J - E_X)  with
     E_J = sum_g X_g^2, X_g = 2 Tr(rchol_g Theta) (unconjugated square), and
-    E_X = 2 sum_g Tr(rchol_g Theta rchol_g Theta).
+    E_X = 2 sum_g Tr(rchol_g Theta rchol_g Theta).  One-body and Coulomb
+    contractions are flattened to gemms (core-ipie local-energy convention).
     """
-    e1 = 2.0 * np.einsum("ij,wji->w", rh1, Ghalf)
-    de1 = 2.0 * (
-        np.einsum("ij,wji->w", drh1, Ghalf) + np.einsum("ij,wji->w", rh1, dGhalf)
-    )
-    X = 2.0 * np.einsum("pij,wji->wp", rchol, Ghalf)
-    dX = 2.0 * (
-        np.einsum("pij,wji->wp", drchol, Ghalf) + np.einsum("pij,wji->wp", rchol, dGhalf)
-    )
+    nw, nao, nocc = Ghalf.shape
+    nchol = rchol.shape[0]
+    Gt = flatten_ghalf(Ghalf)
+    dGt = flatten_ghalf(dGhalf)
+    rh1_flat = rh1.reshape(-1)
+    drh1_flat = drh1.reshape(-1)
+    rchol_flat = rchol.reshape(nchol, -1)
+    drchol_flat = drchol.reshape(nchol, -1)
+    has_dr = bool(drchol_flat.any())
+
+    e1 = 2.0 * (Gt @ rh1_flat)
+    de1 = 2.0 * (Gt @ drh1_flat + dGt @ rh1_flat)
+    X = 2.0 * rmatmul(Gt, rchol_flat.T)
+    dX = 2.0 * rmatmul(dGt, rchol_flat.T)
+    if has_dr:
+        dX = dX + 2.0 * rmatmul(Gt, drchol_flat.T)
     ej = np.einsum("wp,wp->w", X, X)
     dej = 2.0 * np.einsum("wp,wp->w", X, dX)
-    T = np.einsum("gip,wpj->wgij", rchol, Ghalf)
-    dT = np.einsum("gip,wpj->wgij", drchol, Ghalf) + np.einsum(
-        "gip,wpj->wgij", rchol, dGhalf
-    )
+
+    rcholm = rchol.reshape(nchol * nocc, nao)
+    T = np.matmul(rcholm, Ghalf).reshape(nw, nchol, nocc, nocc)
+    dT = np.matmul(rcholm, dGhalf).reshape(nw, nchol, nocc, nocc)
+    if has_dr:
+        dT = dT + np.matmul(drchol.reshape(nchol * nocc, nao), Ghalf).reshape(
+            nw, nchol, nocc, nocc
+        )
     ex = 2.0 * np.einsum("wgij,wgji->w", T, T)
     dex = 2.0 * (
         np.einsum("wgij,wgji->w", dT, T) + np.einsum("wgij,wgji->w", T, dT)

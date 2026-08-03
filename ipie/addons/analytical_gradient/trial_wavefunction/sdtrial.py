@@ -35,6 +35,12 @@ identical stochastic propagator).
 
 import numpy as np
 
+from ipie.addons.analytical_gradient.utils.linalg import (
+    flatten_ghalf,
+    left_apply,
+    rmatmul,
+)
+
 
 class SDTrial:
     def __init__(self, psi, nelec0, dpsi=None):
@@ -57,6 +63,7 @@ class SDTrial:
             + self.psi.conj() @ oinv @ self.dpsi.T
             - self.psi.conj() @ oinv @ dovlp @ oinv @ self.psi.T
         )
+        self._has_dpsi = bool(self.dpsi.any())
         self.rh1 = None
         self.drh1 = None
         self.rchol = None
@@ -73,17 +80,21 @@ class SDTrial:
         self.drchol = np.einsum("ij,aik->ajk", dpsic, ham.chol) + np.einsum(
             "ij,aik->ajk", psic, ham.dchol
         )
+        # Flattened views/flags for the BLAS force-bias and local-energy kernels.
+        self.rchol_flat = self.rchol.reshape(self.rchol.shape[0], -1)
+        self.drchol_flat = self.drchol.reshape(self.drchol.shape[0], -1)
+        self._has_drchol = bool(self.drchol.any())
 
     def calc_overlap(self, states):
         """S_w = psi^dag phi_w for a batch of (nwalkers, nao, nocc) states."""
-        return np.einsum("ij,wik->wjk", self.psi.conj(), states)
+        return left_apply(self.psi.conj().T, states)
 
     def calc_overlap_with_tangent(self, phi, dphi):
         """S = psi^dag phi and dS = dpsi^dag phi + psi^dag dphi."""
-        S = np.einsum("ij,wik->wjk", self.psi.conj(), phi)
-        dS = np.einsum("ij,wik->wjk", self.dpsi.conj(), phi) + np.einsum(
-            "ij,wik->wjk", self.psi.conj(), dphi
-        )
+        S = left_apply(self.psi.conj().T, phi)
+        dS = left_apply(self.psi.conj().T, dphi)
+        if self._has_dpsi:
+            dS = dS + left_apply(self.dpsi.conj().T, phi)
         return S, dS
 
     def get_ghalf_with_tangent(self, phi, dphi):
@@ -99,12 +110,16 @@ class SDTrial:
         return Ghalf, dGhalf, S, dS, Sinv
 
     def calc_force_bias_with_tangent(self, Ghalf, dGhalf):
-        """vbias_g = 2 Tr(rchol_g Theta), with product-rule tangent."""
-        vbias = 2.0 * np.einsum("pij,wji->wp", self.rchol, Ghalf)
-        dvbias = 2.0 * (
-            np.einsum("pij,wji->wp", self.drchol, Ghalf)
-            + np.einsum("pij,wji->wp", self.rchol, dGhalf)
-        )
+        """vbias_g = 2 Tr(rchol_g Theta), with product-rule tangent.
+
+        Flattened (nw, nocc*nao) @ (nocc*nao, nchol) gemms with real/imag
+        splitting (core-ipie force-bias convention)."""
+        Gt = flatten_ghalf(Ghalf)
+        dGt = flatten_ghalf(dGhalf)
+        vbias = 2.0 * rmatmul(Gt, self.rchol_flat.T)
+        dvbias = 2.0 * rmatmul(dGt, self.rchol_flat.T)
+        if self._has_drchol:
+            dvbias = dvbias + 2.0 * rmatmul(Gt, self.drchol_flat.T)
         return vbias, dvbias
 
     def get_trial_ghalf_with_tangent(self):

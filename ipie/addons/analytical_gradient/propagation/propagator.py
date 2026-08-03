@@ -30,6 +30,7 @@ from ipie.addons.analytical_gradient.estimators.estimator import (
     local_energy_with_tangent,
     weighted_energy_with_tangent,
 )
+from ipie.addons.analytical_gradient.utils.linalg import left_apply, rmatmul
 from ipie.addons.analytical_gradient.walkers.rhf_walkers import (
     GradWalkers,
     reorthogonalize,
@@ -80,12 +81,20 @@ def apply_bound_force_bias_with_tangent(xbar, dxbar, max_bound=1.0):
 
 
 def construct_vhs_with_tangent(isqrtt, chol, dchol, xshifted, dxshifted):
-    """VHS = i sqrt(dt) sum_g xshifted_g chol_g, with product-rule tangent."""
-    vhs = isqrtt * np.einsum("wp,pij->wij", xshifted, chol)
-    dvhs = isqrtt * (
-        np.einsum("wp,pij->wij", dxshifted, chol)
-        + np.einsum("wp,pij->wij", xshifted, dchol)
-    )
+    """VHS = i sqrt(dt) sum_g xshifted_g chol_g, with product-rule tangent.
+
+    Flattened to (nw, nchol) @ (nchol, nao^2) gemms with real/imag splitting
+    (core-ipie construct_VHS convention); the dchol term is skipped when the
+    tangent parameterization leaves the two-body integrals untouched.
+    """
+    nw = xshifted.shape[0]
+    nao = chol.shape[-1]
+    cholmat = chol.reshape(chol.shape[0], -1)
+    vhs = (isqrtt * rmatmul(xshifted, cholmat)).reshape(nw, nao, nao)
+    dvhs = rmatmul(dxshifted, cholmat)
+    if dchol.any():
+        dvhs = dvhs + rmatmul(xshifted, dchol.reshape(dchol.shape[0], -1))
+    dvhs = (isqrtt * dvhs).reshape(nw, nao, nao)
     return vhs, dvhs
 
 
@@ -94,17 +103,19 @@ def apply_taylor_with_tangent(taylor_order, vhs, dvhs, phi, dphi):
 
     The tangent update must consume the pre-update term: dT_n uses T_{n-1}.
     Differentiates the truncated series itself (the algorithm's definition).
+    (phi, dphi) are stacked column-wise so each order is one full-width
+    batched gemm plus one half-width gemm for the dvhs term.
     """
-    T = phi
-    dT = dphi
-    phi_out = phi.copy()
-    dphi_out = dphi.copy()
+    nocc = phi.shape[-1]
+    Z = np.concatenate((phi, dphi), axis=2)  # [T | dT]
+    out = Z.copy()
     for n in range(1, taylor_order + 1):
-        dT = (dvhs @ T + vhs @ dT) / n
-        T = (vhs @ T) / n
-        phi_out = phi_out + T
-        dphi_out = dphi_out + dT
-    return phi_out, dphi_out
+        Znew = np.matmul(vhs, Z)  # [vhs T | vhs dT]
+        Znew[:, :, nocc:] += np.matmul(dvhs, Z[:, :, :nocc])
+        Znew *= 1.0 / n
+        Z = Znew
+        out += Z
+    return out[:, :, :nocc], out[:, :, nocc:]
 
 
 class GradPropagator:
@@ -171,10 +182,8 @@ class GradPropagator:
         self.last_xbar = xbar
 
         # First half one-body step (tangent consumes pre-update phi).
-        dphi = np.einsum("pq,wqr->wpr", self.dexpH1, phi) + np.einsum(
-            "pq,wqr->wpr", self.expH1, dphi
-        )
-        phi = np.einsum("pq,wqr->wpr", self.expH1, phi)
+        dphi = left_apply(self.dexpH1, phi) + left_apply(self.expH1, dphi)
+        phi = left_apply(self.expH1, phi)
 
         # Two-body step.
         xshifted = x - xbar
@@ -185,10 +194,8 @@ class GradPropagator:
         phi, dphi = apply_taylor_with_tangent(self.taylor_order, vhs, dvhs, phi, dphi)
 
         # Second half one-body step.
-        dphi = np.einsum("pq,wqr->wpr", self.dexpH1, phi) + np.einsum(
-            "pq,wqr->wpr", self.expH1, dphi
-        )
-        phi = np.einsum("pq,wqr->wpr", self.expH1, phi)
+        dphi = left_apply(self.dexpH1, phi) + left_apply(self.expH1, dphi)
+        phi = left_apply(self.expH1, phi)
 
         # Weight factor, assembled in log space.  RHF: overlap ratio squared.
         S_new, dS_new = trial.calc_overlap_with_tangent(phi, dphi)
