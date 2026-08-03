@@ -31,6 +31,7 @@ from ipie.addons.analytical_gradient.estimators.estimator import (
     weighted_energy_with_tangent,
 )
 from ipie.addons.analytical_gradient.utils.linalg import left_apply, rmatmul
+from ipie.utils.pack_numba import unpack_VHS_batch
 from ipie.addons.analytical_gradient.walkers.rhf_walkers import (
     GradWalkers,
     reorthogonalize,
@@ -95,6 +96,29 @@ def construct_vhs_with_tangent(isqrtt, chol, dchol, xshifted, dxshifted):
     if dchol.any():
         dvhs = dvhs + rmatmul(xshifted, dchol.reshape(dchol.shape[0], -1))
     dvhs = (isqrtt * dvhs).reshape(nw, nao, nao)
+    return vhs, dvhs
+
+
+def construct_vhs_packed_with_tangent(
+    isqrtt, chol_packed, dchol_packed, sym_i, sym_j, nao, xshifted, dxshifted
+):
+    """Packed-Cholesky variant of construct_vhs_with_tangent.
+
+    For symmetric Cholesky vectors the gemms run on the upper triangle only
+    (half the flops); the symmetric (nw, nao, nao) matrices are then filled
+    with the core-ipie numba unpack kernel.  dchol_packed is None when the
+    parameterization leaves the two-body integrals untouched.
+    """
+    nw = xshifted.shape[0]
+    vhs_packed = np.ascontiguousarray(isqrtt * rmatmul(xshifted, chol_packed))
+    dvhs_packed = rmatmul(dxshifted, chol_packed)
+    if dchol_packed is not None:
+        dvhs_packed = dvhs_packed + rmatmul(xshifted, dchol_packed)
+    dvhs_packed = np.ascontiguousarray(isqrtt * dvhs_packed)
+    vhs = np.zeros((nw, nao, nao), dtype=vhs_packed.dtype)
+    dvhs = np.zeros((nw, nao, nao), dtype=dvhs_packed.dtype)
+    unpack_VHS_batch(sym_i, sym_j, vhs_packed, vhs)
+    unpack_VHS_batch(sym_i, sym_j, dvhs_packed, dvhs)
     return vhs, dvhs
 
 
@@ -188,9 +212,21 @@ class GradPropagator:
         # Two-body step.
         xshifted = x - xbar
         dxshifted = -dxbar
-        vhs, dvhs = construct_vhs_with_tangent(
-            self.isqrtt, ham.chol, ham.dchol, xshifted, dxshifted
-        )
+        if ham.chol_packed is not None:
+            vhs, dvhs = construct_vhs_packed_with_tangent(
+                self.isqrtt,
+                ham.chol_packed,
+                ham.dchol_packed,
+                ham.sym_idx_i,
+                ham.sym_idx_j,
+                ham.nao,
+                xshifted,
+                dxshifted,
+            )
+        else:
+            vhs, dvhs = construct_vhs_with_tangent(
+                self.isqrtt, ham.chol, ham.dchol, xshifted, dxshifted
+            )
         phi, dphi = apply_taylor_with_tangent(self.taylor_order, vhs, dvhs, phi, dphi)
 
         # Second half one-body step.

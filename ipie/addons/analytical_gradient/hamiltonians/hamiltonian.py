@@ -69,6 +69,30 @@ class HamTangent:
         self.h1e_mod = self.h1e - v0
         self.dh1e_mod = self.dh1e - dv0
 
+        # Packed upper-triangle Cholesky for the half-flops VHS gemms
+        # (core-ipie / adafqmc convention); valid only for symmetric vectors,
+        # otherwise the propagator falls back to the unpacked contraction.
+        self.has_dchol = bool(self.dchol.any())
+        self.sym_idx_i, self.sym_idx_j = np.triu_indices(nao)
+        cholT = self.chol.transpose(0, 2, 1)
+        dcholT = self.dchol.transpose(0, 2, 1)
+        if np.array_equal(self.chol, cholT) or np.allclose(self.chol, cholT, atol=1e-13):
+            if not self.has_dchol or np.allclose(self.dchol, dcholT, atol=1e-13):
+                self.chol_packed = np.ascontiguousarray(
+                    self.chol[:, self.sym_idx_i, self.sym_idx_j]
+                )
+                self.dchol_packed = (
+                    np.ascontiguousarray(self.dchol[:, self.sym_idx_i, self.sym_idx_j])
+                    if self.has_dchol
+                    else None
+                )
+            else:
+                self.chol_packed = None
+                self.dchol_packed = None
+        else:
+            self.chol_packed = None
+            self.dchol_packed = None
+
 
 def build_fixed_trial_tangent(nelec0, nao, h1e, chol, enuc, obs_mat):
     """Tangent inputs for a lambda-independent trial: H(lambda) = H + lambda*O."""

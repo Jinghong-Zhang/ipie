@@ -28,6 +28,7 @@ from ipie.addons.analytical_gradient.propagation.propagator import (
     apply_bound_force_bias_with_tangent,
     apply_taylor_with_tangent,
     compute_exph1_with_tangent,
+    construct_vhs_packed_with_tangent,
     construct_vhs_with_tangent,
 )
 from ipie.addons.analytical_gradient.trial_wavefunction.sdtrial import SDTrial
@@ -125,6 +126,30 @@ def test_vhs_taylor_tangent_vs_fd():
     eps = 1e-6
     fd = (value(eps) - value(-eps)) / (2 * eps)
     np.testing.assert_allclose(fd, dphi_out, rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.unit
+def test_vhs_packed_matches_unpacked():
+    ham, _, rng = make_ham_and_trial(seed=83)
+    assert ham.chol_packed is not None  # symmetric chol and dchol -> packed
+    xs = rng.standard_normal((NW, NCHOL)) + 1j * rng.standard_normal((NW, NCHOL))
+    dxs = 0.3 * (rng.standard_normal((NW, NCHOL)) + 1j * rng.standard_normal((NW, NCHOL)))
+    isqrtt = 1j * np.sqrt(DT)
+    vhs, dvhs = construct_vhs_with_tangent(isqrtt, ham.chol, ham.dchol, xs, dxs)
+    vhs_p, dvhs_p = construct_vhs_packed_with_tangent(
+        isqrtt, ham.chol_packed, ham.dchol_packed, ham.sym_idx_i, ham.sym_idx_j,
+        NAO, xs, dxs,
+    )
+    np.testing.assert_allclose(vhs_p, vhs, rtol=1e-13, atol=1e-14)
+    np.testing.assert_allclose(dvhs_p, dvhs, rtol=1e-13, atol=1e-14)
+
+    # Non-symmetric Cholesky vectors must disable packing (fallback path).
+    from ipie.addons.analytical_gradient.hamiltonians.hamiltonian import HamTangent
+
+    chol_ns = ham.chol.copy()
+    chol_ns[0, 0, 1] += 0.1  # break symmetry
+    ham_ns = HamTangent(NOCC, NAO, ham.h1e, chol_ns, ham.enuc)
+    assert ham_ns.chol_packed is None
 
 
 def step_at(ham, trial_psi, phi, dphi, weight, dweight, x, eps, **prop_kwargs):
