@@ -119,12 +119,17 @@ class UHFWalkers(BaseWalkers):
             # C factor included to avoid over/underflow
             log_det = xp.sum(xp.log(xp.abs(Rup_diag)))
 
-            if ndown > 0:
+            if ndown > 0 and not self.rhf:
                 (self.phib[iw], Rdn) = qr(self.phib[iw], mode=qr_mode)
                 Rdn_diag = xp.diag(Rdn)
                 signs_dn = xp.sign(Rdn_diag)
                 self.phib[iw] = xp.dot(self.phib[iw], xp.diag(signs_dn))
                 log_det += sum(xp.log(abs(Rdn_diag)))
+            elif ndown > 0 and self.rhf:
+                # rhf walkers: phib is never propagated (beta == alpha).  The
+                # overlap contains the alpha determinant twice, so detR must be
+                # det(Rup)^2.
+                log_det = 2.0 * log_det
 
             detR += [xp.exp(log_det - self.detR_shift[iw])]
             self.log_detR[iw] += xp.log(detR[iw])
@@ -145,10 +150,14 @@ class UHFWalkers(BaseWalkers):
         Rup_diag = xp.einsum("wii->wi", Rup)
         log_det = xp.einsum("wi->w", xp.log(abs(Rup_diag)))
 
-        if self.ndown > 0:
+        if self.ndown > 0 and not self.rhf:
             (self.phib, Rdn) = qr(self.phib, mode=qr_mode)
             Rdn_diag = xp.einsum("wii->wi", Rdn)
             log_det += xp.einsum("wi->w", xp.log(abs(Rdn_diag)))
+        elif self.ndown > 0 and self.rhf:
+            # rhf walkers: phib never propagated (beta == alpha); overlap holds
+            # the alpha determinant twice -> detR = det(Rup)^2.
+            log_det = 2.0 * log_det
         self.detR = xp.exp(log_det - self.detR_shift)
         self.ovlp = self.ovlp / self.detR
 
