@@ -24,6 +24,40 @@ from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import synchronize
 
 from ipie.config import config
+from ipie.hamiltonians.thc import GenericRealTHC
+from ipie.lno_thc import construct_force_bias_thc
+
+
+def _force_bias_thc(hamiltonian, walkers, trial):
+    """THC force bias, factored through X and zeta.  Returns (nwalkers, nfields).
+
+    Routes GenericComplexTHC to the complex kernel (Zc field factors, conj(X)
+    density moment); the real THC path is unchanged."""
+    # Stay on the active backend (xp): walker/trial arrays live on the GPU under
+    # use_gpu and numpy.asarray on a cupy array raises (implicit host conversion).
+    # xp.asarray is a no-op on CPU and keeps the force-bias contraction on-device.
+    if not hasattr(trial, "_thc_Xocca"):
+        trial._thc_Xocca = hamiltonian.half_rotate(xp.asarray(trial.psi0a))
+        trial._thc_Xoccb = hamiltonian.half_rotate(xp.asarray(trial.psi0b))
+    from ipie.hamiltonians.thc import GenericComplexTHC as _GCTHC
+
+    is_cx = isinstance(hamiltonian, _GCTHC)
+    if is_cx:
+        from ipie.lno_thc_cx import construct_force_bias_thc_cx as _fb
+        # PHYSICAL bubble needs the CONJUGATE half-rotations psi^H conj(X)
+        Xa = trial._thc_Xoccac
+        Xb = getattr(trial, "_thc_Xoccbc", None)
+    else:
+        _fb = construct_force_bias_thc
+        Xa, Xb = trial._thc_Xocca, trial._thc_Xoccb
+    Ghalfa = xp.asarray(walkers.Ghalfa)               # (nw, nup, nbasis)
+    if walkers.rhf:
+        # Closed shell: rho_tot = 2 * rho_alpha inside the kernel (Ghalfb=None).
+        vb = _fb(hamiltonian, Xa, None, Ghalfa, None)
+    else:
+        vb = _fb(hamiltonian, Xa, Xb, Ghalfa, xp.asarray(walkers.Ghalfb))
+    synchronize()
+    return xp.ascontiguousarray(vb.T)                 # (nwalkers, nfields), single copy
 
 
 def construct_force_bias_batch(hamiltonian, walkers, trial, mpi_handler=None):
@@ -100,6 +134,10 @@ def construct_force_bias_batch_single_det(
     xbar : :class:`numpy.ndarray`
         Force bias.
     """
+    from ipie.hamiltonians.thc import GenericComplexTHC as _GCTHC
+
+    if isinstance(hamiltonian, (GenericRealTHC, _GCTHC)):
+        return _force_bias_thc(hamiltonian, walkers, trial)
     if walkers.rhf:
         Ghalfa = walkers.Ghalfa.reshape(walkers.nwalkers, walkers.nup * hamiltonian.nbasis)
         vbias_batch_real = 2.0 * trial._rchola.dot(Ghalfa.T.real)

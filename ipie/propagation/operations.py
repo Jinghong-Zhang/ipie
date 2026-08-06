@@ -47,7 +47,14 @@ def propagate_one_body(phi, bt2, H1diag=False):
         phi[:, :] = xp.einsum("ii,wij->ij", bt2, phi)
     else:
         if is_cupy(bt2):
-            phi = xp.einsum("ik,wkj->wij", bt2, phi, optimize=True)
+            if (not xp.iscomplexobj(bt2)) and xp.iscomplexobj(phi):
+                # REAL one-body propagator (THC path stores expH1 real): apply as
+                # two real batched GEMMs instead of letting matmul/einsum promote
+                # bt2 to a complex copy every call.  Identical values (a complex
+                # GEMM with zero-imag bt2 performs the same multiply/add set).
+                phi = xp.matmul(bt2, phi.real) + 1j * xp.matmul(bt2, phi.imag)
+            else:
+                phi = xp.einsum("ik,wkj->wij", bt2, phi, optimize=True)
         else:
             # Loop is O(10x) times faster on CPU for FeP benchmark
             for iw in range(phi.shape[0]):

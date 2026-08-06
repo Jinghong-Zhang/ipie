@@ -11,6 +11,11 @@ import plum
 from ipie.trial_wavefunction.wavefunction_base import TrialWavefunctionBase
 from ipie.hamiltonians.generic import GenericRealChol, GenericComplexChol
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
+from ipie.hamiltonians.thc import GenericRealTHC, GenericRealTHCUhf, GenericComplexTHC
+from ipie.lno_thc import (
+    construct_mean_field_shift_thc,
+    construct_one_body_propagator_thc,
+)
 from typing import Union
 
 try:
@@ -163,6 +168,54 @@ def construct_mean_field_shift(hamiltonian: GenericComplexChol, trial: TrialWave
     mf_shift[:nchol] = 1j * numpy.dot(hamiltonian.A.T, Gcharge.ravel())
     mf_shift[nchol:] = 1j * numpy.dot(hamiltonian.B.T, Gcharge.ravel())
     return mf_shift
+
+
+# ---- THC overloads (factored through X and zeta; see ipie/lno_thc.py) ----
+@plum.dispatch
+def construct_mean_field_shift(hamiltonian: GenericRealTHC, trial: TrialWavefunctionBase):
+    return xp.array(construct_mean_field_shift_thc(hamiltonian, trial))
+
+
+@plum.dispatch
+def construct_one_body_propagator(hamiltonian: GenericRealTHC, mf_shift: xp.ndarray, dt: float):
+    # construct_one_body_propagator_thc stages the THC factors + mf_shift to host
+    # internally (scipy.expm is host-only); numpy.asarray on a cupy mf_shift would
+    # raise (implicit host conversion forbidden), so pass it through unconverted.
+    return xp.array(construct_one_body_propagator_thc(hamiltonian, mf_shift, dt))
+
+
+# ---- COMPLEX THC overloads (no-TRS metal path; see ipie/lno_thc_cx.py) ----
+@plum.dispatch
+def construct_mean_field_shift(hamiltonian: GenericComplexTHC, trial: TrialWavefunctionBase):
+    from ipie.lno_thc_cx import construct_mean_field_shift_thc_cx
+
+    return xp.array(construct_mean_field_shift_thc_cx(hamiltonian, trial))
+
+
+@plum.dispatch
+def construct_one_body_propagator(hamiltonian: GenericComplexTHC, mf_shift: xp.ndarray, dt: float):
+    from ipie.lno_thc_cx import construct_one_body_propagator_thc_cx
+
+    return xp.array(construct_one_body_propagator_thc_cx(hamiltonian, mf_shift, dt))
+
+
+# ---- THC-UHF overloads (per-spin bases, shared auxiliary index; more specific
+#      than the GenericRealTHC overloads above -- see ipie/lno_thc_uhf.py) ----
+@plum.dispatch
+def construct_mean_field_shift(hamiltonian: GenericRealTHCUhf, trial: TrialWavefunctionBase):
+    from ipie.lno_thc_uhf import construct_mean_field_shift_thc_uhf
+
+    return xp.array(construct_mean_field_shift_thc_uhf(hamiltonian, trial))
+
+
+@plum.dispatch
+def construct_one_body_propagator(hamiltonian: GenericRealTHCUhf, mf_shift: xp.ndarray, dt: float):
+    # Returns a LIST [expH1a, expH1b]: the two spin blocks live in
+    # different-sized bases, so they cannot be stacked into one ndarray.
+    # propagate_walkers_one_body only ever indexes expH1[0]/expH1[1].
+    from ipie.lno_thc_uhf import construct_one_body_propagator_thc_uhf
+
+    return construct_one_body_propagator_thc_uhf(hamiltonian, mf_shift, dt)
 
 
 class PhaselessBase(ContinuousBase):

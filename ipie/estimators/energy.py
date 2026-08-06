@@ -35,6 +35,9 @@ from ipie.estimators.local_energy_kpt_sd import local_energy_kpt_single_det_uhf
 from ipie.estimators.local_energy_kpt_sd_chunked import local_energy_kpt_single_det_uhf_chunked
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
+from ipie.hamiltonians.thc import GenericRealTHC, GenericRealTHCUhf, GenericComplexTHC
+from ipie.lno_thc import frag_2body_thc, _env_flag
+from ipie.lno_thc_uhf import local_energy_thc_uhf
 from ipie.systems.generic import Generic
 from ipie.trial_wavefunction.noci import NOCI
 from ipie.trial_wavefunction.particle_hole import (
@@ -50,6 +53,7 @@ from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.trial_wavefunction.single_det import SingleDet
 from ipie.trial_wavefunction.single_det_ghf import SingleDetGHF
 from ipie.utils.backend import arraylib as xp
+import numpy
 from ipie.walkers.uhf_walkers import UHFWalkers
 from ipie.walkers.ghf_walkers import GHFWalkers
 
@@ -74,6 +78,108 @@ def local_energy(
     trial: SingleDet,
 ):
     return local_energy_single_det_uhf(system, hamiltonian, walkers, trial)
+
+
+def local_energy_thc(system, hamiltonian, walkers, trial):
+    """Local energy for the factored THC Hamiltonian.  e1 from the half-rotated
+    one-body integrals; e2 from frag_2body_thc.
+
+    The phaseless weight update and population-control eshift use the HYBRID energy
+    (overlap ratio + force bias), NOT this local energy, so when only the per-fragment
+    observable is needed the full cluster two-body (n_frag = nocc, the dominant
+    O(nocc*Nmu^2) cost) is wasteful.  If `hamiltonian.n_frag` is set, e2 is the cheap
+    fragment two-body (n_frag occ, fused exchange); otherwise the full cluster e2.
+    ETotal is then an embedded (e1 + fragment-e2) diagnostic; the physical observable
+    is EFragCorr from the LNO estimator.
+
+    LNO_FAST_ESTIMATOR=1: this default estimator's e2 is SKIPPED (set to zero) --
+    it exactly duplicated the LNOFrag additional estimator's fragment two-body
+    every block.  E2Body/ETotal then report e1-only diagnostics; the physical
+    observable (EFragCorr from the LNOFrag estimator) is unaffected."""
+    # Stay on the active backend (xp = numpy on CPU, cupy on GPU): the walker
+    # half-rotated densities live on the GPU under use_gpu, and numpy.asarray on a
+    # cupy array raises (implicit host conversion forbidden).  xp.asarray is a no-op
+    # on CPU and keeps the contraction on-device on GPU.
+    Ga = xp.asarray(walkers.Ghalfa)                # (nw, nalpha, nbasis)
+    rhf = bool(getattr(walkers, "rhf", False))
+    # Under rhf walkers, phib/Ghalfb are never propagated/recomputed: beta == alpha.
+    Gb = Ga if rhf else xp.asarray(walkers.Ghalfb)  # (nw, nbeta, nbasis)
+    nocc = Ga.shape[1]
+    nfrag = getattr(hamiltonian, "n_frag", None) or nocc
+    rH1a = xp.asarray(trial._rH1a)
+    rH1b = xp.asarray(trial._rH1b)
+    e1 = xp.einsum("ij,wij->w", rH1a, Ga) + xp.einsum("ij,wij->w", rH1b, Gb)
+    if _env_flag("LNO_FAST_ESTIMATOR"):
+        e2 = xp.zeros(walkers.nwalkers, dtype=numpy.complex128)
+    else:
+        e2 = frag_2body_thc(
+            hamiltonian, trial._thc_Xocca, trial._thc_Xoccb, Ga, None if rhf else Gb, nfrag
+        )
+    energy = xp.zeros((walkers.nwalkers, 3), dtype=numpy.complex128)
+    energy[:, 1] = e1
+    energy[:, 2] = e2
+    energy[:, 0] = hamiltonian.ecore + e1 + e2
+    return xp.array(energy)
+
+
+@plum.dispatch
+def local_energy(
+    system: Generic,
+    hamiltonian: GenericRealTHC,
+    walkers: UHFWalkers,
+    trial: SingleDet,
+):
+    return local_energy_thc(system, hamiltonian, walkers, trial)
+
+
+def local_energy_thc_cx(system, hamiltonian, walkers, trial):
+    """Local energy for the COMPLEX factored THC Hamiltonian (no-TRS metal path).
+
+    e1 from the half-rotated one-body integrals; e2 is the FULL-CLUSTER complex
+    two-body.  As on the real path, the phaseless weight update uses the HYBRID
+    energy (overlap ratio + force bias), not this local energy, so under
+    LNO_FAST_ESTIMATOR=1 the (expensive, O(Nmu^2)) e2 is skipped and E2Body/ETotal
+    become e1-only diagnostics; the physical observable is the fragment estimator."""
+    from ipie.lno_thc_cx import two_body_energy_thc_cx
+
+    Ga = xp.asarray(walkers.Ghalfa)
+    rhf = bool(getattr(walkers, "rhf", False))
+    Gb = Ga if rhf else xp.asarray(walkers.Ghalfb)
+    rH1a = xp.asarray(trial._rH1a)
+    rH1b = xp.asarray(trial._rH1b)
+    e1 = xp.einsum("ij,wij->w", rH1a, Ga) + xp.einsum("ij,wij->w", rH1b, Gb)
+    if _env_flag("LNO_FAST_ESTIMATOR"):
+        e2 = xp.zeros(walkers.nwalkers, dtype=numpy.complex128)
+    else:
+        e2 = two_body_energy_thc_cx(
+            hamiltonian, trial._thc_Xocca, trial._thc_Xoccac, Ga, None if rhf else Gb
+        )
+    energy = xp.zeros((walkers.nwalkers, 3), dtype=numpy.complex128)
+    energy[:, 1] = e1
+    energy[:, 2] = e2
+    energy[:, 0] = hamiltonian.ecore + e1 + e2
+    return xp.array(energy)
+
+
+@plum.dispatch
+def local_energy(
+    system: Generic,
+    hamiltonian: GenericComplexTHC,
+    walkers: UHFWalkers,
+    trial: SingleDet,
+):
+    return local_energy_thc_cx(system, hamiltonian, walkers, trial)
+
+
+@plum.dispatch
+def local_energy(
+    system: Generic,
+    hamiltonian: GenericRealTHCUhf,
+    walkers: UHFWalkers,
+    trial: SingleDet,
+):
+    # Per-spin-basis THC (more specific than the GenericRealTHC overload above).
+    return local_energy_thc_uhf(system, hamiltonian, walkers, trial)
 
 
 @plum.dispatch

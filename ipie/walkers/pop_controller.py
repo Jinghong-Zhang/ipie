@@ -1,9 +1,39 @@
+import os
 import time
 
 import numpy
 
 from ipie.config import MPI
 from ipie.utils.backend import arraylib as xp
+
+
+def _env_flag(name):
+    """True if the environment variable is set to a truthy value."""
+    return os.environ.get(name, "") not in ("", "0", "false", "False", "no", "off")
+
+
+def _clone_walker_local(walkers, src, dst):
+    """Clone walker src -> dst entirely on the current backend (device-side under
+    cupy): the single-rank replacement for the get_buffer -> MPI self-send ->
+    set_buffer round trip, which stages every field of every branched walker
+    through host memory.  Copies exactly the fields pop-control communicates
+    (walkers.buff_names), mirroring get_buffer/set_buffer semantics."""
+    for name in walkers.buff_names:
+        data = walkers.__dict__.get(name)
+        if data is None:
+            continue
+        if isinstance(data, (xp.ndarray, numpy.ndarray)):
+            data[dst] = data[src]
+        elif isinstance(data, list):
+            item = data[src]
+            if isinstance(item, (xp.ndarray, numpy.ndarray)):
+                data[dst] = item.copy()
+            elif isinstance(item, list):
+                data[dst] = [
+                    l.copy() if isinstance(l, (xp.ndarray, numpy.ndarray)) else l for l in item
+                ]
+            else:
+                data[dst] = item
 
 
 class PopControllerTimer:
@@ -125,6 +155,19 @@ class PopController:
                 print("Unknown population control method.")
 
 
+def _to_host(arr):
+    """Return a host (numpy) copy of a possibly-GPU (cupy) array.
+
+    MPI buffers must live in host memory unless a CUDA-aware MPI build is used.
+    Intel MPI on this cluster is *not* CUDA-aware, so passing a cupy device
+    buffer to comm.Isend/Recv dereferences the device pointer as host memory and
+    segfaults. We therefore stage all pop-control MPI buffers on the host.
+    """
+    if hasattr(arr, "get"):
+        return arr.get()
+    return arr
+
+
 def get_buffer(walkers, iw):
     """Get iw-th walker buffer for MPI communication
     iw : int
@@ -135,25 +178,28 @@ def get_buffer(walkers, iw):
         Relevant walker information for population control.
     """
     s = 0
-    buff = xp.zeros(walkers.buff_size, dtype=numpy.complex128)
+    # Build the buffer on the HOST (numpy). Pop-control uses MPI Isend/Recv on this
+    # buffer; a cupy device buffer would segfault under non-CUDA-aware MPI. We stage
+    # each walker field to host with _to_host before packing.
+    buff = numpy.zeros(walkers.buff_size, dtype=numpy.complex128)
     for d in walkers.buff_names:
         data = walkers.__dict__[d]
         if data is None:
             continue
         assert data.size % walkers.nwalkers == 0  # Only walker-specific data is being communicated
-        if isinstance(data[iw], (xp.ndarray)):
-            buff[s : s + data[iw].size] = xp.array(data[iw].ravel())
+        if isinstance(data[iw], (xp.ndarray, numpy.ndarray)):
+            buff[s : s + data[iw].size] = _to_host(data[iw].ravel())
             s += data[iw].size
         elif isinstance(data[iw], list):  # when data is list
             for l in data[iw]:
-                if isinstance(l, (xp.ndarray)):
-                    buff[s : s + l.size] = xp.array(l.ravel())
+                if isinstance(l, (xp.ndarray, numpy.ndarray)):
+                    buff[s : s + l.size] = _to_host(l.ravel())
                     s += l.size
                 elif isinstance(l, (int, float, complex, numpy.float64, numpy.complex128)):
                     buff[s : s + 1] = l
                     s += 1
         else:
-            buff[s : s + 1] = xp.array(data[iw])
+            buff[s : s + 1] = _to_host(data[iw])
             s += 1
     return buff
 
@@ -172,9 +218,15 @@ def set_buffer(walkers, iw, buff):
             continue
         assert data.size % walkers.nwalkers == 0  # Only walker-specific data is being communicated
         if isinstance(data[iw], xp.ndarray):
-            walkers.__dict__[d][iw] = xp.array(
-                buff[s : s + data[iw].size].reshape(data[iw].shape).copy()
-            )
+            # Restore with the walker field's own dtype (real fields take .real,
+            # complex fields the full value).  The old float64/complex128-only
+            # branches silently SKIPPED other dtypes -- e.g. the complex64
+            # walkers used under IPIE_THC_MIXED were never restored.
+            target_dtype = walkers.__dict__[d][iw].dtype
+            vals = buff[s : s + data[iw].size].reshape(data[iw].shape)
+            if target_dtype.kind != "c":
+                vals = vals.real
+            walkers.__dict__[d][iw] = xp.array(vals.astype(target_dtype))
             s += data[iw].size
         elif isinstance(data[iw], list):
             for ix, l in enumerate(data[iw]):
@@ -274,12 +326,14 @@ def comb(walkers, comm, weights, target_weight, timer=PopControllerTimer()):
             kill_pos = k % walkers.nwalkers
             timer.add_non_communication()
             timer.start_time()
-            comm.Recv(walkers.walker_buffer, source=source_proc, tag=i)
-            # with h5py.File('walkers_recv.h5', 'w') as fh5:
-            # fh5['walk_{}'.format(k)] = walkers.walker_buffer.copy()
+            # Recv into a HOST buffer: walkers.walker_buffer may have been moved to
+            # the GPU by cast_to_device (copy_to_gpu), and non-CUDA-aware MPI cannot
+            # write a device pointer (segfault). set_buffer re-uploads to device.
+            recv_buffer = numpy.empty(walkers.buff_size, dtype=numpy.complex128)
+            comm.Recv(recv_buffer, source=source_proc, tag=i)
             timer.add_recv_time()
             timer.start_time()
-            set_buffer(walkers, kill_pos, walkers.walker_buffer)
+            set_buffer(walkers, kill_pos, recv_buffer)
             timer.add_non_communication()
             # with h5py.File('after_{}.h5'.format(comm.rank), 'a') as fh5:
             # fh5['walker_{}_{}_{}'.format(c,k,comm.rank)] = walkers.walkers[kill_pos].get_buffer()
@@ -400,6 +454,25 @@ def pair_branch(walkers, comm, max_weight, min_weight, timer=PopControllerTimer(
     comm.Scatter(glob_inf, data, root=0)
 
     timer.add_communication()
+
+    # LNO_POPCTL_DEVICE=1, single rank: clone/kill in place on the active backend
+    # (no host staging, no MPI self-sends).  Identical pairing to the MPI path:
+    # there, every send/recv in this single-rank case carries the SAME
+    # (source, tag) pair, so MPI's non-overtaking rule matches the k-th posted
+    # branched send with the k-th posted killed recv -- i.e. branched and killed
+    # walkers pair up in walker-index order, exactly what zip() below does.
+    if comm.size == 1 and _env_flag("LNO_POPCTL_DEVICE"):
+        timer.start_time()
+        srcs = [iw for iw, walker in enumerate(data) if walker[1] > 1]
+        dsts = [iw for iw, walker in enumerate(data) if walker[1] == 0]
+        assert len(srcs) == len(dsts), (len(srcs), len(dsts))
+        for iw in srcs:
+            walkers.weight[iw] = data[iw][0]
+        for src, dst in zip(srcs, dsts):
+            _clone_walker_local(walkers, src, dst)
+        timer.add_non_communication()
+        return
+
     # Keep total weight saved for capping purposes.
     reqs = []
     for iw, walker in enumerate(data):
@@ -418,10 +491,14 @@ def pair_branch(walkers, comm, max_weight, min_weight, timer=PopControllerTimer(
             tag = walker[3] * walkers.nwalkers + comm.rank
             timer.add_non_communication()
             timer.start_time()
-            comm.Recv(walkers.walker_buffer, source=int(round(walker[3])), tag=tag)
+            # Recv into a HOST buffer: walkers.walker_buffer may have been moved to
+            # the GPU by cast_to_device (copy_to_gpu), and non-CUDA-aware MPI cannot
+            # write a device pointer (segfault). set_buffer re-uploads to device.
+            recv_buffer = numpy.empty(walkers.buff_size, dtype=numpy.complex128)
+            comm.Recv(recv_buffer, source=int(round(walker[3])), tag=tag)
             timer.add_recv_time()
             timer.start_time()
-            set_buffer(walkers, iw, walkers.walker_buffer)
+            set_buffer(walkers, iw, recv_buffer)
             timer.add_non_communication()
     timer.start_time()
     for r in reqs:
@@ -433,7 +510,10 @@ def stochastic_reconfiguration(walkers, comm, timer=PopControllerTimer()):
     # gather all walker information on the root
     timer.start_time()
     nwalkers = walkers.nwalkers
-    local_buffer = xp.array([get_buffer(walkers, i) for i in range(nwalkers)])
+    # HOST buffer: Gather/Scatter below run under non-CUDA-aware MPI, so the
+    # per-walker buffers must stay in host memory (get_buffer already returns host;
+    # set_buffer re-uploads to device). A cupy array here would segfault the Gather.
+    local_buffer = numpy.array([get_buffer(walkers, i) for i in range(nwalkers)])
     walker_len = local_buffer[0].shape[0]
     global_buffer = None
     if comm.rank == 0:

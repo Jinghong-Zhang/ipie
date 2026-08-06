@@ -16,6 +16,8 @@ from ipie.config import config
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
 from ipie.hamiltonians.generic_base import GenericBase
+from ipie.hamiltonians.thc import GenericRealTHC, GenericRealTHCUhf, GenericComplexTHC
+from ipie.lno_thc import construct_VHS_thc
 from ipie.propagation.operations import apply_exponential, apply_exponential_batch
 from ipie.propagation.phaseless_base import PhaselessBase
 from ipie.utils.backend import arraylib as xp
@@ -98,21 +100,68 @@ class PhaselessGeneric(PhaselessBase):
 
     @plum.dispatch
     def construct_VHS(self, hamiltonian: GenericComplexChol, xshifted: xp.ndarray) -> xp.ndarray:
+        # VHS = isqrt_dt * (A.x_+ - B.x_-) with the 2*nchol real fields split into
+        # the Hermitian (A) and anti-Hermitian (B) halves.
+        # NOTE: a hardcoded `nk = 27` and two dead xplus/xminus reshapes used to sit
+        # here; they were unused by the result but THREW whenever nchol*nwalkers was
+        # not divisible by 27 (i.e. for every system that was not the 3x3x3 mesh this
+        # was debugged on).  Removed; validated gauge-covariant against
+        # GenericRealChol (bit-identical B=0 / B!=0 runs).
         nwalkers = xshifted.shape[-1]
 
-        nchol = hamiltonian.nchol
-        nk = 27
-
-        xplus = xshifted[:nchol].reshape(nk, -1, nwalkers)
-        xminus = xshifted[nchol:].reshape(nk, -1, nwalkers)
-
         VHS = self.isqrt_dt * (
-            hamiltonian.A.dot(xshifted[:nchol]) - hamiltonian.B.dot(xshifted[nchol:])
+            hamiltonian.A.dot(xshifted[: hamiltonian.nchol])
+            - hamiltonian.B.dot(xshifted[hamiltonian.nchol :])
         )
         VHS = VHS.T.copy()
         VHS = VHS.reshape(nwalkers, hamiltonian.nbasis, hamiltonian.nbasis)
 
         return VHS
+
+    @plum.dispatch
+    def construct_VHS(self, hamiltonian: GenericRealTHC, xshifted: xp.ndarray) -> xp.ndarray:
+        # Factored THC: VHS[w] = isqrt_dt X diag(zeta . xshifted[w]) X^T (no L materialized).
+        # xshifted lives on the active backend (cupy on GPU); construct_VHS_thc keeps the
+        # GEMM on-device, so pass it through unconverted (numpy.asarray on cupy would raise).
+        # construct_VHS_thc already returns on the hamiltonian's backend; xp.asarray (NOT
+        # xp.array) avoids duplicating the (nw x nbasis x nbasis) VHS array -- 65 GB at
+        # production sizes.
+        return xp.asarray(construct_VHS_thc(hamiltonian, xp.asarray(xshifted), self.isqrt_dt))
+
+    @plum.dispatch
+    def construct_VHS(self, hamiltonian: GenericComplexTHC, xshifted: xp.ndarray) -> xp.ndarray:
+        # COMPLEX factored THC: VHS[w] = isqrt_dt X diag(Zc . xshifted[w]) X^H.
+        # Same no-materialization / no-duplication discipline as the real overload.
+        from ipie.lno_thc_cx import construct_VHS_thc_cx
+
+        return xp.asarray(construct_VHS_thc_cx(hamiltonian, xp.asarray(xshifted), self.isqrt_dt))
+
+    # ---- THC-UHF (per-spin bases, shared auxiliary index) --------------------
+    # More specific than apply_VHS(walkers, GenericBase, xshifted) above, so plum
+    # routes GenericRealTHCUhf here.  The generic apply_VHS builds ONE VHS and
+    # applies it to both spin sectors; with per-spin bases ONE sampled field
+    # x_gamma[w] builds TWO different-sized potentials
+    #     VHS^a[w] = isqrt_dt X_a diag(zeta.x[w]) X_a^T   -> applied to phia (n_a_orb x na)
+    #     VHS^b[w] = isqrt_dt X_b diag(zeta.x[w]) X_b^T   -> applied to phib (n_b_orb x nb)
+    # (the shared field couples the total charge density; only the collocation
+    # differs per spin).  CPU path only; no walkers.rhf shortcut (never valid here).
+    @plum.dispatch
+    def apply_VHS(self, walkers: UHFWalkers, hamiltonian: GenericRealTHCUhf, xshifted: xp.ndarray):
+        from ipie.lno_thc_uhf import construct_VHS_thc_uhf
+
+        start_time = time.time()
+        assert walkers.nwalkers == xshifted.shape[-1]
+        VHSa, VHSb = construct_VHS_thc_uhf(hamiltonian, xp.asarray(xshifted), self.isqrt_dt)
+        synchronize()
+        self.timer.tvhs += time.time() - start_time
+
+        start_time = time.time()
+        for iw in range(walkers.nwalkers):
+            walkers.phia[iw] = apply_exponential(walkers.phia[iw], VHSa[iw], self.exp_nmax)
+            if walkers.ndown > 0:
+                walkers.phib[iw] = apply_exponential(walkers.phib[iw], VHSb[iw], self.exp_nmax)
+        synchronize()
+        self.timer.tgemm += time.time() - start_time
 
 
 class PhaselessGenericChunked(PhaselessGeneric):

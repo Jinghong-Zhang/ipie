@@ -379,6 +379,42 @@ class AFQMC(AFQMCBase):
             walkers.build(
                 trial_wavefunction
             )  # any intermediates that require information from trial_wavefunction
+        # ---- LNO opt-in gates (see ipie/lno_thc.py) --------------------------
+        # LNO_FAST_ESTIMATOR=1 + closed-shell trial: propagate/measure only the
+        # alpha sector (walkers.rhf).  Bitwise identical trajectories: in the
+        # default path phib evolves through the exact same operations on the
+        # same data as phia, so beta quantities equal alpha bit-for-bit; all
+        # consumers (GF, overlap, reortho, force bias, estimators) branch on
+        # walkers.rhf.  phib still exists (pop-control buffers) but is stale.
+        import numpy as _np
+        from ipie.hamiltonians.thc import GenericRealTHC as _GenericRealTHC
+        from ipie.hamiltonians.thc import GenericComplexTHC as _GenericComplexTHC
+        from ipie.lno_thc import _env_flag as _lno_env_flag
+
+        if _lno_env_flag("LNO_FAST_ESTIMATOR") and system.nup == system.ndown > 0:
+            _pa = getattr(trial_wavefunction, "psi0a", None)
+            _pb = getattr(trial_wavefunction, "psi0b", None)
+            if (
+                _pa is not None
+                and _pb is not None
+                and _np.array_equal(_np.asarray(_pa), _np.asarray(_pb))
+            ):
+                walkers.rhf = True
+                if comm.rank == 0:
+                    print("# LNO_FAST_ESTIMATOR: closed-shell trial -> walkers.rhf = True")
+        # IPIE_THC_MIXED=1: walkers in complex64 for the reduced-precision
+        # propagation (VHS/force bias/one-body use the float32 THC factors).
+        # The per-block estimator recomputes Ghalf against the fp64 trial
+        # (complex64 x float64 -> complex128), so energies stay fp64.
+        if _lno_env_flag("IPIE_THC_MIXED") and isinstance(
+            hamiltonian, (_GenericRealTHC, _GenericComplexTHC)
+        ):
+            walkers.phia = walkers.phia.astype(_np.complex64)
+            if getattr(walkers, "phib", None) is not None:
+                walkers.phib = walkers.phib.astype(_np.complex64)
+            if comm.rank == 0:
+                print("# IPIE_THC_MIXED: walkers cast to complex64 (fp64 estimator retained)")
+        # ----------------------------------------------------------------------
         # TODO: this is a factory not a class
         propagator = Propagator[type(hamiltonian)](params.timestep)
         propagator.build(hamiltonian, trial_wavefunction, walkers, mpi_handler)

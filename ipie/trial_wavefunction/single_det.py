@@ -13,6 +13,7 @@ from ipie.estimators.greens_function_single_det import (
 from ipie.estimators.utils import gab_spin
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.hamiltonians.generic_chunked import GenericRealCholChunked
+from ipie.hamiltonians.thc import GenericRealTHC, GenericRealTHCUhf, GenericComplexTHC
 from ipie.propagation.force_bias import (
     construct_force_bias_batch_single_det,
     construct_force_bias_batch_single_det_chunked,
@@ -113,6 +114,67 @@ class SingleDet(TrialWavefunctionBase):
     @plum.dispatch
     def half_rotate(
         self: "SingleDet",
+        hamiltonian: GenericRealTHC,
+        comm: Optional[CommType] = MPI.COMM_WORLD,
+    ):
+        # THC: half-rotate the collocation (Xocc = psi_occ^T X) and the one-body
+        # integrals; no Cholesky factor is formed.
+        h1 = numpy.asarray(hamiltonian.H1[0])
+        self._rH1a = self.psi0a.T @ h1                 # (nalpha x nbasis)
+        self._rH1b = self.psi0b.T @ h1                 # (nbeta  x nbasis)
+        self._thc_Xocca = hamiltonian.half_rotate(self.psi0a)   # (nalpha x Nmu)
+        self._thc_Xoccb = hamiltonian.half_rotate(self.psi0b)   # (nbeta  x Nmu)
+        self._rchola = None
+        self._rcholb = None
+        self.half_rotated = True
+
+    @plum.dispatch
+    def half_rotate(
+        self: "SingleDet",
+        hamiltonian: GenericComplexTHC,
+        comm: Optional[CommType] = MPI.COMM_WORLD,
+    ):
+        # COMPLEX THC: with complex X the BRA and KET density moments are distinct
+        # objects, so BOTH half-rotated collocations are stored:
+        #     Xocc  = psi0^H X        (bra)
+        #     Xoccc = psi0^H conj(X)  (ket; == conj(Xocc) only for a REAL trial)
+        # CONJUGATE transpose throughout: ipie builds G = conj(psi0) @ Ghalf, so
+        # every half-rotation of a complex trial carries psi0^H (the real THC
+        # overload's psi0^T is valid only because its trial is real).
+        h1 = numpy.asarray(hamiltonian.H1[0])
+        p0a = self.psi0a.conj()
+        p0b = self.psi0b.conj()
+        self._rH1a = p0a.T @ h1                        # (nalpha x nbasis)
+        self._rH1b = p0b.T @ h1                        # (nbeta  x nbasis)
+        self._thc_Xocca = hamiltonian.half_rotate(self.psi0a)   # (nalpha x Nmu)
+        self._thc_Xoccb = hamiltonian.half_rotate(self.psi0b)   # (nbeta  x Nmu)
+        Xc = hamiltonian.X.conj()
+        self._thc_Xoccac = p0a.T @ Xc
+        self._thc_Xoccbc = p0b.T @ Xc
+        self._rchola = None
+        self._rcholb = None
+        self.half_rotated = True
+
+    @plum.dispatch
+    def half_rotate(
+        self: "SingleDet",
+        hamiltonian: GenericRealTHCUhf,
+        comm: Optional[CommType] = MPI.COMM_WORLD,
+    ):
+        # THC with PER-SPIN bases (shared Nmu): each spin half-rotates its own
+        # one-body block and its own collocation.  More specific than the
+        # GenericRealTHC overload above, so plum routes the UHF subclass here.
+        self._rH1a = self.psi0a.T @ numpy.asarray(hamiltonian.H1[0])   # (nalpha x n_a_orb)
+        self._rH1b = self.psi0b.T @ numpy.asarray(hamiltonian.H1[1])   # (nbeta  x n_b_orb)
+        self._thc_Xocca = hamiltonian.half_rotate_spin(self.psi0a, 0)  # (nalpha x Nmu)
+        self._thc_Xoccb = hamiltonian.half_rotate_spin(self.psi0b, 1)  # (nbeta  x Nmu)
+        self._rchola = None
+        self._rcholb = None
+        self.half_rotated = True
+
+    @plum.dispatch
+    def half_rotate(
+        self: "SingleDet",
         hamiltonian: GenericRealCholChunked,
         comm: Optional[CommType] = MPI.COMM_WORLD,
     ):
@@ -195,6 +257,47 @@ class SingleDet(TrialWavefunctionBase):
             )
         else:
             return construct_force_bias_batch_single_det(hamiltonian, walkers, self)
+
+    @plum.dispatch
+    def calc_force_bias(
+        self,
+        hamiltonian: GenericRealTHC,
+        walkers: UHFWalkers,
+        mpi_handler: MPIHandler,
+    ) -> xp.ndarray:
+        return construct_force_bias_batch_single_det(hamiltonian, walkers, self)
+
+    @plum.dispatch
+    def calc_force_bias(
+        self,
+        hamiltonian: GenericComplexTHC,
+        walkers: UHFWalkers,
+        mpi_handler: MPIHandler,
+    ) -> xp.ndarray:
+        # Same entry point as the real THC path; _force_bias_thc routes the
+        # complex Hamiltonian to construct_force_bias_thc_cx internally.
+        return construct_force_bias_batch_single_det(hamiltonian, walkers, self)
+
+    @plum.dispatch
+    def calc_force_bias(
+        self,
+        hamiltonian: GenericRealTHCUhf,
+        walkers: UHFWalkers,
+        mpi_handler: MPIHandler,
+    ) -> xp.ndarray:
+        # Per-spin bases: alpha term contracts Xocca/Ghalfa through X_a, beta
+        # term Xoccb/Ghalfb through X_b, summed over the SHARED mu index (no
+        # factor 2; no walkers.rhf shortcut -- never valid here).
+        from ipie.lno_thc_uhf import construct_force_bias_thc_uhf
+
+        vb = construct_force_bias_thc_uhf(
+            hamiltonian,
+            self._thc_Xocca,
+            self._thc_Xoccb,
+            xp.asarray(walkers.Ghalfa),
+            xp.asarray(walkers.Ghalfb),
+        )
+        return xp.ascontiguousarray(vb.T)          # (nwalkers, nfields)
 
     @plum.dispatch
     def calc_force_bias(
