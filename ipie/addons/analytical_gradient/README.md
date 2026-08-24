@@ -47,8 +47,9 @@ modes:
 
 The a.e.-derivative semantics at non-smooth operations (cosine projection,
 force-bias/weight caps, reconfiguration, detached energy shifts) are identical
-to what reverse-mode AD computes; the accompanying derivation
-(`derivation.tex`, kept with the calculation notes) documents each rule.
+to what reverse-mode AD computes; `PROJECT_NOTES.md` in this directory
+documents each tangent rule, the verification record, and the full project
+history.
 
 ## Tests
 
