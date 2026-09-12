@@ -97,6 +97,17 @@ with h5py.File(path, "r") as f:
     M = numpy.array(f["M"]).astype(numpy.float64)
     meta = numpy.array(f["meta"]).ravel()
     h_pq = numpy.array(f["h_pq"]).astype(numpy.float64) if "h_pq" in f else None
+    # One-body convention guard (2026-09-11 xi bug, DOS_VS_ETA_MODEL.md):
+    # h_pq must carry the +xi occupied restore (bare convention). Exporters
+    # stamp it as attr 'xi_occ_restored' (patch_xi_all.py) or dataset
+    # 'xi_occ_restored' (fixed postscf_lnothc.C). An unstamped h_pq gives a
+    # xi-inflated gap -> systematic under-correlation; refuse it.
+    xi_stamped = ("xi_occ_restored" in f.attrs) or ("xi_occ_restored" in f)
+if h_pq is not None and not xi_stamped and not os.environ.get("LNO_ALLOW_UNSTAMPED"):
+    sys.exit("REFUSED: h_pq lacks the xi_occ_restored stamp (bare-convention "
+             "one-body). Patch the h5 (patch_xi_all.py) or re-export with the "
+             "fixed exporter. Set LNO_ALLOW_UNSTAMPED=1 only for deliberate "
+             "legacy-convention runs.")
 nbasis, Nmu, nocc, nvir = int(meta[0]), int(meta[1]), int(meta[2]), int(meta[3])
 if X.shape != (nbasis, Nmu):
     X = X.T.copy()
