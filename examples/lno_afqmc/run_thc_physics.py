@@ -102,6 +102,11 @@ with h5py.File(path, "r") as f:
     # stamp it as attr 'xi_occ_restored' (patch_xi_all.py) or dataset
     # 'xi_occ_restored' (fixed postscf_lnothc.C). An unstamped h_pq gives a
     # xi-inflated gap -> systematic under-correlation; refuse it.
+    # NOTE: for files written before qcpbc 4af547a78, a missing stamp means
+    # "unknown", NOT "unrestored" -- e.g. the metals cthc exports (hcore_pq,
+    # different runner) are correct but unstamped. If this guard is ever
+    # extended to the metals runner or the runners are unified, stamp or
+    # patch the existing correct h5s in the same change.
     xi_stamped = ("xi_occ_restored" in f.attrs) or ("xi_occ_restored" in f)
 if h_pq is not None and not xi_stamped and not os.environ.get("LNO_ALLOW_UNSTAMPED"):
     sys.exit("REFUSED: h_pq lacks the xi_occ_restored stamp (bare-convention "
