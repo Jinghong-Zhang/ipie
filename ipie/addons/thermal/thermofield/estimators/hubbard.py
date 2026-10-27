@@ -359,3 +359,8 @@ class HubbardTraceEstimator(EstimatorBase):
     def compute_estimator(self, system=None, walkers=None, hamiltonian=None, trial=None):
         # Set by `set_block`.
         return self.data
+
+    @property
+    def data(self):
+        # The block sums live on the host, also on the GPU.
+        return numpy.concatenate(list(self._data.values()))

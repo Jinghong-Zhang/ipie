@@ -22,7 +22,7 @@ from ipie.addons.thermal.thermofield.utils.linalg import (
     principal_log_phase,
     stabilized_inverse_one_plus_batched,
 )
-from ipie.config import config
+from ipie.utils.backend import arraylib as xp
 
 
 class ThermofieldCPTrial(ThermofieldThermalTrial):
@@ -47,8 +47,6 @@ class ThermofieldCPTrial(ThermofieldThermalTrial):
     """
 
     def __init__(self, hamiltonian, beta, mu=0.0, k_trial=None, guide_time=None):
-        if config.get_option("use_gpu"):
-            raise ValueError("Hubbard constrained-path trials require the CPU backend.")
         if numpy.any(numpy.iscomplex(hamiltonian.H1)):
             raise ValueError("The spin-channel constrained-path Hamiltonian must be real.")
         if k_trial is not None and numpy.any(numpy.iscomplex(k_trial)):
@@ -116,13 +114,15 @@ class ThermofieldCPTrial(ThermofieldThermalTrial):
             Green's functions in the particle convention, shape
             (nwalkers, 2, nbasis, nbasis).
         """
+        Qmat, log_d, Tmat = xp.asarray(Qmat), xp.asarray(log_d), xp.asarray(Tmat)
         nwalkers, nbasis = Qmat.shape[0], self.nbasis
-        log_ovlp = numpy.zeros(nwalkers, dtype=numpy.complex128)
-        G = numpy.empty((nwalkers, 2, nbasis, nbasis), dtype=numpy.complex128)
-        I = numpy.eye(nbasis)
+        log_ovlp = xp.zeros(nwalkers, dtype=xp.complex128)
+        G = xp.empty((nwalkers, 2, nbasis, nbasis), dtype=xp.complex128)
+        I = xp.eye(nbasis)
+        C_T, _ = self._guide_arrays(xp)
         for s in range(2):
-            a = scale * self.eps_T[s]
-            C = self.C_T[s]
+            a = xp.asarray(scale * self.eps_T[s])
+            C = C_T[s]
             X = Tmat[:, s] @ C
             log_det, inv = stabilized_inverse_one_plus_batched(
                 Qmat[:, s],

@@ -18,12 +18,15 @@ from types import SimpleNamespace
 
 import numpy
 
+from ipie.addons.thermal.thermofield.propagation.discrete_fields_gpu import sample_discrete_fields
 from ipie.addons.thermal.thermofield.propagation.hubbard import (
     ThermofieldHubbardCP,
     update_trace_weight,
 )
 from ipie.addons.thermal.thermofield.utils.linalg import principal_log_phase
+from ipie.config import config
 from ipie.utils.backend import arraylib as xp
+from ipie.utils.backend import to_host
 
 
 class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
@@ -59,6 +62,9 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
     kept and each completed slice acquires :math:`|Q'/Q|` with
     :math:`Q = \det(I + \Delta) / S`, so the endpoint keeps only the phase of Q.
     No Gaussian force bias or weight clipping is applied.
+
+    On the GPU one kernel per slice samples every field of every walker
+    (:func:`sample_discrete_fields`); importance_guide="same" only.
 
     Parameters
     ----------
@@ -121,6 +127,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         self.field_proposal = "site_conditional_guide"
         self.force_bias_mode = "none"
         self.forbidden_field_count = 0
+        self._device = None
         # importance_guide="completion": keep the fixed guide as the path
         # constraint (kinetic-step sign and allowed site fields) but draw the
         # allowed fields and branch with the magnitude of the COMPLETION guide
@@ -190,7 +197,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         if ids is not None:
             # Select the two diagonal entries, not a copy of every matrix.
             density = density[ids]
-        return 0.5 * numpy.prod(1.0 + self.delta[None, :, :] * density[:, None, :], axis=2)
+        return 0.5 * xp.prod(1.0 + self.delta[None, :, :] * density[:, None, :], axis=2)
 
     @staticmethod
     def _site_green_update(green, site, delta):
@@ -218,6 +225,9 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
 
     def _advance(self, walkers, trial, step, ids, uniforms):
         if len(ids) == 0:
+            return
+        if config.get_option("use_gpu"):
+            self._advance_device(walkers, trial, step, ids, uniforms)
             return
         state = self._slice_start(walkers, trial, step, ids)
         self._slice_fields(walkers, step, ids, uniforms, state)
@@ -458,6 +468,182 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
                 ld_old[subset] + 2.0 * self.logdet_BK2 + numpy.log(factors[subset]).sum(axis=-1)
             )
 
+    def _field_legs(self):
+        """Fields as two legs (spin, orbital) for the GPU kernel.
+
+        Returns
+        -------
+        leg_spin, leg_orb : :class:`numpy.ndarray`
+            Spin and orbital of each leg, shape (nfields, 2).
+        delta, auxf : :class:`numpy.ndarray`
+            Factors minus one and factors, indexed [field, value, leg].
+        log_scalar : :class:`numpy.ndarray`
+            Log scalar factor of each field value, shape (nfields, 2).
+        """
+        # A field is one site with one leg per spin.
+        sites = numpy.arange(self.nfields)
+        leg_orb = numpy.stack([sites, sites], axis=1)
+        leg_spin = numpy.zeros_like(leg_orb)
+        leg_spin[:, 1] = 1
+        shape = (self.nfields, 2, 2)
+        delta = numpy.broadcast_to(self.delta, shape)
+        auxf = numpy.broadcast_to(self.auxf, shape)
+        log_scalar = numpy.broadcast_to(self.field_log_scalar, (self.nfields, 2))
+        return leg_spin, leg_orb, delta, auxf, log_scalar
+
+    def _device_arrays(self):
+        """Kinetic halves and field legs on the backend, created once."""
+        if self._device is None:
+            leg_spin, leg_orb, delta, auxf, log_scalar = self._field_legs()
+            # The kernel reads the legs in C order.
+            self._device = SimpleNamespace(
+                BK2=xp.asarray(self.BK2),
+                BK2inv=xp.asarray(self.BK2inv),
+                logdet_BK2=xp.asarray(self.logdet_BK2),
+                legs=tuple(
+                    xp.asarray(numpy.ascontiguousarray(a, dtype=dtype))
+                    for a, dtype in (
+                        (leg_spin, numpy.int32),
+                        (leg_orb, numpy.int32),
+                        (delta, numpy.complex128),
+                        (auxf, numpy.complex128),
+                        (log_scalar, numpy.complex128),
+                    )
+                ),
+            )
+        return self._device
+
+    def _advance_device(self, walkers, trial, step, ids, uniforms):
+        """One slice for the live walkers `ids` on the backend.
+
+        The same arithmetic per walker as `_slice_start`, `_slice_fields` and
+        `_slice_finish`, on all walkers of the slice at once with masks instead
+        of gathering the survivors; the fields are sampled by one kernel
+        (:func:`sample_discrete_fields`), and the host synchronizes once per
+        slice. Supports the guide as importance function, with or without
+        trace branching.
+        """
+        if self.importance_guide != "same":
+            raise NotImplementedError(
+                "On the GPU the discrete fields support importance_guide='same' only."
+            )
+        dev = self._device_arrays()
+        BK2, BK2inv = dev.BK2, dev.BK2inv
+        n, nb = len(ids), walkers.nbasis
+        ids_x = xp.asarray(ids)
+        I = xp.eye(nb)
+        # Counters: invalid weights, steps, kills, forbidden fields.
+        counts = xp.zeros(4, dtype=xp.int64)
+
+        # Kinetic step and guide contraction at the interaction cut.
+        q_old = walkers.Qmat[ids_x]
+        q_kin = BK2 @ (BK2 @ q_old)
+        cached = self.cache_qinv and walkers.Qinv is not None
+        qi_old = walkers.Qinv[ids_x] if cached else None
+        ld_old = walkers.log_det_Q[ids_x] if cached else None
+        log_d, Tmat = walkers.log_d[ids_x], walkers.Tmat[ids_x]
+        log_s, green = trial.calc_log_overlap_and_greens_function_scaled_batched(
+            q_kin,
+            log_d,
+            Tmat,
+            self.guide_scale(step),
+            Qinv=(qi_old @ BK2inv) @ BK2inv if cached else None,
+            log_det_Q=ld_old + 2.0 * dev.logdet_BK2 if cached else None,
+        )
+        good = xp.isfinite(log_s) & xp.isfinite(green).all(axis=(1, 2, 3))
+        log_ovlp_old = xp.asarray(walkers.log_ovlp[ids])
+        change = principal_log_phase(log_s - log_ovlp_old)
+        log_weight = change.real + self.dt * self.energy_shift
+        live = good & (xp.cos(change.imag) > 0.0)
+        counts[0] += (~good).sum()
+        counts[1] += good.sum()
+        counts[2] += (good & ~live).sum()
+        green = xp.ascontiguousarray(BK2inv @ green @ BK2)
+        factors = xp.ones((n, 2, nb), dtype=xp.complex128)
+        record = xp.zeros((n, self.nfields)) if self.record_fields else None
+
+        # Sequential heat-bath sampling of every field.
+        log_weight = xp.ascontiguousarray(log_weight, dtype=xp.float64)
+        log_s = xp.ascontiguousarray(log_s, dtype=xp.complex128)
+        counts += sample_discrete_fields(
+            green,
+            xp.asarray(uniforms),
+            dev.legs,
+            live,
+            log_weight,
+            log_s,
+            factors,
+            record,
+            self.real_tolerance,
+        )
+
+        # Final kinetic half and the walker updates.
+        final_g = BK2 @ green @ BK2inv
+        final_q = BK2 @ (factors[:, :, :, None] * (BK2 @ q_old))
+        good_final = (
+            live
+            & xp.isfinite(final_g).all(axis=(1, 2, 3))
+            & xp.isfinite(final_q).all(axis=(1, 2, 3))
+            & xp.isfinite(log_s)
+        )
+        counts[0] += (live & ~good_final).sum()
+        log_trace = None
+        if self.trace_branching:
+            log_trace = trial.calc_log_trace_batched(final_q, log_d, Tmat)
+            log_tr_old = xp.asarray(walkers.log_tr[ids])
+            finite_trace = xp.isfinite(log_trace) & xp.isfinite(log_tr_old)
+            trace_bad = int((good_final & ~finite_trace).sum())
+            good_final &= finite_trace
+            log_weight = log_weight + self.trace_exponent * (
+                log_trace.real - log_s.real - log_tr_old.real + log_ovlp_old.real
+            )
+
+        # Weights and counters on the host.
+        counts = to_host(counts)
+        self.invalid_weight_count += int(counts[0])
+        self.step_count += int(counts[1])
+        self.kill_count += int(counts[2])
+        self.forbidden_field_count += int(counts[3])
+        if self.trace_branching:
+            self.trace_invalid_count += trace_bad
+        kept = numpy.flatnonzero(to_host(live))
+        good_final_h = to_host(good_final)[kept]
+        log_weight_h = to_host(log_weight)[kept]
+        old_weights = walkers.weight[ids].copy()
+        walkers.weight[ids] = 0.0
+        if len(kept) == 0:
+            return
+        finite_weight = good_final_h & numpy.isfinite(log_weight_h)
+        if finite_weight.any():
+            self.max_log_weight = max(self.max_log_weight, float(log_weight_h[finite_weight].max()))
+            self.min_log_weight = min(self.min_log_weight, float(log_weight_h[finite_weight].min()))
+        updated, failures = update_trace_weight(old_weights[kept], log_weight_h)
+        self.invalid_weight_count += failures
+        if self.trace_branching:
+            self.trace_weight_invalid_count += failures
+        updated[~good_final_h] = 0.0
+        surviving = updated != 0
+        walkers.weight[ids[kept]] = updated
+        sub = kept[surviving]
+        sub_x = xp.asarray(sub)
+        target = ids[sub]
+        target_x = xp.asarray(target)
+        walkers.Qmat[target_x] = final_q[sub_x]
+        walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
+        walkers.Ga[target_x] = I - final_g[sub_x, 0]
+        walkers.Gb[target_x] = I - final_g[sub_x, 1]
+        if self.trace_branching:
+            walkers.log_tr[target] = to_host(log_trace[sub_x])
+        if cached:
+            walkers.Qinv[target_x] = (
+                (qi_old[sub_x] @ BK2inv) / factors[sub_x, :, None, :]
+            ) @ BK2inv
+            walkers.log_det_Q[target_x] = (
+                ld_old[sub_x] + 2.0 * dev.logdet_BK2 + xp.log(factors[sub_x]).sum(axis=-1)
+            )
+        if record is not None:
+            walkers.field_hist[ids, step] = to_host(record)
+
     def _uniforms(self, walkers):
         if not self.constraint or self.force_bias_mode != "none":
             raise ValueError(
@@ -573,6 +759,5 @@ class ThermofieldHubbardCharge(ThermofieldHubbardDiscrete):
 
     def _site_probabilities(self, green, site, ids=None):
         return (
-            super()._site_probabilities(green, site, ids)
-            * numpy.exp(self.field_log_scalar)[None, :]
+            super()._site_probabilities(green, site, ids) * xp.exp(self.field_log_scalar)[None, :]
         )

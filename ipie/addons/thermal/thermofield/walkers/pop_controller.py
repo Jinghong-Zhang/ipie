@@ -32,18 +32,20 @@ class ThermofieldPopController(PopController):
     device-resident walkers never move to the host: pair branching runs on the
     host without MPI, other methods run the core controller on a stand-in
     carrying the weights, phases and walker ids. With several processes walkers
-    move between ranks through the full buffers, staged through the host on
-    the GPU.
+    move between ranks through the full buffers, on the CPU only.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if config.get_option("use_gpu") and self.size > 1:
+            raise NotImplementedError(
+                "Population control across processes is not available on the GPU; "
+                "run one process (one GPU) per population."
+            )
 
     def pop_control(self, walkers, comm):
         if comm.size > 1:
-            if config.get_option("use_gpu"):
-                walkers.cast_to_host()
-                super().pop_control(walkers, comm)
-                walkers.cast_to_cupy()
-            else:
-                super().pop_control(walkers, comm)
+            super().pop_control(walkers, comm)
             return
         if self.method == "pair_branch":
             pair_branch_population(self, walkers)

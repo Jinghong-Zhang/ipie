@@ -18,7 +18,14 @@
 # at config level import appropriate kernels.
 from ipie.config import config
 
+_numba_cuda = False
 if config.get_option("use_gpu"):
+    import cupy  # pylint: disable=import-error
+
+    # Numba has no CUDA target under ROCm.
+    _numba_cuda = not cupy.cuda.runtime.is_hip
+
+if _numba_cuda:
     from .gpu.exchange import exchange_reduction
 else:
     exchange_reduction = None

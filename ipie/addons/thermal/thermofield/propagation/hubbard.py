@@ -21,6 +21,7 @@ import scipy.linalg
 from ipie.addons.thermal.thermofield.utils.linalg import inv_stack
 from ipie.config import config
 from ipie.utils.backend import arraylib as xp
+from ipie.utils.backend import to_host
 
 
 def update_trace_weight(old_weight, log_increment, sign=1.0):
@@ -159,8 +160,6 @@ class ThermofieldHubbardCP:
         force_bias_mode="guide",
         trace_exponent=1.0,
     ):
-        if config.get_option("use_gpu"):
-            raise ValueError("Hubbard constrained-path propagation requires the CPU backend.")
         h_kin = numpy.asarray(h_kin)
         if (
             h_kin.ndim != 3
@@ -257,8 +256,8 @@ class ThermofieldHubbardCP:
         Q = walkers.Qmat
         walkers.Qinv = inv_stack(Q)
         with numpy.errstate(divide="ignore", invalid="ignore"):
-            sgn, log = numpy.linalg.slogdet(Q)
-            walkers.log_det_Q = log + numpy.log(sgn)
+            sgn, log = xp.linalg.slogdet(Q)
+            walkers.log_det_Q = log + xp.log(sgn)
 
     def refresh_qinv_after_stabilize(self, walkers):
         """Update the Q caches after `walkers.stabilize()`.
@@ -267,10 +266,10 @@ class ThermofieldHubbardCP:
         transpose; only the phase of the log determinant needs a slogdet.
         """
         Q = walkers.Qmat
-        walkers.Qinv = numpy.conj(numpy.swapaxes(Q, -1, -2))
+        walkers.Qinv = xp.conj(xp.swapaxes(Q, -1, -2))
         with numpy.errstate(divide="ignore", invalid="ignore"):
-            sgn, log = numpy.linalg.slogdet(Q)
-            walkers.log_det_Q = log + numpy.log(sgn)
+            sgn, log = xp.linalg.slogdet(Q)
+            walkers.log_det_Q = log + xp.log(sgn)
 
     def guide_scale(self, l):
         """Guide time after slice `l`."""
@@ -285,8 +284,8 @@ class ThermofieldHubbardCP:
         Walkers whose cache is not finite get zero weight.
         """
         if self.trace_branching:
-            walkers.log_tr[:] = trial.calc_log_trace_batched(
-                walkers.Qmat, walkers.log_d, walkers.Tmat
+            walkers.log_tr[:] = to_host(
+                trial.calc_log_trace_batched(walkers.Qmat, walkers.log_d, walkers.Tmat)
             )
             good_trace = numpy.isfinite(walkers.log_tr)
             self.trace_invalid_count += int((~good_trace).sum())
@@ -296,10 +295,12 @@ class ThermofieldHubbardCP:
             lo, G = trial.calc_log_overlap_and_greens_function_scaled_batched(
                 walkers.Qmat, walkers.log_d, walkers.Tmat, scale0
             )
-            ok = numpy.isfinite(lo) & numpy.isfinite(G).all(axis=(1, 2, 3))
-            walkers.weight[~ok] = 0.0
-            I = numpy.eye(walkers.nbasis)
-            walkers.log_ovlp[ok] = lo[ok]
+            ok = xp.isfinite(lo) & xp.isfinite(G).all(axis=(1, 2, 3))
+            # Weights and overlaps live on the host, Green's functions on the backend.
+            ok_h = to_host(ok)
+            walkers.weight[~ok_h] = 0.0
+            I = xp.eye(walkers.nbasis)
+            walkers.log_ovlp[ok_h] = to_host(lo)[ok_h]
             walkers.Ga[ok] = I - G[ok, 0]
             walkers.Gb[ok] = I - G[ok, 1]
             return
@@ -361,6 +362,8 @@ class ThermofieldHubbardCP:
 
     def _propagate_walkers_scalar(self, walkers, trial, l):
         """Per-walker reference implementation of :meth:`propagate_walkers`."""
+        if config.get_option("use_gpu"):
+            raise NotImplementedError("Continuous Hubbard fields run on the CPU only.")
         scale_new = self.guide_scale(l)
         for iw in range(walkers.nwalkers):
             if walkers.weight[iw] == 0.0:
@@ -447,6 +450,8 @@ class ThermofieldHubbardCP:
         Fields are drawn for the live walkers in index order, the same random
         numbers as the per-walker loop.
         """
+        if config.get_option("use_gpu"):
+            raise NotImplementedError("Continuous Hubbard fields run on the CPU only.")
         scale_new = self.guide_scale(l)
         idx = numpy.flatnonzero(walkers.weight != 0.0)
         if idx.size == 0:

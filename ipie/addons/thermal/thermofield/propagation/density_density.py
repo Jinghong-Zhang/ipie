@@ -20,6 +20,7 @@ import numpy
 
 from ipie.addons.thermal.thermofield.hamiltonians.density_density import pair_table
 from ipie.addons.thermal.thermofield.propagation.hubbard_discrete import ThermofieldHubbardDiscrete
+from ipie.utils.backend import arraylib as xp
 
 
 class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
@@ -165,7 +166,7 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
             if ids is not None:
                 exchange = exchange[ids]
             ratio = ratio - (da * db)[None, :] * exchange[:, None]
-        return 0.5 * numpy.exp(self.field_log_scalar[field])[None, :] * ratio
+        return 0.5 * xp.exp(self.field_log_scalar[field])[None, :] * ratio
 
     def _field_green_update(self, green, field, chosen, orb=None):
         for leg in range(2):
@@ -185,6 +186,9 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
 
     def _field_log_scalar(self, field, chosen):
         return self.field_log_scalar[field, chosen]
+
+    def _field_legs(self):
+        return self.pair_spin, self.pair_orb, self.delta, self.auxf, self.field_log_scalar
 
     def _slice_start(self, walkers, trial, step, ids):
         state = super()._slice_start(walkers, trial, step, ids)

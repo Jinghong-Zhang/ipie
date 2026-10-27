@@ -19,6 +19,7 @@
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy
 
@@ -34,6 +35,8 @@ from ipie.addons.thermal.thermofield.utils.linalg import principal_log_phase
 from ipie.addons.thermal.thermofield.walkers.pop_controller import ThermofieldPopController
 from ipie.config import config, MPI
 from ipie.qmc.afqmc import AFQMCBase
+from ipie.utils.backend import arraylib as xp
+from ipie.utils.backend import to_host
 from ipie.walkers.base_walkers import WalkerAccumulator
 
 
@@ -175,7 +178,10 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
     Q = det(I + Delta) / S for the guide, optionally averaged over the cyclic
     cuts of the recorded paths, and the mixed estimator of the guide. Block
     sums are kept separately (ratio of means) with a log scale; blocks with a
-    numerical weight guard event are refused. CPU only.
+    numerical weight guard event are refused. On the GPU (IPIE_USE_GPU=1) the
+    walker matrices stay on the device and the measurements run on the host;
+    this needs discrete fields with importance_guide="same" and one process
+    per population.
 
     Parameters
     ----------
@@ -264,8 +270,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         snapshots=(),
         verbose=0,
     ):
-        if config.get_option("use_gpu"):
-            raise ValueError("The Hubbard CP driver currently requires the CPU backend.")
         for name, value in (
             ("nblocks", nblocks),
             ("stabilize_freq", stabilize_freq),
@@ -308,6 +312,10 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         super().__init__(
             None, hamiltonian, trial, walkers, propagator, mpi_handler, params, verbose
         )
+        # On the GPU set_rng_seed seeds the device stream only; population
+        # control draws from the host stream.
+        if config.get_option("use_gpu"):
+            numpy.random.seed(self._parallel_rng_seed)
         self.nslices = nslices
         self.wrap_stride = wrap_stride
         self.wrap_memory = float(wrap_memory)
@@ -395,6 +403,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             log_s, greens = self.trial.calc_log_overlap_and_greens_function_scaled_batched(
                 walkers.Qmat, walkers.log_d, walkers.Tmat, eta
             )
+            log_s, greens = to_host(log_s), to_host(greens)
         except (ValueError, ArithmeticError, numpy.linalg.LinAlgError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         _synchronize_error(comm, error, "Snapshot contraction failed")
@@ -438,6 +447,8 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             trace_log, greens = self.trial.calc_log_overlap_and_greens_function_scaled_batched(
                 walkers.Qmat, walkers.log_d, walkers.Tmat, 0.0
             )
+            # The measurements run on the host.
+            trace_log, greens = to_host(trace_log), to_host(greens)
         except (ValueError, ArithmeticError, numpy.linalg.LinAlgError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         _synchronize_error(comm, error, "Trace contraction failed")
@@ -489,6 +500,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
                     walkers.Qmat, walkers.log_d, walkers.Tmat, mixed_scale
                 )
             )
+            mixed_log, greens_mixed = to_host(mixed_log), to_host(greens_mixed)
         except (ValueError, ArithmeticError, numpy.linalg.LinAlgError) as exc:
             error = f"{type(exc).__name__}: {exc}"
         _synchronize_error(comm, error, "Mixed (guide-bra) contraction failed")
@@ -761,7 +773,14 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
                     result[f"snap{k}_{key}"] = value
             self.results.append(result)
             self.estimators["hubbard"].set_block(self.results[-1], comm)
-            self.accumulators.update(self.walkers)
+            # The accumulator sums with `xp`; the walker weights live on the host.
+            self.accumulators.update(
+                SimpleNamespace(
+                    weight=xp.asarray(self.walkers.weight),
+                    unscaled_weight=xp.asarray(self.walkers.unscaled_weight),
+                    hybrid_energy=xp.asarray(self.walkers.hybrid_energy),
+                )
+            )
             self.estimators.compute_estimators(
                 hamiltonian=self.hamiltonian, trial=self.trial, walker_batch=self.walkers
             )
