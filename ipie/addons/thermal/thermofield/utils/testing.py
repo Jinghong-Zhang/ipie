@@ -261,6 +261,39 @@ def hubbard_atom_exact(eps, U, mu, beta):
     return {"Z": Z, "nav": nav, "double_occ": double_occ, "energy": energy}
 
 
+def hubbard_atom_member_exact(eps, U, mu, beta, eta):
+    r"""Hubbard atom energy and particle number with a one-body guide over a time eta.
+
+    Evaluates :math:`\mathrm{Tr}[e^{-\eta K_T} O e^{-(\beta - \eta) K}] / \mathrm{Tr}[\ldots]`
+    with :math:`K = H - \mu N` and the one-body guide :math:`K_T = (\epsilon - \mu) N`,
+    both diagonal in the occupation basis (empty, up, down, double).
+
+    Parameters
+    ----------
+    eps : float
+        Site energy.
+    U : float
+        On-site interaction.
+    mu : float
+        Chemical potential.
+    beta : float
+        Inverse temperature.
+    eta : float
+        Imaginary time spent under the guide.
+
+    Returns
+    -------
+    energy : float
+        Energy estimate.
+    nav : float
+        Particle number estimate.
+    """
+    n = numpy.array([0.0, 1.0, 1.0, 2.0])
+    E = numpy.array([0.0, eps, eps, 2.0 * eps + U])
+    w = numpy.exp(-eta * (eps - mu) * n - (beta - eta) * (E - mu * n))
+    return (w * E).sum() / w.sum(), (w * n).sum() / w.sum()
+
+
 def hubbard_dimer_canonical_exact(t, U, beta):
     """Canonical Hubbard dimer energy with one alpha and one beta electron.
 
