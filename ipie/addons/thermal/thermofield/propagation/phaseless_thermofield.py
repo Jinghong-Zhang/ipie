@@ -21,8 +21,12 @@ import time
 
 import numpy
 import plum
+import scipy.linalg
 
+from ipie.addons.thermal.estimators.thermal import one_rdm_from_G
+from ipie.addons.thermal.propagation.phaseless_base import construct_mean_field_shift
 from ipie.addons.thermal.propagation.phaseless_generic import PhaselessGeneric
+from ipie.addons.thermal.thermofield.hamiltonians.ueg import UEGSparseChol
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.propagation.operations import apply_exponential
 from ipie.utils.backend import arraylib as xp
@@ -131,6 +135,10 @@ class ThermofieldPhaseless(PhaselessGeneric):
         # Field-major Cholesky matrix [A | B], fields split as in construct_VHS.
         self._fb_L = numpy.concatenate([hamiltonian.A, hamiltonian.B], axis=1)
 
+    @plum.dispatch
+    def _setup_real_chol(self, hamiltonian: UEGSparseChol):
+        pass
+
     def _setup_real_chol_blocks(self, mats):
         """Real-GEMM layout of the Cholesky blocks.
 
@@ -156,6 +164,59 @@ class ThermofieldPhaseless(PhaselessGeneric):
         self._rc_blocks = blocks
         self._rc_L = numpy.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
         self._rc_Lt = numpy.ascontiguousarray(self._rc_L.T)
+
+    @plum.dispatch
+    def construct_one_body_propagator(self, hamiltonian: UEGSparseChol):
+        r"""Mean-field shifted one-body propagator for the plane-wave Hamiltonian.
+
+        .. math::
+
+            e^{-\Delta\tau (H_1 - v_0 - \mu)/2}, \qquad
+            v_0 = i \sum_n L_n \bar{v}_n,
+
+        with the sparse Cholesky blocks.
+
+        Parameters
+        ----------
+        hamiltonian : :class:`UEGSparseChol`
+            Plane-wave Hamiltonian.
+
+        Returns
+        -------
+        BH1 : :class:`numpy.ndarray`
+            One-body propagator, shape (2, nbasis, nbasis).
+        """
+        nb = hamiltonian.nbasis
+        nchol = hamiltonian.nchol
+        shift = 1j * (
+            hamiltonian.A.dot(self.mf_shift[:nchol]) + hamiltonian.B.dot(self.mf_shift[nchol:])
+        ).reshape(nb, nb)
+        muN = self.mu * numpy.identity(nb, dtype=hamiltonian.H1.dtype)
+        H1 = hamiltonian.h1e_mod - numpy.array([shift + muN, shift + muN])
+        return numpy.array(
+            [scipy.linalg.expm(-0.5 * self.dt * H1[0]), scipy.linalg.expm(-0.5 * self.dt * H1[1])]
+        )
+
+    @plum.dispatch
+    def construct_VHS(self, hamiltonian: UEGSparseChol, xshifted: xp.ndarray):
+        r"""Two-body propagator exponent :math:`\sqrt{\Delta\tau}\, i \sum_n x_n L_n` (sparse).
+
+        Parameters
+        ----------
+        hamiltonian : :class:`UEGSparseChol`
+            Plane-wave Hamiltonian.
+        xshifted : :class:`numpy.ndarray`
+            Shifted fields, shape (nfields, nwalkers).
+
+        Returns
+        -------
+        VHS : :class:`numpy.ndarray`
+            Shape (nwalkers, nbasis, nbasis).
+        """
+        nwalkers = xshifted.shape[1]
+        nbasis = hamiltonian.nbasis
+        VHS = self.isqrt_dt * hamiltonian.construct_VHS_flat(xshifted).T
+        return xp.ascontiguousarray(VHS).reshape(nwalkers, nbasis, nbasis)
 
     @plum.dispatch
     def construct_VHS(self, hamiltonian: GenericRealChol, xshifted: xp.ndarray):
@@ -283,6 +344,37 @@ class ThermofieldPhaseless(PhaselessGeneric):
             self._fb_P = xp.empty((2, nwalkers, nbasis, nbasis), dtype=xp.complex128)
             self._fb_I = xp.identity(nbasis)
         return self._fb_P
+
+    @plum.dispatch
+    def construct_force_bias_batched(self, hamiltonian: UEGSparseChol, walkers):
+        r"""Force bias :math:`\bar{v}_n = \mathrm{Tr}(L_n P_0) + \mathrm{Tr}(L_n P_1)` of all walkers.
+
+        :math:`P_s = I - G_s^T` are the mixed one-body density matrices. Sparse
+        plane-wave products.
+
+        Parameters
+        ----------
+        hamiltonian : :class:`UEGSparseChol`
+            Plane-wave Hamiltonian.
+        walkers : :class:`ThermofieldWalkers`
+            Walkers with cached Green's functions.
+
+        Returns
+        -------
+        vbias : :class:`numpy.ndarray`
+            Shape (nwalkers, nfields).
+        """
+        nwalkers = walkers.nwalkers
+        nbasis = walkers.Ga.shape[-1]
+        P = self._force_bias_buffers(nwalkers, nbasis)
+        xp.subtract(self._fb_I, walkers.Ga.transpose(0, 2, 1), out=P[0])
+        if self.reuse_spin_blocks and bool(xp.array_equal(walkers.Ga, walkers.Gb)):
+            return 2.0 * hamiltonian.construct_force_bias_rows(
+                P[0].reshape(nwalkers, nbasis * nbasis)
+            )
+        xp.subtract(self._fb_I, walkers.Gb.transpose(0, 2, 1), out=P[1])
+        R = hamiltonian.construct_force_bias_rows(P.reshape(2 * nwalkers, nbasis * nbasis))
+        return R[:nwalkers] + R[nwalkers:]
 
     @plum.dispatch
     def construct_force_bias_batched(self, hamiltonian: GenericRealChol, walkers):
@@ -616,3 +708,21 @@ class ThermofieldPhaseless(PhaselessGeneric):
                     walkers.phase[iw] *= (
                         self.mf_const_fac / abs(self.mf_const_fac) * cmath.exp(1j * log_R.imag)
                     )
+
+
+@construct_mean_field_shift.dispatch
+def construct_mean_field_shift(hamiltonian: UEGSparseChol, trial):
+    r"""Compute mean field shift.
+
+    .. math::
+
+        \bar{v}_n = \sum_{ik\sigma} v_{(ik),n} P_{ik\sigma}
+
+    """
+    P = one_rdm_from_G(trial.G)
+    P = (P[0] + P[1]).ravel()
+    nchol = hamiltonian.nchol
+    mf_shift = numpy.zeros(hamiltonian.nfields, dtype=numpy.complex128)
+    mf_shift[:nchol] = 1j * hamiltonian.AT.dot(P)
+    mf_shift[nchol:] = 1j * hamiltonian.BT.dot(P)
+    return mf_shift  # Shape (nfields,).
