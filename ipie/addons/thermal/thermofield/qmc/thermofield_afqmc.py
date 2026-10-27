@@ -24,6 +24,7 @@ from typing import Dict, Optional
 import numpy
 
 from ipie.addons.thermal.thermofield.estimators.handler import ThermofieldEstimatorHandler
+from ipie.addons.thermal.thermofield.hamiltonians.ueg import UEGSparseChol
 from ipie.addons.thermal.thermofield.propagation.propagator import Propagator
 from ipie.addons.thermal.thermofield.qmc.options import ThermofieldQMCParams
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
@@ -106,6 +107,10 @@ class ThermofieldAFQMC(AFQMCBase):
             raise ValueError("eta members must satisfy 0 <= eta < beta.")
         # The trace needs the whole walk; members alone end at the last one.
         self.nwalk = self.nslices if params.measure_trace else int(self.member_slices.max())
+        # On the GPU set_rng_seed seeds the device stream only; population
+        # control draws from the host stream.
+        if config.get_option("use_gpu"):
+            numpy.random.seed(self._parallel_rng_seed)
 
     @staticmethod
     def _num_slices(x, what):
@@ -248,6 +253,10 @@ class ThermofieldAFQMC(AFQMCBase):
         if self.propagator.trace_branching and len(self.eta_members) > 0:
             raise ValueError(
                 "Mixed-estimator members need guide branching (trace_branching=False)."
+            )
+        if config.get_option("use_gpu") and not isinstance(self.hamiltonian, UEGSparseChol):
+            raise NotImplementedError(
+                "The thermofield GPU path supports the sparse plane-wave Hamiltonian only."
             )
 
         self.copy_to_gpu()

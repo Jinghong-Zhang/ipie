@@ -377,6 +377,8 @@ class ThermofieldThermalTrial:
         guide_time = self._check_guide_time(self.guide_time if guide_time is None else guide_time)
         split = self.force_bias_split if split is None else split
         Qmat = xp.asarray(Qmat)
+        log_d = None if log_d is None else xp.asarray(log_d)
+        Tmat = None if Tmat is None else xp.asarray(Tmat)
         nwalkers = Qmat.shape[0]
         nbasis = self.nbasis
         I = xp.eye(nbasis)
@@ -446,6 +448,8 @@ class ThermofieldThermalTrial:
             Log trace weights, shape (nwalkers,).
         """
         Qmat = xp.asarray(Qmat)
+        log_d = None if log_d is None else xp.asarray(log_d)
+        Tmat = None if Tmat is None else xp.asarray(Tmat)
         nwalkers = Qmat.shape[0]
         nbasis = self.nbasis
         I = xp.eye(nbasis)

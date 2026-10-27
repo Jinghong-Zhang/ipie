@@ -18,6 +18,8 @@
 import numpy
 
 from ipie.config import config
+from ipie.utils.backend import arraylib as xp
+from ipie.utils.backend import to_host
 from ipie.walkers.pop_controller import PopController
 
 
@@ -61,31 +63,39 @@ def reorder_population(pcontrol, walkers, comm):
     """
     proxy = _PopControlProxy(walkers)
     PopController.pop_control(pcontrol, proxy, comm)
-    ids = numpy.rint(proxy.wid.real).astype(numpy.int64)
-    walkers.weight = proxy.weight
-    walkers.unscaled_weight = proxy.unscaled_weight
-    walkers.phase = proxy.phase
+    ids = numpy.rint(to_host(proxy.wid).real).astype(numpy.int64)
+    walkers.weight = to_host(proxy.weight)
+    walkers.unscaled_weight = to_host(proxy.unscaled_weight)
+    walkers.phase = to_host(proxy.phase)
     if not numpy.array_equal(ids, numpy.arange(walkers.nwalkers)):
         walkers.reorder(ids)
 
 
 class _PopControlProxy:
-    """Walker stand-in for population control: weights, phases and walker ids."""
+    """Walker stand-in for population control: weights, phases and walker ids.
+
+    The arrays live on the backend, where the core controller works on them.
+    """
 
     def __init__(self, walkers):
         nwalkers = walkers.nwalkers
         self.nwalkers = nwalkers
-        self.weight = numpy.array(walkers.weight, dtype=numpy.float64)
-        self.unscaled_weight = numpy.array(walkers.unscaled_weight, dtype=numpy.float64)
-        self.phase = numpy.array(walkers.phase, dtype=numpy.complex128)
-        self.wid = numpy.arange(nwalkers, dtype=numpy.complex128)
+        self.weight = xp.array(walkers.weight, dtype=xp.float64)
+        self.unscaled_weight = xp.array(walkers.unscaled_weight, dtype=xp.float64)
+        self.phase = xp.array(walkers.phase, dtype=xp.complex128)
+        self.wid = xp.arange(nwalkers, dtype=xp.complex128)
         self.buff_names = ["weight", "unscaled_weight", "phase", "wid"]
         self.buff_size = 4
         self.walker_buffer = numpy.zeros(self.buff_size, dtype=numpy.complex128)
 
     def get_buffer(self, iw):
         return numpy.array(
-            [self.weight[iw], self.unscaled_weight[iw], self.phase[iw], self.wid[iw]],
+            [
+                to_host(self.weight[iw]),
+                to_host(self.unscaled_weight[iw]),
+                to_host(self.phase[iw]),
+                to_host(self.wid[iw]),
+            ],
             dtype=numpy.complex128,
         )
 

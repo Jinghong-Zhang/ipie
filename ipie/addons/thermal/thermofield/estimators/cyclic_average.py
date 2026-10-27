@@ -393,8 +393,9 @@ def cyclic_average_fields(
     bh1_same = numpy.array_equal(BH1[0], BH1[1])
 
     def slice_b_fn(l, ids):
-        x = numpy.ascontiguousarray(x_hist[ids, l].T)  # Shape (nfields, n).
-        VHS = propagator.construct_VHS(hamiltonian, x)  # Shape (n, nbasis, nbasis).
+        x = xp.asarray(numpy.ascontiguousarray(x_hist[ids, l].T))  # Shape (nfields, n).
+        # The propagator runs on the backend; the engine works on the host.
+        VHS = to_host(propagator.construct_VHS(hamiltonian, x))  # Shape (n, nbasis, nbasis).
         return build_slice_propagators(VHS, BH1, propagator.exp_nmax, spin_shared=bh1_same)
 
     return cyclic_average_engine(

@@ -108,17 +108,18 @@ class ThermofieldWalkers(BaseWalkers):
         self.nbasis = nbasis
         self.mpi_handler = mpi_handler
 
-        self.Qmat = numpy.zeros((nwalkers, 2, nbasis, nbasis), dtype=numpy.complex128)
-        self.Qmat[:] = numpy.eye(nbasis)
-        self.log_d = numpy.zeros((nwalkers, 2, nbasis), dtype=numpy.float64)
-        self.Tmat = numpy.zeros((nwalkers, 2, nbasis, nbasis), dtype=numpy.complex128)
-        self.Tmat[:] = numpy.eye(nbasis)
+        # Walker matrices are created on the backend (the GPU with IPIE_USE_GPU).
+        self.Qmat = xp.zeros((nwalkers, 2, nbasis, nbasis), dtype=xp.complex128)
+        self.Qmat[:] = xp.eye(nbasis)
+        self.log_d = xp.zeros((nwalkers, 2, nbasis), dtype=xp.float64)
+        self.Tmat = xp.zeros((nwalkers, 2, nbasis, nbasis), dtype=xp.complex128)
+        self.Tmat[:] = xp.eye(nbasis)
         # Complex, unlike the real overlap of the base class.
         self.log_ovlp = numpy.zeros(nwalkers, dtype=numpy.complex128)
 
-        self.Ga = numpy.zeros((nwalkers, nbasis, nbasis), dtype=numpy.complex128)
-        self.Gb = numpy.zeros((nwalkers, nbasis, nbasis), dtype=numpy.complex128)
-        self._identity = numpy.eye(nbasis)
+        self.Ga = xp.zeros((nwalkers, nbasis, nbasis), dtype=xp.complex128)
+        self.Gb = xp.zeros((nwalkers, nbasis, nbasis), dtype=xp.complex128)
+        self._identity = xp.eye(nbasis)
 
         self.log_tr = numpy.zeros(nwalkers, dtype=numpy.complex128)
         self.Qinv = None
