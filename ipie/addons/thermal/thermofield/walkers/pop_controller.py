@@ -27,11 +27,13 @@ class ThermofieldPopController(PopController):
     """Population control that reorders thermofield walkers in place.
 
     The core controller copies whole walker buffers between slots. On a single
-    MPI process this controller runs it on a stand-in carrying only the
-    weights, phases and walker ids, then applies the resulting slot to source
-    map to the walker matrices in one gather, so device-resident walkers never
-    move to the host. With several processes walkers move between ranks through
-    the full buffers, staged through the host on the GPU.
+    MPI process this controller finds the slot to source map from the weights
+    alone and applies it to the walker matrices in one gather, so
+    device-resident walkers never move to the host: pair branching runs on the
+    host without MPI, other methods run the core controller on a stand-in
+    carrying the weights, phases and walker ids. With several processes walkers
+    move between ranks through the full buffers, staged through the host on
+    the GPU.
     """
 
     def pop_control(self, walkers, comm):
@@ -43,7 +45,63 @@ class ThermofieldPopController(PopController):
             else:
                 super().pop_control(walkers, comm)
             return
-        reorder_population(self, walkers, comm)
+        if self.method == "pair_branch":
+            pair_branch_population(self, walkers)
+        else:
+            reorder_population(self, walkers, comm)
+
+
+def pair_branch_population(pcontrol, walkers):
+    """Pair-branch population control on one process, on the host.
+
+    The arithmetic and random numbers of the core controller with
+    :func:`ipie.walkers.pop_controller.pair_branch` on one process, where the
+    k-th killed slot (in index order) receives the k-th cloned walker through
+    MPI; here the walkers are gathered in place instead.
+
+    Parameters
+    ----------
+    pcontrol : :class:`ipie.walkers.pop_controller.PopController`
+        Population controller.
+    walkers : :class:`ThermofieldWalkers`
+        Walkers.
+    """
+    if pcontrol.ntot_walkers == 1:
+        return
+    unscaled = numpy.array(walkers.weight, dtype=numpy.float64)
+    scale = numpy.sum(numpy.abs(unscaled)) / pcontrol.target_weight
+    weight = unscaled / scale
+    pcontrol.total_weight = pcontrol.target_weight
+    # Columns: weight, status (0 killed, 1 kept, 2 cloned); sorted by weight.
+    info = numpy.zeros((walkers.nwalkers, 2))
+    info[:, 0] = numpy.abs(weight)
+    info[:, 1] = 1
+    sort = numpy.argsort(info[:, 0], kind="mergesort")
+    isort = numpy.argsort(sort, kind="mergesort")
+    info = info[sort]
+    s, e = 0, len(info) - 1
+    while s < e:
+        if info[s, 0] < pcontrol.min_weight or info[e, 0] > pcontrol.max_weight:
+            wab = info[s, 0] + info[e, 0]
+            r = numpy.random.rand()
+            clone, kill = (e, s) if r < info[e, 0] / wab else (s, e)
+            info[clone] = 0.5 * wab, 2
+            info[kill] = 0.0, 0
+            s += 1
+            e -= 1
+        else:
+            break
+    info = info[isort]
+    clones = numpy.flatnonzero(info[:, 1] > 1)
+    weight[clones] = info[clones, 0]
+    ids = numpy.arange(walkers.nwalkers)
+    ids[info[:, 1] == 0] = clones
+    walkers.weight = weight[ids]
+    walkers.unscaled_weight = unscaled[ids]
+    walkers.phase = numpy.asarray(walkers.phase)[ids]
+    if len(clones):
+        walkers.reorder(ids)
+    pcontrol.pop_control_counter += 1
 
 
 def reorder_population(pcontrol, walkers, comm):

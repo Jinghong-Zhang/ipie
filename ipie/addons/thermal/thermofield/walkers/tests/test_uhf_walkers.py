@@ -20,7 +20,11 @@ import pytest
 
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
 from ipie.addons.thermal.thermofield.utils.testing import build_noninteracting_hamiltonian
-from ipie.addons.thermal.thermofield.walkers.pop_controller import ThermofieldPopController
+from ipie.addons.thermal.thermofield.walkers.pop_controller import (
+    pair_branch_population,
+    reorder_population,
+    ThermofieldPopController,
+)
 from ipie.addons.thermal.thermofield.walkers.uhf_walkers import ThermofieldWalkers
 from ipie.utils.mpi import MPIHandler
 from ipie.walkers.pop_controller import PopController
@@ -73,5 +77,41 @@ def test_pop_control_clones_full_walker_state():
         assert numpy.abs(walkers.log_d[0]).max() > 0.0
 
 
+@pytest.mark.unit
+def test_pair_branch_population_matches_core_controller():
+    nbasis, nwalkers = 3, 40
+    numpy.random.seed(3)
+    h1e = numpy.random.standard_normal((nbasis, nbasis))
+    hamiltonian = build_noninteracting_hamiltonian(0.5 * (h1e + h1e.T))
+    trial = ThermofieldThermalTrial(hamiltonian, beta=1.0, mu=0.1)
+    # Weights over four decades, so that many pairs branch.
+    weight = numpy.exp(numpy.random.uniform(-5.0, 4.0, nwalkers))
+    phase = numpy.exp(1j * numpy.random.uniform(0, 2 * numpy.pi, nwalkers))
+    Q = numpy.random.standard_normal((nwalkers, 2, nbasis, nbasis))
+    mpi_handler = MPIHandler()
+    states = []
+    # The host pair branching and the core controller on the stand-in must
+    # give the same weights, phases and slot to source map.
+    for run in (pair_branch_population, reorder_population):
+        walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
+        walkers.weight = weight.copy()
+        walkers.phase = phase.copy()
+        walkers.Qmat[:] = Q
+        pcontrol = ThermofieldPopController(nwalkers, 1, mpi_handler, "pair_branch")
+        numpy.random.seed(11)
+        if run is pair_branch_population:
+            run(pcontrol, walkers)
+        else:
+            run(pcontrol, walkers, mpi_handler.comm)
+        states.append(walkers)
+    new, core = states
+    assert not numpy.array_equal(core.Qmat, Q)
+    numpy.testing.assert_array_equal(new.weight, core.weight)
+    numpy.testing.assert_array_equal(new.unscaled_weight, core.unscaled_weight)
+    numpy.testing.assert_array_equal(new.phase, core.phase)
+    numpy.testing.assert_array_equal(new.Qmat, core.Qmat)
+
+
 if __name__ == "__main__":
     test_pop_control_clones_full_walker_state()
+    test_pair_branch_population_matches_core_controller()
