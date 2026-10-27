@@ -406,3 +406,179 @@ def one_plus_qdy_batched(Q, log_d, Y, need_inverse=True):
         log_det = dbar.sum(axis=-1) + (logabs + xp.log(sgn))
     G = (Q * xp.exp(dhat)[..., None, :]) @ binv @ Y
     return log_det, G
+
+
+def qdt_left_restratify(Q, d, T):
+    r"""Move the scales accumulated in Q by left products back into d.
+
+    Refactorizes :math:`Q e^{d} T = Q' e^{d'} (S T)` by column-pivoted QR,
+    with the same scale floor as the walker stabilization.
+
+    Parameters
+    ----------
+    Q, T : :class:`numpy.ndarray`
+        Left and right factors.
+    d : :class:`numpy.ndarray`
+        Log scales.
+
+    Returns
+    -------
+    Q, d, T : tuple
+        The refactorized triple.
+    """
+    shift = numpy.max(d)
+    F = Q * numpy.exp(d - shift)[None, :]
+    Qn, R, perm = scipy.linalg.qr(F, pivoting=True, check_finite=False)
+    absd = numpy.abs(R.diagonal())
+    absd = numpy.maximum(absd, max(absd.max(), 1.0) * SCALE_FLOOR)
+    S = numpy.zeros_like(R)
+    S[:, perm] = (1.0 / absd)[:, None] * R
+    return Qn, numpy.log(absd) + shift, S @ T
+
+
+def qdt_right_restratify(Q, d, T):
+    r"""Move the scales accumulated in T by right products back into d.
+
+    Refactorizes :math:`Q e^{d} T = (Q S) e^{d'} T'` by column-pivoted QR of
+    :math:`(e^{d} T)^\dagger`, with the same scale floor as
+    :func:`qdt_left_restratify`.
+
+    Parameters
+    ----------
+    Q, T : :class:`numpy.ndarray`
+        Left and right factors.
+    d : :class:`numpy.ndarray`
+        Log scales.
+
+    Returns
+    -------
+    Q, d, T : tuple
+        The refactorized triple.
+    """
+    shift = numpy.max(d)
+    M = numpy.exp(d - shift)[:, None] * T
+    Qh, R, perm = scipy.linalg.qr(M.conj().T, pivoting=True, check_finite=False)
+    absd = numpy.abs(R.diagonal().conj())
+    absd = numpy.maximum(absd, max(absd.max(), 1.0) * SCALE_FLOOR)
+    S = R.conj().T * (1.0 / absd)[None, :]
+    Sfull = numpy.zeros_like(S)
+    Sfull[perm, :] = S
+    return Q @ Sfull, numpy.log(absd) + shift, Qh.conj().T
+
+
+def _pivoted_qr_stack(FT):
+    """Column-pivoted QR of every matrix in a stack given as transposes.
+
+    `FT[j].T` is the Fortran-ordered matrix LAPACK factorizes in place, so `FT`
+    must be a fresh C-contiguous (n, nbasis, nbasis) array. Same routines and
+    workspace as scipy.linalg.qr(pivoting=True), hence bit-identical.
+    """
+    n, nbasis = FT.shape[0], FT.shape[-1]
+    Q = numpy.empty_like(FT)
+    R = numpy.empty_like(FT)
+    perm = numpy.empty((n, nbasis), dtype=numpy.int64)
+    for j in range(n):
+        Q[j], R[j], perm[j] = pivoted_qr(FT[j].T)
+    return Q, R, perm
+
+
+def _floor_scales(R):
+    """|diag R| with the scale floor of the scalar restratifications."""
+    absd = numpy.abs(numpy.diagonal(R, axis1=-2, axis2=-1))
+    floor = numpy.maximum(absd.max(axis=-1), 1.0) * SCALE_FLOOR
+    return numpy.maximum(absd, floor[:, None])
+
+
+def _inverse_permutation(perm):
+    invperm = numpy.empty_like(perm)
+    numpy.put_along_axis(invperm, perm, numpy.arange(perm.shape[-1])[None, :], axis=-1)
+    return invperm
+
+
+def qdt_left_restratify_stack(Q, d, T):
+    """:func:`qdt_left_restratify` over a stack of walkers.
+
+    Same elementwise arithmetic and the same LAPACK factorization per item, so
+    each result is bit-identical to the scalar function.
+
+    Parameters
+    ----------
+    Q, T : :class:`numpy.ndarray`
+        Left and right factors, shape (n, nbasis, nbasis).
+    d : :class:`numpy.ndarray`
+        Log scales, shape (n, nbasis).
+
+    Returns
+    -------
+    Q, d, T : tuple
+        The refactorized triples.
+    """
+    FT = numpy.swapaxes(Q, -1, -2) * numpy.exp(d - numpy.max(d, axis=-1)[:, None])[:, :, None]
+    Qn, R, perm = _pivoted_qr_stack(FT)
+    absd = _floor_scales(R)
+    # S[:, perm] = diag(1/absd) R, i.e. S = (diag(1/absd) R)[:, invperm].
+    S = numpy.take_along_axis(
+        (1.0 / absd)[:, :, None] * R, _inverse_permutation(perm)[:, None, :], axis=-1
+    )
+    return Qn, numpy.log(absd) + numpy.max(d, axis=-1)[:, None], S @ T
+
+
+def qdt_right_restratify_stack(Q, d, T):
+    """:func:`qdt_right_restratify` over a stack of walkers.
+
+    Parameters
+    ----------
+    Q, T : :class:`numpy.ndarray`
+        Left and right factors, shape (n, nbasis, nbasis).
+    d : :class:`numpy.ndarray`
+        Log scales, shape (n, nbasis).
+
+    Returns
+    -------
+    Q, d, T : tuple
+        The refactorized triples.
+    """
+    shift = numpy.max(d, axis=-1)
+    # Mc[j].T is the Fortran-ordered (e^{d} T)^dagger that LAPACK factorizes.
+    Mc = numpy.conj(numpy.exp(d - shift[:, None])[:, :, None] * T)
+    Qh, R, perm = _pivoted_qr_stack(Mc)
+    absd = _floor_scales(R)
+    S = numpy.swapaxes(R.conj(), -1, -2) * (1.0 / absd)[:, None, :]
+    # Sfull[perm, :] = S, i.e. Sfull = S[invperm, :].
+    Sfull = numpy.take_along_axis(S, _inverse_permutation(perm)[:, :, None], axis=-2)
+    return Q @ Sfull, numpy.log(absd) + shift[:, None], numpy.swapaxes(Qh.conj(), -1, -2)
+
+
+def restratify_left_batched(Q, d, T):
+    """Left restratification of a stack on the CPU or the GPU.
+
+    The CPU path is :func:`qdt_left_restratify_stack`. The GPU path uses a
+    batched non-pivoted QR: the QDT gauge differs, but :math:`Q e^{d} T` is the
+    same, as in the walker stabilization on the GPU.
+    """
+    if not config.get_option("use_gpu"):
+        return qdt_left_restratify_stack(Q, d, T)
+    shift = xp.max(d, axis=-1)
+    F = Q * xp.exp(d - shift[:, None])[:, None, :]
+    Qn, R = xp.linalg.qr(F)
+    absd = xp.abs(xp.diagonal(R, axis1=-2, axis2=-1))
+    absd = xp.maximum(absd, (xp.maximum(absd.max(axis=-1), 1.0) * SCALE_FLOOR)[:, None])
+    return Qn, xp.log(absd) + shift[:, None], ((1.0 / absd)[:, :, None] * R) @ T
+
+
+def restratify_right_batched(Q, d, T):
+    """Right restratification of a stack on the CPU or the GPU.
+
+    The CPU path is :func:`qdt_right_restratify_stack`; the GPU path uses a
+    batched non-pivoted QR of :math:`(e^{d} T)^\\dagger`.
+    """
+    if not config.get_option("use_gpu"):
+        return qdt_right_restratify_stack(Q, d, T)
+    shift = xp.max(d, axis=-1)
+    # e^{d} T = R^dagger Qh^dagger = S diag(|r|) Qh^dagger.
+    Mc = xp.conj(xp.swapaxes(xp.exp(d - shift[:, None])[:, :, None] * T, -1, -2))
+    Qh, R = xp.linalg.qr(Mc)
+    absd = xp.abs(xp.diagonal(R, axis1=-2, axis2=-1))
+    absd = xp.maximum(absd, (xp.maximum(absd.max(axis=-1), 1.0) * SCALE_FLOOR)[:, None])
+    S = xp.swapaxes(R.conj(), -1, -2) * (1.0 / absd)[:, None, :]
+    return Q @ S, xp.log(absd) + shift[:, None], xp.swapaxes(Qh.conj(), -1, -2)

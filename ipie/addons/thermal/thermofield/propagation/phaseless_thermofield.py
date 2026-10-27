@@ -73,6 +73,18 @@ class ThermofieldPhaseless(PhaselessGeneric):
         of the guide ratio. The force bias and the cosine projection still use
         the guide, and the walkers keep the guide phase, so the endpoint
         correction reduces to its phase. Default False.
+    group_accum : :class:`numpy.ndarray`
+        When set, shape (nwalkers, nspin, nbasis, nbasis) with nspin 1 or 2,
+        every slice propagator is multiplied into it, so a driver can store
+        products of consecutive slices for cyclic averaging. With nspin 1 the
+        spin-1 propagator must equal spin 0; a slice where it does not sets
+        `group_accum_spin_mismatch`.
+    record_B_slice : :class:`numpy.ndarray`
+        When set, shape (nwalkers, 2, nbasis, nbasis), receives the slice
+        propagators of the next slice.
+    record_x_slice : :class:`numpy.ndarray`
+        When set, shape (nwalkers, nfields), receives the shifted fields of the
+        next slice.
     """
 
     def __init__(self, time_step, mu, exp_nmax=6, phaseless=True, verbose=False):
@@ -82,6 +94,10 @@ class ThermofieldPhaseless(PhaselessGeneric):
         self.reuse_spin_blocks = True
         self.real_chol_gemm = True
         self.trace_branching = False
+        self.group_accum = None
+        self.group_accum_spin_mismatch = False
+        self.record_B_slice = None
+        self.record_x_slice = None
         self._kernels_ready = False
         self._rc_L = None
         self._rc_Lt = None
@@ -505,6 +521,8 @@ class ThermofieldPhaseless(PhaselessGeneric):
             walkers, hamiltonian, trial, debug=debug
         )
         assert walkers.nwalkers == xshifted.shape[-1]
+        if self.record_x_slice is not None:
+            self.record_x_slice[:] = to_host(xshifted.T)
         if self.batched:
             self._propagate_walkers_batched(walkers, trial, VHS, cfb, cmf)
         else:
@@ -540,9 +558,16 @@ class ThermofieldPhaseless(PhaselessGeneric):
         Bs = self._Bs
         bh1_diag = self._bh1_diag
         reuse = self.reuse_spin_blocks and self._spin_blocks_identical(walkers, trial)
+        acc = self.group_accum
+        record = self.record_B_slice
         for s in range(2):
             if reuse and s == 1:
                 # Spin-1 inputs equal spin 0 bitwise: copy.
+                if record is not None:
+                    record[:, 1] = to_host(Bs)
+                if acc is not None and acc.shape[1] == 2:
+                    xp.matmul(Bs, acc[:, 1], out=Temp)
+                    acc[:, 1] = Temp
                 Q_new[:, 1] = Q_new[:, 0]
                 break
             if bh1_diag is not None:
@@ -554,6 +579,14 @@ class ThermofieldPhaseless(PhaselessGeneric):
             else:
                 xp.matmul(self.BH1[s], BV, out=Temp)
                 xp.matmul(Temp, self.BH1[s], out=Bs)  # Symmetric Trotter split.
+            if record is not None:
+                record[:, s] = to_host(Bs)
+            if acc is not None:
+                if s < acc.shape[1]:
+                    xp.matmul(Bs, acc[:, s], out=Temp)
+                    acc[:, s] = Temp
+                elif not reuse:
+                    self.group_accum_spin_mismatch = True
             xp.matmul(Bs, walkers.Qmat[:, s], out=Q_new[:, s])
         synchronize()
         self.timer.tgemm += time.time() - start_time
@@ -629,12 +662,15 @@ class ThermofieldPhaseless(PhaselessGeneric):
 
     def _propagate_walkers_scalar(self, walkers, trial, VHS, cfb, cmf):
         """Per-walker reference implementation (`batched` False)."""
+        record = self.record_B_slice
         for iw in range(walkers.nwalkers):
             phi = xp.identity(VHS[iw].shape[-1], dtype=xp.complex128)
             BV = apply_exponential(phi, VHS[iw], self.exp_nmax)  # exp(VHS[iw]).
             Q_new = numpy.zeros_like(walkers.Qmat[iw])
             for s in range(2):
                 B = self.BH1[s] @ BV @ self.BH1[s]  # Symmetric Trotter split.
+                if record is not None:
+                    record[iw, s] = B
                 Q_new[s] = B @ walkers.Qmat[iw, s]
 
             log_ovlp_new, G_new = trial.calc_log_overlap_and_greens_function(

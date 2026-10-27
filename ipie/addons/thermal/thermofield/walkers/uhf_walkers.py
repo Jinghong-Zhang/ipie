@@ -78,6 +78,9 @@ class ThermofieldWalkers(BaseWalkers):
         Complex log of the closed-trace weight
         :math:`\sum_s \log\det(I + \Delta_s)`, used by trace-magnitude
         branching.
+    extra_walker_arrays : list
+        (array, walker_axis) pairs that population control reorders together
+        with the walkers, e.g. per-walker path histories owned by a driver.
     """
 
     def __init__(
@@ -111,6 +114,7 @@ class ThermofieldWalkers(BaseWalkers):
         self._identity = numpy.eye(nbasis)
 
         self.log_tr = numpy.zeros(nwalkers, dtype=numpy.complex128)
+        self.extra_walker_arrays = []
         self.update_walker_cache_batched(trial)
         self.log_tr[:] = to_host(trial.calc_log_trace_batched(self.Qmat, self.log_d, self.Tmat))
 
@@ -194,6 +198,7 @@ class ThermofieldWalkers(BaseWalkers):
 
         Every per-walker array in `buff_names` is reordered, except the weights
         and phases, which population control sets itself.
+        The arrays in `extra_walker_arrays` are reordered as well.
 
         Parameters
         ----------
@@ -210,6 +215,14 @@ class ThermofieldWalkers(BaseWalkers):
             if name not in ("weight", "unscaled_weight", "phase") + self._walker_matrices:
                 arr = getattr(self, name)
                 arr[:] = arr[ids]
+        # Reorder leading index by leading index to bound the temporary.
+        for arr, axis in self.extra_walker_arrays:
+            if axis == 0:
+                arr[:] = arr[ids_x]
+            else:
+                for lead in numpy.ndindex(*arr.shape[:axis]):
+                    view = arr[lead]
+                    view[:] = view[ids_x]
 
     def stabilize(self):
         """Refactorize every walker by column-pivoted QR without changing it.
