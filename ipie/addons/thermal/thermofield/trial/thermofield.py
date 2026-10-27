@@ -19,9 +19,12 @@ import numpy
 
 from ipie.addons.thermal.estimators.particle_number import particle_number
 from ipie.addons.thermal.thermofield.utils.linalg import (
+    inv_stack,
     one_plus_qdy,
     one_plus_qdy_batched,
     principal_log_phase,
+    stabilized_inverse_one_plus,
+    stabilized_inverse_one_plus_batched,
 )
 from ipie.utils.backend import arraylib as xp
 
@@ -59,6 +62,12 @@ class ThermofieldThermalTrial:
         Print information. Default False.
     guide_time : float
         Guide time :math:`\tau_g`. Default beta / 2.
+    force_bias_split : str
+        Where the cached Green's function for the force bias is evaluated:
+        "frontier" (default), at the walker frontier,
+        :math:`(I + \Delta\Lambda)^{-1}`; or "zero", at the trace split point,
+        :math:`(I + \Lambda\Delta)^{-1}`, the convention of the thermal addon.
+        Overlaps do not depend on the split, so only the force bias changes.
 
     Attributes
     ----------
@@ -87,6 +96,7 @@ class ThermofieldThermalTrial:
         k_trial=None,
         verbose=False,
         guide_time=None,
+        force_bias_split="frontier",
     ):
         self.name = "thermofield"
         self.compute_trial_energy = False
@@ -96,6 +106,9 @@ class ThermofieldThermalTrial:
         if guide_time is None:
             guide_time = 0.5 * beta
         self.guide_time = float(self._check_guide_time(guide_time))
+        if force_bias_split not in ("frontier", "zero"):
+            raise ValueError(f"Unknown force bias split {force_bias_split}.")
+        self.force_bias_split = force_bias_split
         self._lambda_cache = {}
         self._guide_device = None
 
@@ -230,6 +243,29 @@ class ThermofieldThermalTrial:
         Y = self._apply_lambda(None if Tmat is None else Tmat[s], self._guide_lambda(s, guide_time))
         return one_plus_qdy(Qmat[s], d, Y)
 
+    def _spin_block_split_zero(self, Qmat, log_d, Tmat, s, guide_time):
+        r"""Log determinant and inverse of :math:`I + \Lambda\Delta` for spin `s`.
+
+        The trace-split counterpart of :meth:`_spin_block`:
+        :math:`\Lambda\Delta = C e^{-A} (C^\dagger Q) e^{D} T` through the
+        two-sided kernel. The log determinant equals the frontier one; the
+        inverse is the hole Green's function at the trace split point.
+        """
+        a = guide_time * self.eps_T[s]
+        C = self.C_T[s]
+        d = numpy.zeros(self.nbasis) if log_d is None else log_d[s]
+        X = self.C_T_dagger[s] @ Qmat[s]
+        if Tmat is None:
+            V = numpy.eye(self.nbasis)
+            Vinv = V
+            log_det_V = 0.0 + 0.0j
+        else:
+            V = Tmat[s]
+            Vinv = numpy.linalg.inv(V)
+            sign, logabs = numpy.linalg.slogdet(V)
+            log_det_V = logabs + numpy.log(sign + 0.0j)
+        return stabilized_inverse_one_plus(C, -a, X, d, V, Vinv=Vinv, log_det_V=log_det_V)
+
     def calc_log_overlap(self, Qmat, log_d=None, Tmat=None, guide_time=None):
         r"""Complex log of the guide overlap :math:`S_T(\Delta)` of one walker.
 
@@ -255,7 +291,9 @@ class ThermofieldThermalTrial:
         )
         return log_ovlp
 
-    def calc_log_overlap_and_greens_function(self, Qmat, log_d=None, Tmat=None, guide_time=None):
+    def calc_log_overlap_and_greens_function(
+        self, Qmat, log_d=None, Tmat=None, guide_time=None, split=None
+    ):
         r"""Guide log overlap and mixed Green's function of one walker.
 
         Both come from the same factorization per spin.
@@ -270,6 +308,8 @@ class ThermofieldThermalTrial:
             Walker T factors, shape (2, nbasis, nbasis). Default identity.
         guide_time : float
             Guide time. Default the fixed guide time.
+        split : str
+            "frontier" or "zero". Default `force_bias_split`.
 
         Returns
         -------
@@ -279,10 +319,16 @@ class ThermofieldThermalTrial:
             Green's function in the particle convention, shape (2, nbasis, nbasis).
         """
         guide_time = self._check_guide_time(self.guide_time if guide_time is None else guide_time)
+        split = self.force_bias_split if split is None else split
         log_ovlp = 0.0 + 0.0j
         G = numpy.zeros((2, self.nbasis, self.nbasis), dtype=numpy.complex128)
+        I = numpy.eye(self.nbasis)
         for s in range(2):
-            log_det, G[s] = self._spin_block(Qmat, log_d, Tmat, s, guide_time)
+            if split == "zero":
+                log_det, inv = self._spin_block_split_zero(Qmat, log_d, Tmat, s, guide_time)
+                G[s] = I - inv
+            else:
+                log_det, G[s] = self._spin_block(Qmat, log_d, Tmat, s, guide_time)
             log_ovlp += log_det
         return principal_log_phase(log_ovlp), G
 
@@ -295,7 +341,7 @@ class ThermofieldThermalTrial:
         return self._guide_device
 
     def calc_log_overlap_and_greens_function_batched(
-        self, Qmat, log_d=None, Tmat=None, guide_time=None, reuse_spin_blocks=False
+        self, Qmat, log_d=None, Tmat=None, guide_time=None, split=None, reuse_spin_blocks=False
     ):
         r"""Walker-batched :meth:`calc_log_overlap_and_greens_function`.
 
@@ -313,6 +359,8 @@ class ThermofieldThermalTrial:
             Walker T factors, shape (nwalkers, 2, nbasis, nbasis). Default identity.
         guide_time : float
             Guide time. Default the fixed guide time.
+        split : str
+            "frontier" or "zero". Default `force_bias_split`.
         reuse_spin_blocks : bool
             The caller has checked that both spin blocks (walker factors and
             guide) are bitwise identical; spin 1 is then copied from spin 0,
@@ -327,18 +375,49 @@ class ThermofieldThermalTrial:
             (nwalkers, 2, nbasis, nbasis).
         """
         guide_time = self._check_guide_time(self.guide_time if guide_time is None else guide_time)
+        split = self.force_bias_split if split is None else split
         Qmat = xp.asarray(Qmat)
         nwalkers = Qmat.shape[0]
         nbasis = self.nbasis
+        I = xp.eye(nbasis)
         log_ovlp = xp.zeros(nwalkers, dtype=xp.complex128)
         G = xp.zeros((nwalkers, 2, nbasis, nbasis), dtype=xp.complex128)
+        C_T, C_T_dagger = self._guide_arrays(xp)
         for s in range(1 if reuse_spin_blocks else 2):
+            a = xp.asarray(guide_time * self.eps_T[s])
+            C = C_T[s]
             d = xp.zeros((nwalkers, nbasis)) if log_d is None else log_d[:, s]
-            # Delta Lambda = Q e^{D} (T Lambda) through the one-sided kernel.
-            Y = self._apply_lambda(
-                None if Tmat is None else Tmat[:, s], self._guide_lambda(s, guide_time, xp), xp
-            )
-            log_det, G[:, s] = one_plus_qdy_batched(Qmat[:, s], d, Y)
+            if split == "zero":
+                # Lambda Delta = C e^{-A} (C^dagger Q) e^{D} T; C does not depend
+                # on the walker, so its inverse and log det are formed once.
+                X = C_T_dagger[s] @ Qmat[:, s]
+                if Tmat is None:
+                    Vinv = I
+                    log_det_V = 0.0 + 0.0j
+                else:
+                    V = Tmat[:, s]
+                    Vinv = inv_stack(V)
+                    with numpy.errstate(divide="ignore", invalid="ignore"):
+                        sign, logabs = xp.linalg.slogdet(V)
+                        log_det_V = logabs + xp.log(sign + 0.0j)
+                sign_c, logabs_c = xp.linalg.slogdet(C)
+                log_det, inv = stabilized_inverse_one_plus_batched(
+                    C,
+                    -a,
+                    X,
+                    d,
+                    Vinv,
+                    log_det_V,
+                    Qinv=xp.linalg.inv(C),
+                    log_det_Q=logabs_c + xp.log(sign_c),
+                )
+                G[:, s] = I - inv
+            else:
+                # Delta Lambda = Q e^{D} (T Lambda) through the one-sided kernel.
+                Y = self._apply_lambda(
+                    None if Tmat is None else Tmat[:, s], self._guide_lambda(s, guide_time, xp), xp
+                )
+                log_det, G[:, s] = one_plus_qdy_batched(Qmat[:, s], d, Y)
             log_ovlp += log_det
         if reuse_spin_blocks:
             # (0 + ld0) + ld0 equals the two-spin sum (0 + ld0) + ld1 when ld1 == ld0.

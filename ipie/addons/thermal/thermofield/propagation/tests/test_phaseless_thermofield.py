@@ -128,8 +128,9 @@ def test_propagation_reuses_overlap_factorization():
     propagator = objs["propagator"]
 
     # One batched factorization per spin block per slice, i.e. at most two
-    # kernel calls for the whole population.
-    names = ("one_plus_qdy_batched",)
+    # kernel calls for the whole population. Either kernel may serve the guide
+    # overlap (one-sided for the frontier split, two-sided for the zero split).
+    names = ("one_plus_qdy_batched", "stabilized_inverse_one_plus_batched")
     originals = {name: getattr(trial_module, name) for name in names}
     calls = 0
 

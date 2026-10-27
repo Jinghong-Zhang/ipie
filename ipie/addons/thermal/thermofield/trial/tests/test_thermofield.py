@@ -192,51 +192,58 @@ def test_batched_overlap_and_greens_function_matches_scalar():
     seed = 77
 
     # The walker-batched entry point reproduces the per-walker path bit for bit
-    # for every guide time, and flags singular walkers with non-finite output
-    # instead of raising.
-    numpy.random.seed(seed)
-    k = random_complex((nbasis, nbasis))
-    k = 0.5 * (k + k.conj().T)
-    hamiltonian = build_noninteracting_hamiltonian(k.real)
-    trial = ThermofieldThermalTrial(hamiltonian, beta=beta, k_trial=numpy.array([k, k]))
+    # for both force-bias splits and guide times, and flags singular walkers
+    # with non-finite output instead of raising.
+    for split in ("frontier", "zero"):
+        numpy.random.seed(seed)
+        k = random_complex((nbasis, nbasis))
+        k = 0.5 * (k + k.conj().T)
+        hamiltonian = build_noninteracting_hamiltonian(k.real)
+        trial = ThermofieldThermalTrial(hamiltonian, beta=beta, k_trial=numpy.array([k, k]))
+        trial.force_bias_split = split
 
-    shape = (nwalkers, 2, nbasis, nbasis)
-    Qmat = random_complex(shape)
-    Tmat = random_complex(shape)
-    log_d = numpy.random.uniform(-40.0, 40.0, size=(nwalkers, 2, nbasis))
+        shape = (nwalkers, 2, nbasis, nbasis)
+        Qmat = random_complex(shape)
+        Tmat = random_complex(shape)
+        log_d = numpy.random.uniform(-40.0, 40.0, size=(nwalkers, 2, nbasis))
 
-    for guide_time in (0.0, beta):
-        lo_b, G_b = trial.calc_log_overlap_and_greens_function_batched(
-            Qmat, log_d, Tmat, guide_time=guide_time
-        )
-        assert lo_b.shape == (nwalkers,) and G_b.shape == (nwalkers, 2, nbasis, nbasis)
-        for iw in range(nwalkers):
-            lo, G = trial.calc_log_overlap_and_greens_function(
-                Qmat[iw], log_d[iw], Tmat[iw], guide_time=guide_time
+        for guide_time in (0.0, beta):
+            lo_b, G_b = trial.calc_log_overlap_and_greens_function_batched(
+                Qmat, log_d, Tmat, guide_time=guide_time
             )
+            assert lo_b.shape == (nwalkers,) and G_b.shape == (nwalkers, 2, nbasis, nbasis)
+            for iw in range(nwalkers):
+                lo, G = trial.calc_log_overlap_and_greens_function(
+                    Qmat[iw], log_d[iw], Tmat[iw], guide_time=guide_time
+                )
+                assert lo_b[iw] == lo
+                assert numpy.array_equal(G_b[iw], G)
+
+        # Default guide time, as used for the walker cache.
+        lo_b, G_b = trial.calc_log_overlap_and_greens_function_batched(Qmat, log_d, Tmat)
+        for iw in range(nwalkers):
+            lo, G = trial.calc_log_overlap_and_greens_function(Qmat[iw], log_d[iw], Tmat[iw])
             assert lo_b[iw] == lo
             assert numpy.array_equal(G_b[iw], G)
 
-    # Default guide time, as used for the walker cache.
-    lo_b, G_b = trial.calc_log_overlap_and_greens_function_batched(Qmat, log_d, Tmat)
-    for iw in range(nwalkers):
-        lo, G = trial.calc_log_overlap_and_greens_function(Qmat[iw], log_d[iw], Tmat[iw])
-        assert lo_b[iw] == lo
-        assert numpy.array_equal(G_b[iw], G)
-
-    # A pathological walker must not raise: it is flagged non-finite and the
-    # others are unchanged. The one-sided kernel inverts no walker factor and
-    # gives the finite det(I + 0) = 1 for Q = 0, so it gets a non-finite Q entry.
-    bad = 2
-    Qs, Ts = Qmat.copy(), Tmat.copy()
-    Qs[bad, 0, 0, 0] = numpy.nan
-    lo_s, G_s = trial.calc_log_overlap_and_greens_function_batched(Qs, log_d, Ts)
-    assert not (numpy.isfinite(lo_s[bad]) and numpy.all(numpy.isfinite(G_s[bad])))
-    for iw in range(nwalkers):
-        if iw == bad:
-            continue
-        assert lo_s[iw] == lo_b[iw]
-        assert numpy.array_equal(G_s[iw], G_b[iw])
+        # A pathological walker must not raise: it is flagged non-finite and the
+        # others are unchanged. The zero split inverts T, so a singular T is
+        # pathological. The one-sided frontier kernel inverts no walker factor
+        # and gives the finite det(I + 0) = 1 for Q = 0, so it gets a non-finite
+        # Q entry instead.
+        bad = 2
+        Qs, Ts = Qmat.copy(), Tmat.copy()
+        if split == "zero":
+            Ts[bad, 1] = 0.0
+        else:
+            Qs[bad, 0, 0, 0] = numpy.nan
+        lo_s, G_s = trial.calc_log_overlap_and_greens_function_batched(Qs, log_d, Ts)
+        assert not (numpy.isfinite(lo_s[bad]) and numpy.all(numpy.isfinite(G_s[bad])))
+        for iw in range(nwalkers):
+            if iw == bad:
+                continue
+            assert lo_s[iw] == lo_b[iw]
+            assert numpy.array_equal(G_s[iw], G_b[iw])
 
 
 @pytest.mark.unit
