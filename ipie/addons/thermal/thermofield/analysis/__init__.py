@@ -14,3 +14,14 @@
 #
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
+
+# Names of the earlier flat module `analysis`.
+# pylint: disable=unused-import
+from ipie.addons.thermal.thermofield.analysis.block_sums import (
+    _ratio,
+    _signature,
+    BlockSums,
+    fit_mu_scan,
+    load_block_sums,
+    summarize_blocks,
+)

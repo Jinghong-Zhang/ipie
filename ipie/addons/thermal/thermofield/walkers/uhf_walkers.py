@@ -19,6 +19,7 @@ import numpy
 
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
 from ipie.addons.thermal.thermofield.utils.linalg import pivoted_qr, SCALE_FLOOR
+from ipie.addons.thermal.thermofield.walkers.pop_controller import reorder_population
 from ipie.config import config
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import to_host
@@ -343,3 +344,26 @@ class ThermofieldWalkers(BaseWalkers):
 
     def reortho_batched(self):
         pass
+
+    # Compatibility with the per-array GPU interface of earlier versions.
+    @property
+    def on_device(self):
+        return not isinstance(self.Qmat, numpy.ndarray)
+
+    def to_device(self):
+        """Copy the walker matrices to the GPU; needs IPIE_USE_GPU=1. Use `cast_to_cupy`."""
+        if not config.get_option("use_gpu"):
+            raise RuntimeError("to_device needs the GPU backend: set IPIE_USE_GPU=1.")
+        self.cast_to_cupy()
+        return self
+
+    def to_host(self):
+        """Copy the walker matrices to the host. Use `cast_to_host`."""
+        self.cast_to_host()
+        return self
+
+    def pop_control_inplace(self, pcontrol, comm):
+        """Population control on one MPI process. Use :class:`ThermofieldPopController`."""
+        if comm.size != 1:
+            raise ValueError("pop_control_inplace supports a single MPI process.")
+        reorder_population(pcontrol, self, comm)

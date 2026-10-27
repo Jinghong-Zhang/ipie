@@ -27,6 +27,7 @@ from ipie.addons.thermal.estimators.thermal import one_rdm_from_G
 from ipie.addons.thermal.propagation.phaseless_base import construct_mean_field_shift
 from ipie.addons.thermal.propagation.phaseless_generic import PhaselessGeneric
 from ipie.addons.thermal.thermofield.hamiltonians.ueg import UEGSparseChol
+from ipie.config import config
 from ipie.hamiltonians.generic import GenericComplexChol, GenericRealChol
 from ipie.propagation.operations import apply_exponential
 from ipie.utils.backend import arraylib as xp
@@ -123,6 +124,14 @@ class ThermofieldPhaseless(PhaselessGeneric):
         self._kernels_ready = False
         self._fb_P = None
         self._work_shape = None
+
+    # Compatibility with the per-array GPU interface of earlier versions.
+    def to_device(self):
+        """Copy the propagator to the GPU; needs IPIE_USE_GPU=1. Use `cast_to_cupy`."""
+        if not config.get_option("use_gpu"):
+            raise RuntimeError("to_device needs the GPU backend: set IPIE_USE_GPU=1.")
+        self.cast_to_cupy()
+        return self
 
     def _setup_kernels(self, hamiltonian):
         """Set up the real-GEMM layout and the diagonal one-body propagator once."""

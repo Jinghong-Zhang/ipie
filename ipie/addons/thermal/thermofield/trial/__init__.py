@@ -14,3 +14,7 @@
 #
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
+
+# Names of the earlier flat module `trial`.
+# pylint: disable=unused-import
+from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial

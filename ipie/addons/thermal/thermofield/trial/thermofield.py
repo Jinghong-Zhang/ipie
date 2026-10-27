@@ -477,3 +477,12 @@ class ThermofieldThermalTrial:
         """
         _, G = self.calc_log_overlap_and_greens_function(Qmat, log_d, Tmat)
         return G
+
+    # Former explicit-time names (default: the closed trace), kept for compatibility.
+    def calc_log_overlap_at_time(self, Qmat, log_d=None, Tmat=None, guide_time=0.0):
+        return self.calc_log_overlap(Qmat, log_d, Tmat, guide_time=guide_time)
+
+    def calc_log_overlap_and_greens_function_at_time(
+        self, Qmat, log_d=None, Tmat=None, guide_time=0.0
+    ):
+        return self.calc_log_overlap_and_greens_function(Qmat, log_d, Tmat, guide_time=guide_time)

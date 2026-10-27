@@ -14,3 +14,19 @@
 #
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
+
+# Names of the earlier flat module `qmc`.
+# pylint: disable=unused-import
+from ipie.addons.thermal.thermofield.analysis.thermofield_analysis import (
+    extrapolate_eta,
+    pooled_ratio,
+    summarize,
+)
+from ipie.addons.thermal.thermofield.estimators.local_energy import local_energy_batched
+from ipie.addons.thermal.thermofield.qmc.thermofield_afqmc import ThermofieldAFQMC
+from ipie.utils.backend import to_host
+
+
+def local_energies(hamiltonian, P):
+    """Local energies of a stack of 1RDMs on the host. Use `local_energy_batched`."""
+    return to_host(local_energy_batched(hamiltonian, P))
