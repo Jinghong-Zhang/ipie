@@ -425,6 +425,38 @@ class ThermofieldThermalTrial:
             G[:, 1] = G[:, 0]
         return principal_log_phase(log_ovlp), G
 
+    def calc_log_trace_batched(self, Qmat, log_d=None, Tmat=None):
+        r"""Closed-trace log weight :math:`\sum_s \log\det(I + \Delta_s)` of every walker.
+
+        The log determinant of the one-sided kernel with :math:`Y = T`, used by
+        trace-magnitude branching.
+
+        Parameters
+        ----------
+        Qmat : :class:`numpy.ndarray`
+            Walker Q factors, shape (nwalkers, 2, nbasis, nbasis).
+        log_d : :class:`numpy.ndarray`
+            Log scales, shape (nwalkers, 2, nbasis). Default zero.
+        Tmat : :class:`numpy.ndarray`
+            Walker T factors, shape (nwalkers, 2, nbasis, nbasis). Default identity.
+
+        Returns
+        -------
+        log_tr : :class:`numpy.ndarray`
+            Log trace weights, shape (nwalkers,).
+        """
+        Qmat = xp.asarray(Qmat)
+        nwalkers = Qmat.shape[0]
+        nbasis = self.nbasis
+        I = xp.eye(nbasis)
+        log_tr = xp.zeros(nwalkers, dtype=xp.complex128)
+        for s in range(2):
+            d = xp.zeros((nwalkers, nbasis)) if log_d is None else log_d[:, s]
+            Y = I if Tmat is None else Tmat[:, s]
+            log_det, _ = one_plus_qdy_batched(Qmat[:, s], d, Y, need_inverse=False)
+            log_tr += log_det
+        return principal_log_phase(log_tr)
+
     def calc_greens_function(self, Qmat, log_d=None, Tmat=None):
         r"""Mixed Green's function :math:`G_T(\Delta)` of one walker.
 

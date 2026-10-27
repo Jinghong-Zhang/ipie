@@ -180,6 +180,31 @@ def test_explicit_guide_time_and_trace_endpoint():
         G_ref = Delta[s] @ numpy.linalg.inv(eye + Delta[s])
         numpy.testing.assert_allclose(G_trace[s], G_ref, atol=1e-11)
 
+    # The batched closed-trace log weight of factored walkers (trace branching)
+    # agrees with the per-walker trace across a wide spread of scales, and
+    # with the direct determinant at moderate scales.
+    shape = (nwalkers, 2, nbasis, nbasis)
+    Qb = random_complex(shape)
+    Tb = random_complex(shape)
+    db = numpy.random.uniform(-30.0, 30.0, size=(nwalkers, 2, nbasis))
+    log_tr = trial.calc_log_trace_batched(Qb, db, Tb)
+    for iw in range(nwalkers):
+        ref = trial.calc_log_overlap(Qb[iw], db[iw], Tb[iw], guide_time=0.0)
+        assert log_tr[iw].real == pytest.approx(ref.real, rel=1e-10)
+        numpy.testing.assert_allclose(
+            numpy.exp(1j * log_tr[iw].imag), numpy.exp(1j * ref.imag), atol=1e-9
+        )
+    db = numpy.random.uniform(-2.0, 2.0, size=(nwalkers, 2, nbasis))
+    log_tr = trial.calc_log_trace_batched(Qb, db, Tb)
+    for iw in range(nwalkers):
+        direct = numpy.prod(
+            [
+                numpy.linalg.det(eye + Qb[iw, s] @ numpy.diag(numpy.exp(db[iw, s])) @ Tb[iw, s])
+                for s in range(2)
+            ]
+        )
+        numpy.testing.assert_allclose(numpy.exp(log_tr[iw]), direct, rtol=1e-9)
+
 
 @pytest.mark.unit
 def test_batched_overlap_and_greens_function_matches_scalar():

@@ -64,6 +64,11 @@ class ThermofieldPhaseless(PhaselessGeneric):
         When every Cholesky block is purely real or purely imaginary, build VHS
         and the force bias with real GEMMs. The elementwise products are those
         of the complex GEMM, so only the accumulation order differs. Default True.
+    trace_branching : bool
+        Carry :math:`|\det(I + \Delta')/\det(I + \Delta)|` in the weights instead
+        of the guide ratio. The force bias and the cosine projection still use
+        the guide, and the walkers keep the guide phase, so the endpoint
+        correction reduces to its phase. Default False.
     """
 
     def __init__(self, time_step, mu, exp_nmax=6, phaseless=True, verbose=False):
@@ -72,6 +77,7 @@ class ThermofieldPhaseless(PhaselessGeneric):
         self.batched = True
         self.reuse_spin_blocks = True
         self.real_chol_gemm = True
+        self.trace_branching = False
         self._kernels_ready = False
         self._rc_L = None
         self._rc_Lt = None
@@ -464,19 +470,24 @@ class ThermofieldPhaseless(PhaselessGeneric):
         log_ovlp_new, G_new = trial.calc_log_overlap_and_greens_function_batched(
             Q_new, walkers.log_d, walkers.Tmat, reuse_spin_blocks=reuse
         )
+        log_tr_new = None
+        if self.trace_branching:
+            log_tr_new = to_host(trial.calc_log_trace_batched(Q_new, walkers.log_d, walkers.Tmat))
         synchronize()
         self.timer.tovlp += time.time() - start_time
 
         start_time = time.time()
-        self.update_walker_weights_batched(walkers, log_ovlp_new, cfb, cmf)
+        self.update_walker_weights_batched(walkers, log_ovlp_new, cfb, cmf, log_tr_new=log_tr_new)
         # Commit every walker, including those just given zero weight, and the
         # cached overlap and Green's function used by the next force bias.
         walkers.Qmat[:] = Q_new
         walkers.set_walker_cache_batched(log_ovlp_new, G_new)
+        if log_tr_new is not None:
+            walkers.log_tr[:] = log_tr_new
         synchronize()
         self.timer.tupdate += time.time() - start_time
 
-    def update_walker_weights_batched(self, walkers, log_ovlp_new, cfb, cmf):
+    def update_walker_weights_batched(self, walkers, log_ovlp_new, cfb, cmf, log_tr_new=None):
         """Update the weights of all walkers, as :meth:`update_walker_weight`.
 
         A walker whose importance factor is not finite gets zero weight.
@@ -489,10 +500,18 @@ class ThermofieldPhaseless(PhaselessGeneric):
             Guide log overlaps after the slice, shape (nwalkers,).
         cfb, cmf : :class:`numpy.ndarray`
             Force-bias and mean-field constant factors, shape (nwalkers,).
+        log_tr_new : :class:`numpy.ndarray`
+            Closed-trace log weights after the slice (trace branching only);
+            the magnitude then comes from the trace ratio and the phase from the
+            guide ratio.
         """
         log_R = to_host(log_ovlp_new) - walkers.log_ovlp + cfb + cmf
         with numpy.errstate(over="ignore", invalid="ignore", divide="ignore"):
-            expQ = self.mf_const_fac * numpy.exp(log_R)
+            if log_tr_new is not None:
+                log_R_mag = log_tr_new - walkers.log_tr + cfb + cmf
+                expQ = self.mf_const_fac * numpy.exp(log_R_mag)
+            else:
+                expQ = self.mf_const_fac * numpy.exp(log_R)
             magn = numpy.abs(expQ)
             bad = numpy.isinf(magn) | numpy.isnan(magn)
             good = ~bad
@@ -505,7 +524,15 @@ class ThermofieldPhaseless(PhaselessGeneric):
             else:
                 walkers.weight[good] *= magn[good]
                 nz = good & (magn > 0.0)
-                walkers.phase[nz] *= expQ[nz] / magn[nz]
+                if log_tr_new is None:
+                    walkers.phase[nz] *= expQ[nz] / magn[nz]
+                else:
+                    # Keep the guide phase: the endpoint phase of the correction
+                    # then restores the trace phase exactly once.
+                    guide_phase = (
+                        self.mf_const_fac / abs(self.mf_const_fac) * numpy.exp(1j * log_R.imag)
+                    )
+                    walkers.phase[nz] *= guide_phase[nz]
         walkers.weight[bad] = 0.0
 
     def _propagate_walkers_scalar(self, walkers, trial, VHS, cfb, cmf):
@@ -521,12 +548,23 @@ class ThermofieldPhaseless(PhaselessGeneric):
             log_ovlp_new, G_new = trial.calc_log_overlap_and_greens_function(
                 Q_new, walkers.log_d[iw], walkers.Tmat[iw]
             )
-            self.update_walker_weight(walkers, iw, log_ovlp_new, cfb[iw], cmf[iw])
+            log_tr_new = None
+            if self.trace_branching:
+                log_tr_new = to_host(
+                    trial.calc_log_trace_batched(
+                        Q_new[None], walkers.log_d[iw : iw + 1], walkers.Tmat[iw : iw + 1]
+                    )
+                )[0]
+            self.update_walker_weight(
+                walkers, iw, log_ovlp_new, cfb[iw], cmf[iw], log_tr_new=log_tr_new
+            )
 
             walkers.Qmat[iw] = Q_new
             walkers.set_walker_cache(iw, log_ovlp_new, G_new)
+            if log_tr_new is not None:
+                walkers.log_tr[iw] = log_tr_new
 
-    def update_walker_weight(self, walkers, iw, log_ovlp_new, cfb, cmf):
+    def update_walker_weight(self, walkers, iw, log_ovlp_new, cfb, cmf, log_tr_new=None):
         r"""Update the weight of walker `iw` with the hybrid update of the thermal addon.
 
         The importance factor is the guide ratio
@@ -545,12 +583,17 @@ class ThermofieldPhaseless(PhaselessGeneric):
             Guide log overlap after the slice.
         cfb, cmf : complex
             Force-bias and mean-field constant factors.
+        log_tr_new : complex
+            Closed-trace log weight after the slice (trace branching only).
         """
         log_oratio = log_ovlp_new - walkers.log_ovlp[iw]
         log_R = log_oratio + cfb + cmf
 
         try:
-            expQ = self.mf_const_fac * cmath.exp(log_R)
+            log_magnitude = (
+                log_R if log_tr_new is None else log_tr_new - walkers.log_tr[iw] + cfb + cmf
+            )
+            expQ = self.mf_const_fac * cmath.exp(log_magnitude)
             magn = abs(expQ)
         except OverflowError:
             magn = math.inf
@@ -567,4 +610,9 @@ class ThermofieldPhaseless(PhaselessGeneric):
         else:
             walkers.weight[iw] *= magn
             if magn > 0.0:
-                walkers.phase[iw] *= expQ / magn
+                if log_tr_new is None:
+                    walkers.phase[iw] *= expQ / magn
+                else:
+                    walkers.phase[iw] *= (
+                        self.mf_const_fac / abs(self.mf_const_fac) * cmath.exp(1j * log_R.imag)
+                    )

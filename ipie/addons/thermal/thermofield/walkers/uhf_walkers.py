@@ -74,6 +74,10 @@ class ThermofieldWalkers(BaseWalkers):
         Mixed Green's functions in the thermal hole convention
         :math:`G_{ij} = \langle c_i c_j^\dagger \rangle = (I - P^T)_{ij}`, as
         consumed by the thermal force bias.
+    log_tr : :class:`numpy.ndarray`
+        Complex log of the closed-trace weight
+        :math:`\sum_s \log\det(I + \Delta_s)`, used by trace-magnitude
+        branching.
     """
 
     def __init__(
@@ -106,9 +110,11 @@ class ThermofieldWalkers(BaseWalkers):
         self.Gb = numpy.zeros((nwalkers, nbasis, nbasis), dtype=numpy.complex128)
         self._identity = numpy.eye(nbasis)
 
+        self.log_tr = numpy.zeros(nwalkers, dtype=numpy.complex128)
         self.update_walker_cache_batched(trial)
+        self.log_tr[:] = to_host(trial.calc_log_trace_batched(self.Qmat, self.log_d, self.Tmat))
 
-        self.buff_names += ["Qmat", "log_d", "Tmat", "Ga", "Gb"]
+        self.buff_names += ["Qmat", "log_d", "Tmat", "Ga", "Gb", "log_tr"]
         self.buff_size = round(self.set_buff_size_single_walker() / float(self.nwalkers))
         self.walker_buffer = numpy.zeros(self.buff_size, dtype=numpy.complex128)
 
@@ -289,6 +295,7 @@ class ThermofieldWalkers(BaseWalkers):
         self.Tmat[:] = xp.eye(self.nbasis)
         if compute_cache:
             self.update_walker_cache_batched(trial)
+            self.log_tr[:] = to_host(trial.calc_log_trace_batched(self.Qmat, self.log_d, self.Tmat))
 
     # For compatibility with BaseWalkers: stabilization is the QDT refactorization.
     def reortho(self):
