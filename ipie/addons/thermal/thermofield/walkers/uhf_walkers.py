@@ -18,7 +18,7 @@
 import numpy
 
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
-from ipie.addons.thermal.thermofield.utils.linalg import pivoted_qr, SCALE_FLOOR
+from ipie.addons.thermal.thermofield.utils.linalg import pivoted_qr, qr_batched, SCALE_FLOOR
 from ipie.addons.thermal.thermofield.walkers.pop_controller import reorder_population
 from ipie.config import config
 from ipie.utils.backend import arraylib as xp
@@ -258,14 +258,14 @@ class ThermofieldWalkers(BaseWalkers):
 
         The propagator factors accumulated in Q move into a fresh unitary Q, log
         scales D and a bounded factor merged into T.
-        On the GPU a batched non-pivoted QR is used: the factorization differs,
-        the walker does not.
+        On the GPU a batched non-pivoted Householder QR (:func:`qr_batched`) is
+        used: the factorization differs, the walker does not.
         """
         nwalkers, nbasis = self.nwalkers, self.nbasis
         if config.get_option("use_gpu"):
             shift = xp.max(self.log_d, axis=-1)
             F = self.Qmat * xp.exp(self.log_d - shift[..., None])[..., None, :]
-            Qs, R = xp.linalg.qr(F)
+            Qs, R = qr_batched(F)
             absd = xp.abs(xp.diagonal(R, axis1=-2, axis2=-1))
             floor = xp.maximum(absd.max(axis=-1), 1.0) * SCALE_FLOOR
             absd = xp.maximum(absd, floor[..., None])

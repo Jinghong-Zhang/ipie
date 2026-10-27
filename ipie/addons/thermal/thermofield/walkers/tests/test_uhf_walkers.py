@@ -19,6 +19,7 @@ import numpy
 import pytest
 
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
+from ipie.addons.thermal.thermofield.utils.linalg import qr_batched
 from ipie.addons.thermal.thermofield.utils.testing import build_noninteracting_hamiltonian
 from ipie.addons.thermal.thermofield.walkers.pop_controller import (
     pair_branch_population,
@@ -112,6 +113,30 @@ def test_pair_branch_population_matches_core_controller():
     numpy.testing.assert_array_equal(new.Qmat, core.Qmat)
 
 
+@pytest.mark.unit
+def test_qr_batched_graded_stack():
+    numpy.random.seed(5)
+    for n, span in ((6, 0.0), (16, 300.0), (24, 600.0)):
+        A = numpy.random.standard_normal((5, 2, n, n)) + 1j * numpy.random.standard_normal(
+            (5, 2, n, n)
+        )
+        # Column scales as in Q e^{D - max D} of a stabilization at large beta.
+        A *= numpy.exp(-numpy.linspace(0.0, span, n))
+        Q, R = qr_batched(A)
+        eye = numpy.eye(n)
+        numpy.testing.assert_allclose(
+            Q.conj().swapaxes(-1, -2) @ Q, numpy.broadcast_to(eye, Q.shape), atol=1e-13
+        )
+        assert numpy.all(numpy.tril(R, -1) == 0.0)
+        # Every column is reproduced to its own scale.
+        err = numpy.abs(Q @ R - A).max(axis=-2) / numpy.abs(A).max(axis=-2)
+        assert err.max() < 1e-13
+        d = numpy.abs(numpy.diagonal(R, axis1=-2, axis2=-1))
+        d_ref = numpy.abs(numpy.diagonal(numpy.linalg.qr(A)[1], axis1=-2, axis2=-1))
+        numpy.testing.assert_allclose(d, d_ref, rtol=1e-12)
+
+
 if __name__ == "__main__":
     test_pop_control_clones_full_walker_state()
     test_pair_branch_population_matches_core_controller()
+    test_qr_batched_graded_stack()

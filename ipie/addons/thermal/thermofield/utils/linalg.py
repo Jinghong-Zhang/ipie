@@ -84,6 +84,56 @@ def pivoted_qr(F):
     return Q, R, perm
 
 
+def qr_batched(A):
+    """Householder QR `A = Q R` of every square matrix in a stack, on the backend.
+
+    Every reflection acts on the whole stack at once. CuPy's QR of a stack
+    factorizes one matrix at a time, which dominates the walker stabilization
+    on the GPU. The column norms are scaled by their largest entry, so columns
+    far below the leading ones neither underflow nor lose their direction.
+    No pivoting.
+
+    Parameters
+    ----------
+    A : :class:`numpy.ndarray`
+        Stack of square matrices, shape (..., n, n).
+
+    Returns
+    -------
+    Q : :class:`numpy.ndarray`
+        Unitary factors.
+    R : :class:`numpy.ndarray`
+        Upper triangular factors.
+    """
+    shape = A.shape
+    n = shape[-1]
+    R = xp.array(A, dtype=xp.complex128).reshape(-1, n, n)
+    U = xp.zeros_like(R)
+    for k in range(n - 1):
+        x = R[:, k:, k]
+        scale = xp.abs(x).max(axis=-1)
+        live = scale > 0.0
+        xs = x / xp.where(live, scale, 1.0)[:, None]
+        norm = xp.sqrt(xp.sum(xs.real**2 + xs.imag**2, axis=-1))
+        alpha = xs[:, 0]
+        absa = xp.abs(alpha)
+        phase = xp.where(absa > 0.0, alpha / xp.where(absa > 0.0, absa, 1.0), 1.0)
+        # v = x - beta e_1 with beta = -phase |x|, so |v|^2 = 2 |x| (|x| + |alpha|).
+        v = xs.copy()
+        v[:, 0] += phase * norm
+        u = v / xp.where(live, xp.sqrt(2.0 * norm * (norm + absa)), 1.0)[:, None]
+        u[~live] = 0.0
+        R[:, k:, k:] -= 2.0 * u[:, :, None] * (u.conj()[:, None, :] @ R[:, k:, k:])
+        R[:, k + 1 :, k] = 0.0
+        U[:, k:, k] = u
+    Q = xp.zeros_like(R)
+    Q[:] = xp.eye(n)
+    for k in range(n - 2, -1, -1):
+        u = U[:, k:, k]
+        Q[:, k:, k:] -= 2.0 * u[:, :, None] * (u.conj()[:, None, :] @ Q[:, k:, k:])
+    return Q.reshape(shape), R.reshape(shape)
+
+
 def _log_complex_det(A):
     """Complex log det via slogdet; raises on a singular matrix."""
     sgn, logdet = numpy.linalg.slogdet(numpy.asarray(A, dtype=numpy.complex128))
@@ -560,7 +610,7 @@ def restratify_left_batched(Q, d, T):
         return qdt_left_restratify_stack(Q, d, T)
     shift = xp.max(d, axis=-1)
     F = Q * xp.exp(d - shift[:, None])[:, None, :]
-    Qn, R = xp.linalg.qr(F)
+    Qn, R = qr_batched(F)
     absd = xp.abs(xp.diagonal(R, axis1=-2, axis2=-1))
     absd = xp.maximum(absd, (xp.maximum(absd.max(axis=-1), 1.0) * SCALE_FLOOR)[:, None])
     return Qn, xp.log(absd) + shift[:, None], ((1.0 / absd)[:, :, None] * R) @ T
@@ -577,7 +627,7 @@ def restratify_right_batched(Q, d, T):
     shift = xp.max(d, axis=-1)
     # e^{d} T = R^dagger Qh^dagger = S diag(|r|) Qh^dagger.
     Mc = xp.conj(xp.swapaxes(xp.exp(d - shift[:, None])[:, :, None] * T, -1, -2))
-    Qh, R = xp.linalg.qr(Mc)
+    Qh, R = qr_batched(Mc)
     absd = xp.abs(xp.diagonal(R, axis1=-2, axis2=-1))
     absd = xp.maximum(absd, (xp.maximum(absd.max(axis=-1), 1.0) * SCALE_FLOOR)[:, None])
     S = xp.swapaxes(R.conj(), -1, -2) * (1.0 / absd)[:, None, :]
