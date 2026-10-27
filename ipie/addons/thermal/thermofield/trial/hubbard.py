@@ -115,28 +115,19 @@ class ThermofieldCPTrial(ThermofieldThermalTrial):
             (nwalkers, 2, nbasis, nbasis).
         """
         Qmat, log_d, Tmat = xp.asarray(Qmat), xp.asarray(log_d), xp.asarray(Tmat)
-        nwalkers, nbasis = Qmat.shape[0], self.nbasis
-        log_ovlp = xp.zeros(nwalkers, dtype=xp.complex128)
-        G = xp.empty((nwalkers, 2, nbasis, nbasis), dtype=xp.complex128)
-        I = xp.eye(nbasis)
         C_T, _ = self._guide_arrays(xp)
-        for s in range(2):
-            a = xp.asarray(scale * self.eps_T[s])
-            C = C_T[s]
-            X = Tmat[:, s] @ C
-            log_det, inv = stabilized_inverse_one_plus_batched(
-                Qmat[:, s],
-                log_d[:, s],
-                X,
-                -a[None, :],
-                Vinv=C,
-                log_det_V=self.log_det_C_T_dagger[s],
-                Qinv=None if Qinv is None else Qinv[:, s],
-                log_det_Q=None if log_det_Q is None else log_det_Q[:, s],
-            )
-            log_ovlp += log_det
-            G[:, s] = I - inv
-        return principal_log_phase(log_ovlp), G
+        # Both spins in one stacked call.
+        log_det, inv = stabilized_inverse_one_plus_batched(
+            Qmat,
+            log_d,
+            Tmat @ C_T,
+            -xp.asarray(scale * self.eps_T),
+            Vinv=C_T,
+            log_det_V=xp.asarray(self.log_det_C_T_dagger),
+            Qinv=Qinv,
+            log_det_Q=log_det_Q,
+        )
+        return principal_log_phase(log_det[:, 0] + log_det[:, 1]), xp.eye(self.nbasis) - inv
 
 
 def _tune_level_shift(eps, beta, target_n):

@@ -19,6 +19,7 @@
 import numpy
 import scipy.linalg
 
+from ipie.addons.thermal.thermofield.utils.linalg_gpu import householder_qr
 from ipie.config import config
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import to_host
@@ -85,13 +86,11 @@ def pivoted_qr(F):
 
 
 def qr_batched(A):
-    """Householder QR `A = Q R` of every square matrix in a stack, on the backend.
+    """QR `A = Q R` of every square matrix in a stack, without pivoting.
 
-    Every reflection acts on the whole stack at once. CuPy's QR of a stack
-    factorizes one matrix at a time, which dominates the walker stabilization
-    on the GPU. The column norms are scaled by their largest entry, so columns
-    far below the leading ones neither underflow nor lose their direction.
-    No pivoting.
+    On the GPU one Householder kernel factorizes all matrices at once
+    (:func:`householder_qr`); CuPy's QR of a stack factorizes one matrix at a
+    time, which dominated the walker stabilization. On the CPU numpy's QR.
 
     Parameters
     ----------
@@ -105,33 +104,9 @@ def qr_batched(A):
     R : :class:`numpy.ndarray`
         Upper triangular factors.
     """
-    shape = A.shape
-    n = shape[-1]
-    R = xp.array(A, dtype=xp.complex128).reshape(-1, n, n)
-    U = xp.zeros_like(R)
-    for k in range(n - 1):
-        x = R[:, k:, k]
-        scale = xp.abs(x).max(axis=-1)
-        live = scale > 0.0
-        xs = x / xp.where(live, scale, 1.0)[:, None]
-        norm = xp.sqrt(xp.sum(xs.real**2 + xs.imag**2, axis=-1))
-        alpha = xs[:, 0]
-        absa = xp.abs(alpha)
-        phase = xp.where(absa > 0.0, alpha / xp.where(absa > 0.0, absa, 1.0), 1.0)
-        # v = x - beta e_1 with beta = -phase |x|, so |v|^2 = 2 |x| (|x| + |alpha|).
-        v = xs.copy()
-        v[:, 0] += phase * norm
-        u = v / xp.where(live, xp.sqrt(2.0 * norm * (norm + absa)), 1.0)[:, None]
-        u[~live] = 0.0
-        R[:, k:, k:] -= 2.0 * u[:, :, None] * (u.conj()[:, None, :] @ R[:, k:, k:])
-        R[:, k + 1 :, k] = 0.0
-        U[:, k:, k] = u
-    Q = xp.zeros_like(R)
-    Q[:] = xp.eye(n)
-    for k in range(n - 2, -1, -1):
-        u = U[:, k:, k]
-        Q[:, k:, k:] -= 2.0 * u[:, :, None] * (u.conj()[:, None, :] @ Q[:, k:, k:])
-    return Q.reshape(shape), R.reshape(shape)
+    if config.get_option("use_gpu"):
+        return householder_qr(A)
+    return numpy.linalg.qr(A)
 
 
 def _log_complex_det(A):
@@ -303,7 +278,11 @@ def stabilized_inverse_one_plus_batched(
         if log_det_Q is None:
             sgn_q, log_q = xp.linalg.slogdet(Q)
             log_det_Q = log_q + xp.log(sgn_q)
-        sgn_b, log_b = xp.linalg.slogdet(bracket)
+        if need_inverse:
+            # One factorization on the GPU, the separate calls on the CPU.
+            binv, sgn_b, log_b = _inv_slogdet_stack(bracket)
+        else:
+            sgn_b, log_b = xp.linalg.slogdet(bracket)
         # Same association as the scalar kernel, so the two agree bit for bit.
         log_det_bracket = log_b + xp.log(sgn_b)
         log_det = (
@@ -312,7 +291,6 @@ def stabilized_inverse_one_plus_batched(
 
     if not need_inverse:
         return log_det, None
-    binv = inv_stack(bracket)
     core = (xp.exp(-dbar_r)[..., :, None] * binv) * xp.exp(-dbar_l)[..., None, :]
     return log_det, Vinv @ core @ Qinv
 
