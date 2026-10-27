@@ -530,24 +530,26 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         dev = self._device_arrays()
         BK2, BK2inv = dev.BK2, dev.BK2inv
         n, nb = len(ids), walkers.nbasis
-        ids_x = xp.asarray(ids)
+        # With every walker live, views of the walker arrays instead of copies.
+        everyone = n == walkers.nwalkers
+        ids_x = slice(None) if everyone else xp.asarray(ids)
         I = xp.eye(nb)
         # Counters: invalid weights, steps, kills, forbidden fields.
         counts = xp.zeros(4, dtype=xp.int64)
 
-        # Kinetic step and guide contraction at the interaction cut.
-        q_old = walkers.Qmat[ids_x]
-        q_kin = BK2 @ (BK2 @ q_old)
+        # Kinetic step and guide contraction at the interaction cut; the half
+        # steps K Q and Q^{-1} K^{-1} serve again for the walker update.
+        q_half = BK2 @ walkers.Qmat[ids_x]
         cached = self.cache_qinv and walkers.Qinv is not None
-        qi_old = walkers.Qinv[ids_x] if cached else None
+        qi_half = walkers.Qinv[ids_x] @ BK2inv if cached else None
         ld_old = walkers.log_det_Q[ids_x] if cached else None
         log_d, Tmat = walkers.log_d[ids_x], walkers.Tmat[ids_x]
         log_s, green = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            q_kin,
+            BK2 @ q_half,
             log_d,
             Tmat,
             self.guide_scale(step),
-            Qinv=(qi_old @ BK2inv) @ BK2inv if cached else None,
+            Qinv=qi_half @ BK2inv if cached else None,
             log_det_Q=ld_old + 2.0 * dev.logdet_BK2 if cached else None,
         )
         good = xp.isfinite(log_s) & xp.isfinite(green).all(axis=(1, 2, 3))
@@ -579,7 +581,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
 
         # Final kinetic half and the walker updates.
         final_g = BK2 @ green @ BK2inv
-        final_q = BK2 @ (factors[:, :, :, None] * (BK2 @ q_old))
+        final_q = BK2 @ (factors[:, :, :, None] * q_half)
         good_final = (
             live
             & xp.isfinite(final_g).all(axis=(1, 2, 3))
@@ -625,9 +627,11 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         surviving = updated != 0
         walkers.weight[ids[kept]] = updated
         sub = kept[surviving]
-        sub_x = xp.asarray(sub)
         target = ids[sub]
-        target_x = xp.asarray(target)
+        if everyone and len(sub) == n:
+            sub_x = target_x = slice(None)
+        else:
+            sub_x, target_x = xp.asarray(sub), xp.asarray(target)
         walkers.Qmat[target_x] = final_q[sub_x]
         walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
         walkers.Ga[target_x] = I - final_g[sub_x, 0]
@@ -635,9 +639,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         if self.trace_branching:
             walkers.log_tr[target] = to_host(log_trace[sub_x])
         if cached:
-            walkers.Qinv[target_x] = (
-                (qi_old[sub_x] @ BK2inv) / factors[sub_x, :, None, :]
-            ) @ BK2inv
+            walkers.Qinv[target_x] = (qi_half[sub_x] / factors[sub_x, :, None, :]) @ BK2inv
             walkers.log_det_Q[target_x] = (
                 ld_old[sub_x] + 2.0 * dev.logdet_BK2 + xp.log(factors[sub_x]).sum(axis=-1)
             )

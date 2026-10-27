@@ -100,8 +100,9 @@ def _propagators():
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("kmax", [0, 1, 3])
 @pytest.mark.parametrize("kind", ["spin", "charge", "pair"])
-def test_kernel_matches_host_loop(kind):
+def test_kernel_matches_host_loop(kind, kmax):
     numpy.random.seed(17)
     prop = _propagators()[kind]
     # Random Green's functions give complex probabilities; accept them so that
@@ -136,6 +137,7 @@ def test_kernel_matches_host_loop(kind):
         out["factors"],
         out["record"],
         prop.real_tolerance,
+        kmax=kmax,
     )
     ref = dict(
         zip(
@@ -155,4 +157,4 @@ def test_kernel_matches_host_loop(kind):
 
 if __name__ == "__main__":
     for k in ("spin", "charge", "pair"):
-        test_kernel_matches_host_loop(k)
+        test_kernel_matches_host_loop(k, 3)
