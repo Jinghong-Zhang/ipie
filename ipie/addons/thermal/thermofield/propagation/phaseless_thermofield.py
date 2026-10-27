@@ -88,6 +88,16 @@ class ThermofieldPhaseless(PhaselessGeneric):
         )
         self._kernels_ready = False
 
+    def cast_to_cupy(self, verbose=False):
+        """Copy the one-body propagator and the mean-field shift to the GPU."""
+        if verbose:
+            print(f"# {self.__class__.__name__}: copying the propagator to the GPU.")
+        self.BH1 = xp.asarray(self.BH1)
+        self.mf_shift = xp.asarray(self.mf_shift)
+        self._kernels_ready = False
+        self._fb_P = None
+        self._work_shape = None
+
     def _setup_kernels(self, hamiltonian):
         """Set up the real-GEMM layout and the diagonal one-body propagator once."""
         if self._kernels_ready:

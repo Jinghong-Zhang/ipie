@@ -17,6 +17,7 @@
 
 import numpy
 
+from ipie.config import config
 from ipie.walkers.pop_controller import PopController
 
 
@@ -26,13 +27,19 @@ class ThermofieldPopController(PopController):
     The core controller copies whole walker buffers between slots. On a single
     MPI process this controller runs it on a stand-in carrying only the
     weights, phases and walker ids, then applies the resulting slot to source
-    map to the walker matrices in one gather. With several processes walkers
-    move between ranks through the full buffers.
+    map to the walker matrices in one gather, so device-resident walkers never
+    move to the host. With several processes walkers move between ranks through
+    the full buffers, staged through the host on the GPU.
     """
 
     def pop_control(self, walkers, comm):
         if comm.size > 1:
-            super().pop_control(walkers, comm)
+            if config.get_option("use_gpu"):
+                walkers.cast_to_host()
+                super().pop_control(walkers, comm)
+                walkers.cast_to_cupy()
+            else:
+                super().pop_control(walkers, comm)
             return
         reorder_population(self, walkers, comm)
 

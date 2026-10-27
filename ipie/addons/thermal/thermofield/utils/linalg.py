@@ -19,6 +19,7 @@
 import numpy
 import scipy.linalg
 
+from ipie.config import config
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import to_host
 
@@ -201,8 +202,8 @@ def stabilized_inverse_one_plus_batched(
 ):
     r"""Stacked :func:`stabilized_inverse_one_plus` over leading batch axes.
 
-    Same arithmetic as the scalar kernel, evaluated with stacked LAPACK
-    calls. A singular factor gives non-finite output for that batch
+    Same arithmetic as the scalar kernel, evaluated with stacked LAPACK (or
+    cuBLAS) calls. A singular factor gives non-finite output for that batch
     item instead of raising, so callers must kill walkers whose log determinant
     or inverse is not finite.
 
@@ -269,12 +270,50 @@ def stabilized_inverse_one_plus_batched(
 def _inv_slogdet_stack(A):
     """Inverse, determinant sign and log |det| of every matrix in a stack.
 
-    The separate library calls, bit-identical to the scalar kernels. Singular
-    items give non-finite entries instead of raising.
+    On the CPU these are the separate library calls, bit-identical to the
+    scalar kernels. On the GPU one batched getrf serves both: the determinant
+    is read off the LU diagonal and pivots, then getri reuses the factors.
+    Singular items give non-finite entries instead of raising.
     """
-    with numpy.errstate(divide="ignore", invalid="ignore"):
-        sgn, logabs = xp.linalg.slogdet(A)
-    return inv_stack(A), sgn, logabs
+    if not config.get_option("use_gpu"):
+        with numpy.errstate(divide="ignore", invalid="ignore"):
+            sgn, logabs = xp.linalg.slogdet(A)
+        return inv_stack(A), sgn, logabs
+    return _inv_slogdet_stack_gpu(A)
+
+
+def _inv_slogdet_stack_gpu(A):
+    from cupy.cuda import cublas, device  # pylint: disable=import-error
+
+    shape = A.shape
+    n = shape[-1]
+    # getrf overwrites its input, so work on a C-ordered copy. cuBLAS reads it
+    # column major, i.e. factors A^T, which has the same determinant and whose
+    # inverse read back row major is A^{-1}.
+    a = xp.array(A, dtype=xp.complex128, order="C").reshape(-1, n, n)
+    batch = a.shape[0]
+    handle = device.get_cublas_handle()
+    step = n * n * a.itemsize
+    a_ptrs = xp.arange(a.data.ptr, a.data.ptr + step * batch, step, dtype=xp.uintp)
+    piv = xp.empty((batch, n), dtype=xp.int32)
+    info = xp.empty((batch,), dtype=xp.int32)
+    cublas.zgetrfBatched(handle, n, a_ptrs.data.ptr, n, piv.data.ptr, info.data.ptr, batch)
+    diag = a.diagonal(axis1=-2, axis2=-1)
+    parity = (piv != xp.arange(1, n + 1, dtype=xp.int32)).sum(axis=-1) % 2
+    absd = xp.abs(diag)
+    logabs = xp.log(absd).sum(axis=-1)
+    sgn = xp.prod(diag / absd, axis=-1) * (1.0 - 2.0 * parity)
+    c = xp.empty_like(a)
+    c_ptrs = xp.arange(c.data.ptr, c.data.ptr + step * batch, step, dtype=xp.uintp)
+    cublas.zgetriBatched(
+        handle, n, a_ptrs.data.ptr, n, piv.data.ptr, c_ptrs.data.ptr, n, info.data.ptr, batch
+    )
+    bad = info != 0
+    if bool(bad.any()):
+        c[bad] = xp.nan
+        sgn[bad] = 0.0
+        logabs[bad] = -xp.inf
+    return c.reshape(shape), sgn.reshape(shape[:-2]), logabs.reshape(shape[:-2])
 
 
 def one_plus_qdy(Q, log_d, Y, need_inverse=True):

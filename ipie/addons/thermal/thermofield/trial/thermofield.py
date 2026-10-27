@@ -97,6 +97,7 @@ class ThermofieldThermalTrial:
             guide_time = 0.5 * beta
         self.guide_time = float(self._check_guide_time(guide_time))
         self._lambda_cache = {}
+        self._guide_device = None
 
         nbasis = hamiltonian.nbasis
         self.nbasis = nbasis
@@ -174,12 +175,17 @@ class ThermofieldThermalTrial:
     def C_T(self, value):
         self._C_T = value
         self._lambda_cache = {}
+        self._guide_device = None
 
     @staticmethod
     def _check_guide_time(guide_time):
         if guide_time < 0.0:
             raise ValueError("guide_time must be non-negative.")
         return guide_time
+
+    def cast_to_cupy(self, verbose=False):
+        """Copy the guide eigenvectors to the GPU; the rest stays on the host."""
+        self._guide_arrays(xp)
 
     def _guide_lambda(self, s, guide_time, xp=numpy):
         r""":math:`\Lambda_s = C e^{-\tau_g \epsilon} C^\dagger` as an array of module `xp`.
@@ -279,6 +285,14 @@ class ThermofieldThermalTrial:
             log_det, G[s] = self._spin_block(Qmat, log_d, Tmat, s, guide_time)
             log_ovlp += log_det
         return principal_log_phase(log_ovlp), G
+
+    def _guide_arrays(self, xp):
+        """C_T and C_T^dagger as arrays of module `xp` (device copies cached)."""
+        if xp is numpy:
+            return self.C_T, self.C_T_dagger
+        if self._guide_device is None:
+            self._guide_device = (xp.asarray(self.C_T), xp.asarray(self.C_T_dagger))
+        return self._guide_device
 
     def calc_log_overlap_and_greens_function_batched(
         self, Qmat, log_d=None, Tmat=None, guide_time=None, reuse_spin_blocks=False
