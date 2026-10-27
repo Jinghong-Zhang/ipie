@@ -78,6 +78,12 @@ class ThermofieldWalkers(BaseWalkers):
         Complex log of the closed-trace weight
         :math:`\sum_s \log\det(I + \Delta_s)`, used by trace-magnitude
         branching.
+    Qinv : :class:`numpy.ndarray`
+        Cached inverses of the Q factors, shape (nwalkers, 2, nbasis, nbasis),
+        kept by propagators that update them incrementally. None when unused.
+    log_det_Q : :class:`numpy.ndarray`
+        Cached log determinants of the Q factors, shape (nwalkers, 2). None
+        when unused.
     extra_walker_arrays : list
         (array, walker_axis) pairs that population control reorders together
         with the walkers, e.g. per-walker path histories owned by a driver.
@@ -114,11 +120,30 @@ class ThermofieldWalkers(BaseWalkers):
         self._identity = numpy.eye(nbasis)
 
         self.log_tr = numpy.zeros(nwalkers, dtype=numpy.complex128)
+        self.Qinv = None
+        self.log_det_Q = None
         self.extra_walker_arrays = []
         self.update_walker_cache_batched(trial)
         self.log_tr[:] = to_host(trial.calc_log_trace_batched(self.Qmat, self.log_d, self.Tmat))
 
         self.buff_names += ["Qmat", "log_d", "Tmat", "Ga", "Gb", "log_tr"]
+        self.buff_size = round(self.set_buff_size_single_walker() / float(self.nwalkers))
+        self.walker_buffer = numpy.zeros(self.buff_size, dtype=numpy.complex128)
+
+    def add_walker_array(self, name, value):
+        """Add a per-walker array that population control copies with the walkers.
+
+        Parameters
+        ----------
+        name : str
+            Attribute name.
+        value : :class:`numpy.ndarray`
+            Initial value, shape (nwalkers, ...).
+        """
+        setattr(self, name, value)
+        if name not in self.buff_names:
+            self.buff_names += [name]
+        # The array may replace one of another shape.
         self.buff_size = round(self.set_buff_size_single_walker() / float(self.nwalkers))
         self.walker_buffer = numpy.zeros(self.buff_size, dtype=numpy.complex128)
 
@@ -199,6 +224,8 @@ class ThermofieldWalkers(BaseWalkers):
         Every per-walker array in `buff_names` is reordered, except the weights
         and phases, which population control sets itself.
         The arrays in `extra_walker_arrays` are reordered as well.
+        Cached Q inverses are not: propagators that keep them recompute them
+        after population control.
 
         Parameters
         ----------

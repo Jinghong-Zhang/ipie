@@ -49,6 +49,7 @@ def test_pop_control_clones_full_walker_state():
     # must clone the full factored state, the caches and the registered arrays.
     for controller in (PopController, ThermofieldPopController):
         walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
+        walkers.add_walker_array("field_hist", numpy.arange(nwalkers * 5.0).reshape(nwalkers, 5))
         # Walker 0 gets a nontrivial factored state (stabilize sets log_d and
         # Tmat); after rescaling, walker 1 dies and is replaced by a clone.
         walkers.set_delta(0, 2.0 * Delta, trial=trial)
@@ -67,6 +68,7 @@ def test_pop_control_clones_full_walker_state():
         numpy.testing.assert_allclose(walkers.Ga[1], walkers.Ga[0], atol=1e-14)
         numpy.testing.assert_allclose(walkers.Gb[1], walkers.Gb[0], atol=1e-14)
         numpy.testing.assert_allclose(walkers.log_tr[1], walkers.log_tr[0], atol=1e-14)
+        numpy.testing.assert_allclose(walkers.field_hist[1], walkers.field_hist[0], atol=1e-14)
         assert walkers.log_ovlp[1] == pytest.approx(walkers.log_ovlp[0], abs=1e-14)
         assert numpy.abs(walkers.log_d[0]).max() > 0.0
 

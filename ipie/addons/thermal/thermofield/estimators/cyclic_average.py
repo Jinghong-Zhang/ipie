@@ -29,6 +29,87 @@ from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import to_host
 
 
+def cyclic_average_hubbard(
+    walkers, trial, propagator, nslices, stride, measure_walker_fn, stab_every=20, mem_budget=1.5e8
+):
+    r"""Cyclic averaging over the recorded Hubbard fields of every walker.
+
+    The slice propagators are rebuilt from `walkers.field_hist` with
+    `propagator.construct_slice_propagators`; the histories follow the
+    population-control ancestry. Walkers are not changed and no inverse
+    propagators are used.
+
+    Parameters
+    ----------
+    walkers : :class:`ThermofieldWalkers`
+        Walkers with the field history of the whole walk.
+    trial : :class:`ThermofieldCPTrial`
+        Trial (sets nbasis).
+    propagator : :class:`ThermofieldHubbardCP`
+        Propagator that recorded the fields.
+    nslices : int
+        Number of slices of the walk.
+    stride : int
+        Cuts at 0, stride, 2 stride, ...
+    measure_walker_fn : callable
+        Called as measure_walker_fn(iw, G, cut) with the particle contraction
+        :math:`G = I - (I + \Delta_{cut})^{-1}`; ipie's density matrix is G.T.
+    stab_every : int
+        Restratification interval. Default 20.
+    mem_budget : float
+        Bytes for the suffix snapshots. Default 1.5e8.
+
+    Returns
+    -------
+    worst_dev : float
+        Largest cyclic-invariance violation of the trace log determinant.
+    ld0 : :class:`numpy.ndarray`
+        Trace log determinant at cut 0 per walker.
+    """
+    if not isinstance(nslices, (int, numpy.integer)) or nslices < 1:
+        raise ValueError("nslices must be a positive integer.")
+    if not isinstance(stride, (int, numpy.integer)) or stride < 1:
+        raise ValueError("stride must be a positive integer.")
+    if not isinstance(stab_every, (int, numpy.integer)) or stab_every < 1:
+        raise ValueError("stab_every must be a positive integer.")
+    if not numpy.isfinite(mem_budget) or mem_budget <= 0:
+        raise ValueError("mem_budget must be finite and positive.")
+    if not hasattr(walkers, "field_hist") or walkers.field_hist.shape != (
+        walkers.nwalkers,
+        nslices,
+        propagator.nfields,
+    ):
+        raise ValueError("The requested complete Hubbard field history is unavailable.")
+
+    def slice_b(l, ids):
+        return propagator.construct_slice_propagators(walkers.field_hist[ids, l])
+
+    callback = measure_walker_fn
+    counts = numpy.zeros(walkers.nwalkers, dtype=int)
+    if propagator.discrete:
+
+        def callback(iw, green, cut):
+            counts[iw] += 1
+            measure_walker_fn(iw, green, cut)
+
+    result = cyclic_average_engine(
+        walkers.weight,
+        nslices,
+        trial.nbasis,
+        stride,
+        slice_b,
+        callback,
+        stab_every=stab_every,
+        mem_budget=mem_budget,
+        check_phase=True,
+    )
+    if propagator.discrete:
+        expected = len(range(0, nslices, stride))
+        if numpy.any(counts[walkers.weight != 0] != expected):
+            raise FloatingPointError("Incomplete discrete-field cyclic reconstruction.")
+    return result
+
+
 def build_slice_propagators(VHS, BH1, exp_nmax, spin_shared=False):
     r"""Slice propagators :math:`B_s = B_{H1,s} e^{V_{HS}} B_{H1,s}` for a stack of VHS.
 
