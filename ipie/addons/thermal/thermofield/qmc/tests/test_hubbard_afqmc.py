@@ -25,6 +25,7 @@ import scipy.linalg
 from ipie.addons.thermal.thermofield.estimators.cyclic_average import cyclic_average_hubbard
 from ipie.addons.thermal.thermofield.hamiltonians.hubbard import build_hubbard_hamiltonian
 from ipie.addons.thermal.thermofield.propagation.hubbard import ThermofieldHubbardCP
+from ipie.addons.thermal.thermofield.propagation.hubbard_discrete import ThermofieldHubbardDiscrete
 from ipie.addons.thermal.thermofield.qmc.hubbard_afqmc import (
     ThermofieldHubbardAFQMC,
     tune_chemical_potential,
@@ -442,6 +443,60 @@ def test_one_rdm_signed_ratio_keeps_raw_nonhermitian_density():
         driver.one_rdm_summary(block_size=3)
 
 
+@pytest.mark.unit
+def test_snapshots_reweight_to_mixed_estimator_and_leave_walk_unchanged():
+    # Pinned 2x2 lattice with discrete fields and a fixed guide at tau_c.
+    U, beta, dt, tau_c = 4.0, 0.4, 0.02, 0.2
+    nslices = round(beta / dt)
+    results = []
+    for snapshots in ((), ((nslices, tau_c), (nslices // 2, 0.1))):
+        numpy.random.seed(3)
+        ham, hop, pin = build_hubbard_hamiltonian(
+            2, 2, U, 0.5, pbc_x=False, pin_h=0.1, pin_edges=("left",)
+        )
+        k_trial, _, _ = rhf_k_trial(hop, pin, beta, 3.5)
+        trial = ThermofieldCPTrial(ham, beta, k_trial=k_trial, guide_time=tau_c)
+        mpi = MPIHandler()
+        walkers = ThermofieldWalkers(trial, ham.nbasis, 8, mpi)
+        prop = ThermofieldHubbardDiscrete(
+            ham.H1 + U / 2 * numpy.eye(ham.nbasis),
+            U,
+            dt,
+            beta,
+            guide_mode="fixed",
+            fixed_guide_time=tau_c,
+            energy_shift=-4.0,
+        )
+        driver = ThermofieldHubbardAFQMC(
+            ham,
+            hop,
+            trial,
+            walkers,
+            prop,
+            mpi,
+            2,
+            2,
+            nblocks=2,
+            wrap_stride=None,
+            seed=5,
+            shell_distances_squared=(),
+            snapshots=snapshots,
+        )
+        results.append(driver.run(verbose=False))
+    # The measurements consume no random numbers and do not touch the walkers.
+    for plain, snap in zip(*results):
+        for key in ("numer", "denom", "numer_mixed", "denom_mixed"):
+            numpy.testing.assert_array_equal(plain[key], snap[key])
+        # With eta = tau_c at the last slice F = 1: the mixed estimator.
+        assert snap["snap0_eta"] == tau_c
+        numpy.testing.assert_allclose(
+            snap["snap0_numer"] / snap["snap0_denom"],
+            snap["numer_mixed"] / snap["denom_mixed"],
+            rtol=1e-12,
+        )
+        assert numpy.isfinite(snap["snap1_numer"]).all() and snap["snap1_denom"] != 0
+
+
 if __name__ == "__main__":
     test_hubbard_driver_smoke("fixed")
     test_noninteracting_trace_and_spin_correlations("fixed", 5)
@@ -457,6 +512,7 @@ if __name__ == "__main__":
     test_one_rdm_smoke_and_checkpoint()
     test_one_rdm_exact_thermal_density_and_passive_measurement(2)
     test_one_rdm_signed_ratio_keeps_raw_nonhermitian_density()
+    test_snapshots_reweight_to_mixed_estimator_and_leave_walk_unchanged()
     if comm.size > 1:
         test_hubbard_mpi_histories_and_raw_reduction(True, "trace")
         with pytest.MonkeyPatch.context() as patcher:

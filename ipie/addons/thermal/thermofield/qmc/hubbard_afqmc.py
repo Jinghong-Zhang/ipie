@@ -37,7 +37,9 @@ from ipie.qmc.afqmc import AFQMCBase
 from ipie.walkers.base_walkers import WalkerAccumulator
 
 
-def propagate_population_cp(afqmc, walkers, trial, prop, nslices, pcontrol, weight_cap=0.0):
+def propagate_population_cp(
+    afqmc, walkers, trial, prop, nslices, pcontrol, weight_cap=0.0, on_slice=None
+):
     """Walk the population over [0, beta] from the identity with constrained-path propagation.
 
     Parameters
@@ -59,6 +61,9 @@ def propagate_population_cp(afqmc, walkers, trial, prop, nslices, pcontrol, weig
     weight_cap : float
         Walker weights are clipped at this multiple of the total weight; 0
         uses 1e6. Default 0.0.
+    on_slice : callable
+        Called with t + 1 after slice t, after stabilization and before
+        population control. Default None.
     """
     if not isinstance(nslices, (int, numpy.integer)) or nslices < 1:
         raise ValueError("nslices must be a positive integer.")
@@ -111,6 +116,8 @@ def propagate_population_cp(afqmc, walkers, trial, prop, nslices, pcontrol, weig
                 # path keeps the cached overlaps and Green's functions; the
                 # per-walker path recomputes them as it always did.
                 prop.refresh_cache_after_stabilize(walkers, trial, t)
+        if on_slice is not None:
+            on_slice(t + 1)
         if t > 0 and t % afqmc.params.pop_control_freq == 0:
             # All ranks must fail together before the controller divides by
             # its total weight. This does not change any surviving weights.
@@ -219,6 +226,12 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         spin-mixing guide. Default True.
     observables : :class:`TraceRatioObservables`
         Observables; default :class:`HubbardSpinObservables` of the lattice.
+    snapshots : tuple
+        (slice, eta) pairs: after that slice, measure the mixed estimator with
+        the trial at time eta, reweighting every walker by F = S_eta / S_guide,
+        the ratio of its overlaps with that trial and with the guide. Pair k is
+        stored as snap<k>_numer, snap<k>_denom, ... in the block results.
+        Default ().
     verbose : int
         Print information. Default 0.
     """
@@ -248,6 +261,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         wrap_stabilize_freq=20,
         measure_mixed=True,
         observables=None,
+        snapshots=(),
         verbose=0,
     ):
         if config.get_option("use_gpu"):
@@ -349,12 +363,73 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             one_rdm_convention="G[s,i,j]=<c_j^dag c_i>; signed trace ROM",
             rng_seeds=comm.allgather(int(self._parallel_rng_seed)),
         )
+        self.snapshots = [(int(s), float(eta)) for s, eta in snapshots]
+        for s, _ in self.snapshots:
+            if not 1 <= s <= nslices:
+                raise ValueError("Snapshot slice outside the walk.")
+        if self.snapshots:
+            self.metadata.update(
+                snapshots=self.snapshots,
+                snapshot_estimator="sum w F O[G_eta] / sum w F, F = S_eta / S_guide",
+            )
+        self._snaps = {}
         self.results = []
 
     # Compatibility with earlier versions.
     @property
     def nblocks(self):
         return self.params.num_blocks
+
+    def _measure_snapshots(self, slice_index):
+        """Measure the snapshots taken after slice `slice_index`."""
+        for k, (s, eta) in enumerate(self.snapshots):
+            if s == slice_index:
+                self._snaps[k] = self._measure_snapshot(eta)
+
+    def _measure_snapshot(self, eta):
+        """Mixed measurement with the trial at time `eta`, reweighted by S_eta / S_guide."""
+        comm, walkers = self.mpi_handler.comm, self.walkers
+        alive = walkers.weight > 0
+        error = None
+        try:
+            log_s, greens = self.trial.calc_log_overlap_and_greens_function_scaled_batched(
+                walkers.Qmat, walkers.log_d, walkers.Tmat, eta
+            )
+        except (ValueError, ArithmeticError, numpy.linalg.LinAlgError) as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        _synchronize_error(comm, error, "Snapshot contraction failed")
+        bad = alive & (
+            ~numpy.isfinite(log_s) | ~numpy.isfinite(greens.reshape(len(greens), -1)).all(axis=1)
+        )
+        if comm.allreduce(int(bad.sum())):
+            raise FloatingPointError("Nonfinite snapshot contraction on a live walker")
+        log_f = log_s - walkers.log_ovlp
+        shift = float(numpy.max(log_f.real[alive])) if alive.any() else -numpy.inf
+        shift = comm.allreduce(shift, op=MPI.MAX)
+        wf = numpy.zeros(walkers.nwalkers, dtype=numpy.complex128)
+        wf[alive] = walkers.weight[alive] * numpy.exp(log_f[alive] - shift)
+        obs = numpy.zeros((walkers.nwalkers, len(self.observables.names)), dtype=complex)
+        error = None
+        try:
+            for iw in numpy.flatnonzero(alive):
+                obs[iw] = self.observables.measure(greens[iw])
+        except (ValueError, ArithmeticError, numpy.linalg.LinAlgError) as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        _synchronize_error(comm, error, "Snapshot observable failed")
+        local = numpy.concatenate(
+            (wf @ obs, [wf.sum(), numpy.abs(wf).sum(), numpy.sum(numpy.abs(wf) ** 2)])
+        )
+        total = numpy.empty_like(local)
+        comm.Allreduce(local, total)
+        nobs = len(self.observables.names)
+        return dict(
+            numer=total[:nobs],
+            denom=total[nobs],
+            absolute_weight=total[nobs + 1].real,
+            squared_weight=total[nobs + 2].real,
+            shift=shift,
+            eta=eta,
+        )
 
     def _measure_block(self):
         comm, walkers = self.mpi_handler.comm, self.walkers
@@ -650,6 +725,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         self.tsetup += time.time() - start
         for block in range(len(self.results), self.params.num_blocks):
             start_step = time.time()
+            self._snaps = {}
             propagate_population_cp(
                 self,
                 self.walkers,
@@ -658,6 +734,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
                 self.nslices,
                 self.pcontrol,
                 weight_cap=0.0,
+                on_slice=self._measure_snapshots if self.snapshots else None,
             )
             self.tprop += time.time() - start_step
             names = (
@@ -678,7 +755,11 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
                     "Choose an energy_shift near the grand energy and inspect population control."
                 )
             start = time.time()
-            self.results.append(self._measure_block())
+            result = self._measure_block()
+            for k, snap in self._snaps.items():
+                for key, value in snap.items():
+                    result[f"snap{k}_{key}"] = value
+            self.results.append(result)
             self.estimators["hubbard"].set_block(self.results[-1], comm)
             self.accumulators.update(self.walkers)
             self.estimators.compute_estimators(
