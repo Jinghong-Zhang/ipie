@@ -253,6 +253,66 @@ class ThermofieldWalkers(BaseWalkers):
                     view = arr[lead]
                     view[:] = view[ids_x]
 
+    def _per_walker_arrays(self):
+        # Every array that moves with a walker, with the walker axis first; host
+        # arrays stay on the host.
+        arrays = [(getattr(self, name), 0) for name in self.buff_names]
+        arrays += self.extra_walker_arrays
+        return [
+            (
+                numpy.moveaxis(arr, axis, 0)
+                if isinstance(arr, numpy.ndarray)
+                else xp.moveaxis(arr, axis, 0)
+            )
+            for arr, axis in arrays
+        ]
+
+    def packed_size(self):
+        """Length of one walker in :meth:`pack_walkers`."""
+        return sum(view[0].size for view in self._per_walker_arrays())
+
+    def pack_walkers(self, ids):
+        """Copy of the walkers `ids` on the host, to send them to another process.
+
+        Parameters
+        ----------
+        ids : :class:`numpy.ndarray`
+            Walker indices.
+
+        Returns
+        -------
+        buff : :class:`numpy.ndarray`
+            Every per-walker array (`buff_names` and `extra_walker_arrays`) of
+            the walkers, one row per walker, shape (len(ids), size).
+        """
+        parts = []
+        for view in self._per_walker_arrays():
+            rows = view[ids] if isinstance(view, numpy.ndarray) else to_host(view[xp.asarray(ids)])
+            parts.append(rows.reshape(len(ids), -1))
+        return numpy.concatenate(parts, axis=1).astype(numpy.complex128)
+
+    def unpack_walkers(self, ids, buff):
+        """Overwrite the walkers `ids` with rows of :meth:`pack_walkers`.
+
+        Parameters
+        ----------
+        ids : :class:`numpy.ndarray`
+            Walker indices, one per row of `buff`.
+        buff : :class:`numpy.ndarray`
+            Packed walkers, shape (len(ids), size).
+        """
+        start = 0
+        for view in self._per_walker_arrays():
+            size = view[0].size
+            rows = buff[:, start : start + size].reshape((len(ids),) + view.shape[1:])
+            if not numpy.iscomplexobj(view):
+                rows = rows.real
+            if isinstance(view, numpy.ndarray):
+                view[ids] = rows
+            else:
+                view[xp.asarray(ids)] = xp.asarray(rows)
+            start += size
+
     def stabilize(self):
         """Refactorize every walker by column-pivoted QR without changing it.
 
