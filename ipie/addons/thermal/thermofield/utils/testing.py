@@ -18,6 +18,9 @@
 import numpy
 import scipy.linalg
 
+from ipie.addons.thermal.thermofield.propagation.phaseless_thermofield import ThermofieldPhaseless
+from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
+from ipie.addons.thermal.thermofield.walkers.uhf_walkers import ThermofieldWalkers
 from ipie.hamiltonians.generic import GenericRealChol
 
 
@@ -380,3 +383,53 @@ def build_random_real_hamiltonian(nbasis, nchol, scale=0.3, ecore=0.0, seed=7):
         L = 0.5 * (L + L.T)
         chol[:, n] = L.ravel()
     return GenericRealChol(numpy.array([h, h]), chol, ecore=ecore)
+
+
+def build_noninteracting_test_case_handlers(
+    nbasis: int,
+    mu: float,
+    beta: float,
+    timestep: float,
+    nwalkers: int = 2,
+    seed: int = 11,
+):
+    """Random noninteracting system with its thermofield trial, walkers and propagator.
+
+    Seeds the global numpy stream with `seed` and draws a random real
+    symmetric one-body Hamiltonian.
+
+    Parameters
+    ----------
+    nbasis : int
+        Number of basis functions.
+    mu : float
+        Chemical potential.
+    beta : float
+        Inverse temperature.
+    timestep : float
+        Time step.
+    nwalkers : int
+        Number of walkers. Default 2.
+    seed : int
+        Random seed. Default 11.
+
+    Returns
+    -------
+    objs : dict
+        One-body matrix "h1e", "hamiltonian", "trial", "walkers" and "propagator".
+    """
+    numpy.random.seed(seed)
+    h1e = numpy.random.standard_normal((nbasis, nbasis))
+    h1e = 0.5 * (h1e + h1e.T)
+    hamiltonian = build_noninteracting_hamiltonian(h1e)
+    trial = ThermofieldThermalTrial(hamiltonian, beta=beta, mu=mu)
+    walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
+    propagator = ThermofieldPhaseless(timestep, mu)
+    propagator.build(hamiltonian, trial=trial, walkers=walkers)
+    return {
+        "h1e": h1e,
+        "hamiltonian": hamiltonian,
+        "trial": trial,
+        "walkers": walkers,
+        "propagator": propagator,
+    }

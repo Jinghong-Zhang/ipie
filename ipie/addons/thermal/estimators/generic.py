@@ -18,7 +18,39 @@
 
 import plum
 import numpy
+from numba import jit
+
 from ipie.hamiltonians.generic import GenericRealChol, GenericComplexChol
+
+
+@jit(nopython=True, fastmath=True)
+def exchange_energy_real_cholesky(chol, PaT, PbT):
+    """Exchange energy from real Cholesky matrices and complex 1-RDMs.
+
+    The matrix products remain BLAS calls inside Numba.  Contracting
+    ``trace(T @ T)`` elementwise avoids forming the full second matrix product.
+    """
+    exx_real = 0.0
+    exx_imag = 0.0
+    PaT_real = PaT.real.copy()
+    PaT_imag = PaT.imag.copy()
+    PbT_real = PbT.real.copy()
+    PbT_imag = PbT.imag.copy()
+    for x in range(chol.shape[0]):
+        L = chol[x]
+        for PT_real, PT_imag in (
+            (PaT_real, PaT_imag),
+            (PbT_real, PbT_imag),
+        ):
+            T_real = PT_real @ L
+            T_imag = PT_imag @ L
+            for i in range(T_real.shape[0]):
+                for j in range(T_real.shape[1]):
+                    exx_real += T_real[i, j] * T_real[j, i]
+                    exx_real -= T_imag[i, j] * T_imag[j, i]
+                    exx_imag += T_real[i, j] * T_imag[j, i]
+                    exx_imag += T_imag[i, j] * T_real[j, i]
+    return 0.5 * (exx_real + 1.0j * exx_imag)
 
 
 @plum.dispatch
@@ -54,19 +86,8 @@ def local_energy_generic_cholesky(hamiltonian: GenericRealChol, P):
     # Ex.
     PaT = Pa.T.copy()
     PbT = Pb.T.copy()
-    T = numpy.zeros((nbasis, nbasis), dtype=numpy.complex128)
-    exx = 0.0j  # we will iterate over cholesky index to update Ex energy for alpha and beta
-
-    for x in range(nchol):  # Write a numba function that calls BLAS for this.
-        Lmn = hamiltonian.chol[:, x].reshape((nbasis, nbasis))
-        T[:, :].real = PaT.real.dot(Lmn)
-        T[:, :].imag = PaT.imag.dot(Lmn)
-        exx += numpy.trace(T.dot(T))
-        T[:, :].real = PbT.real.dot(Lmn)
-        T[:, :].imag = PbT.imag.dot(Lmn)
-        exx += numpy.trace(T.dot(T))
-
-    exx *= 0.5
+    chol = hamiltonian.chol.T.copy().reshape((nchol, nbasis, nbasis))
+    exx = exchange_energy_real_cholesky(chol, PaT, PbT)
     e2b = ecoul - exx
     return (e1b + e2b + hamiltonian.ecore, e1b + hamiltonian.ecore, e2b)
 
