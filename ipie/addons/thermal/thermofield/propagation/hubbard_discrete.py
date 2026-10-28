@@ -19,8 +19,8 @@ from types import SimpleNamespace
 import numpy
 
 from ipie.addons.thermal.thermofield.propagation.discrete_fields_gpu import sample_discrete_fields
-from ipie.addons.thermal.thermofield.propagation.hubbard import (
-    ThermofieldHubbardCP,
+from ipie.addons.thermal.thermofield.propagation.hubbard_base import (
+    ThermofieldHubbardBase,
     update_trace_weight,
 )
 from ipie.addons.thermal.thermofield.utils.linalg import principal_log_phase
@@ -29,7 +29,7 @@ from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import to_host
 
 
-class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
+class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
     r"""Constrained-path propagation with discrete Hirsch spin fields.
 
     For a slice :math:`B = K D(x) K` with :math:`K = e^{-\Delta\tau h/2}`, let
@@ -68,9 +68,11 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
 
     Parameters
     ----------
-    h_kin, U, timestep, beta, rng, record_fields, guide_mode, fixed_guide_time,
+    h_kin, U, timestep, beta, record_fields, guide_mode, fixed_guide_time,
     batched, cache_qinv, energy_shift, trace_branching, trace_exponent :
-        As in :class:`ThermofieldHubbardCP`.
+        As in :class:`ThermofieldHubbardBase`.
+    rng :
+        Ignored: fields are drawn from `xp.random`, seeded by `set_rng_seed`.
     importance_guide : str
         "same": the guide sets both the constraint and the importance
         function. "completion": the fixed guide sets the constraint (the sign
@@ -148,6 +150,27 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         # Relative size allowed for the rounding imaginary part of the
         # analytically real field probabilities.
         self.real_tolerance = 1e-10
+
+    def construct_slice_propagators(self, fields):
+        r"""Slice propagators :math:`B(x)` for recorded spin fields.
+
+        Spin up acquires :math:`e^{\gamma x}` and spin down :math:`e^{-\gamma x}`.
+
+        Parameters
+        ----------
+        fields : :class:`numpy.ndarray`
+            Fields of one slice, shape (nwalkers, nfields).
+
+        Returns
+        -------
+        B : :class:`numpy.ndarray`
+            Shape (nwalkers, 2, nbasis, nbasis).
+        """
+        dv = numpy.exp(self.gamma * fields)
+        B = numpy.empty((len(fields), 2, self.nfields, self.nfields), dtype=numpy.complex128)
+        B[:, 0] = self.BK2[0] @ (dv[:, :, None] * self.BK2[0])
+        B[:, 1] = self.BK2[1] @ ((1.0 / dv)[:, :, None] * self.BK2[1])
+        return B
 
     def init_walker_cache(self, walkers, trial):
         old_alive = walkers.weight != 0
@@ -664,10 +687,8 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             walkers.field_hist[ids, step] = to_host(record)
 
     def _uniforms(self, walkers):
-        if not self.constraint or self.force_bias_mode != "none":
-            raise ValueError(
-                "Discrete Hirsch propagation requires guide CP and no Gaussian force bias."
-            )
+        if not self.constraint:
+            raise ValueError("Discrete Hirsch propagation requires the constraint.")
         ids = numpy.flatnonzero(walkers.weight != 0)
         # Draw all site uniforms of the live population in walker-major order,
         # so the batched and per-walker paths use the same random numbers.

@@ -75,7 +75,7 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
     beta : float
         Inverse temperature of the walk.
     rng :
-        Ignored, as in :class:`ThermofieldHubbardCP`.
+        Ignored, as in :class:`ThermofieldHubbardDiscrete`.
     grouped : bool
         Grouped sampling. Default True.
     group_size : int

@@ -45,7 +45,7 @@ def cyclic_average_hubbard(
         Walkers with the field history of the whole walk.
     trial : :class:`ThermofieldCPTrial`
         Trial (sets nbasis).
-    propagator : :class:`ThermofieldHubbardCP`
+    propagator : :class:`ThermofieldHubbardBase`
         Propagator that recorded the fields.
     nslices : int
         Number of slices of the walk.

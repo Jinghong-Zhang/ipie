@@ -23,10 +23,8 @@ from ipie.addons.thermal.thermofield.hamiltonians.hubbard import (
     hopping_matrix,
     pinning_field,
 )
-from ipie.addons.thermal.thermofield.propagation.hubbard import (
-    ThermofieldHubbardCP,
-    update_trace_weight,
-)
+from ipie.addons.thermal.thermofield.propagation.hubbard import ThermofieldHubbardCP
+from ipie.addons.thermal.thermofield.propagation.hubbard_base import update_trace_weight
 from ipie.addons.thermal.thermofield.qmc.hubbard_afqmc import propagate_population_cp
 from ipie.addons.thermal.thermofield.trial.hubbard import (
     fit_hubbard_density_trial,

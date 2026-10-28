@@ -55,7 +55,7 @@ def propagate_population_cp(
         Walkers, reset at the start.
     trial : :class:`ThermofieldCPTrial`
         Guide.
-    prop : :class:`ThermofieldHubbardCP`
+    prop : :class:`ThermofieldHubbardBase`
         Propagator.
     nslices : int
         Number of slices.
@@ -192,7 +192,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         Guide.
     walkers : :class:`ThermofieldWalkers`
         Walkers; their number per MPI process sets the population.
-    propagator : :class:`ThermofieldHubbardCP`
+    propagator : :class:`ThermofieldHubbardBase`
         Constrained-path propagator.
     mpi_handler : :class:`ipie.utils.mpi.MPIHandler`
         MPI handler.
