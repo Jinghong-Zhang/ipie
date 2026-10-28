@@ -64,7 +64,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
     No Gaussian force bias or weight clipping is applied.
 
     On the GPU one kernel per slice samples every field of every walker
-    (:func:`sample_discrete_fields`); importance_guide="same" only.
+    (:func:`sample_discrete_fields`).
 
     Parameters
     ----------
@@ -323,7 +323,8 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             ).all(axis=1)
             if two_guides:
                 good_p &= numpy.isfinite(prob_imp).all(axis=1) & (
-                    numpy.abs(prob_imp.imag) <= 1e-10 * numpy.maximum(1.0, numpy.abs(prob_imp.real))
+                    numpy.abs(prob_imp.imag)
+                    <= self.real_tolerance * numpy.maximum(1.0, numpy.abs(prob_imp.real))
                 ).all(axis=1)
             self.invalid_weight_count += int((~good_p).sum())
             live[active[~good_p]] = False
@@ -520,16 +521,12 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         `_slice_finish`, on all walkers of the slice at once with masks instead
         of gathering the survivors; the fields are sampled by one kernel
         (:func:`sample_discrete_fields`), and the host synchronizes once per
-        slice. Supports the guide as importance function, with or without
-        trace branching.
+        slice.
         """
-        if self.importance_guide != "same":
-            raise NotImplementedError(
-                "On the GPU the discrete fields support importance_guide='same' only."
-            )
         dev = self._device_arrays()
         BK2, BK2inv = dev.BK2, dev.BK2inv
         n, nb = len(ids), walkers.nbasis
+        two_guides = self.importance_guide == "completion"
         # With every walker live, views of the walker arrays instead of copies.
         everyone = n == walkers.nwalkers
         ids_x = slice(None) if everyone else xp.asarray(ids)
@@ -540,22 +537,35 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         # Kinetic step and guide contraction at the interaction cut; the half
         # steps K Q and Q^{-1} K^{-1} serve again for the walker update.
         q_half = BK2 @ walkers.Qmat[ids_x]
+        q_kin = BK2 @ q_half
         cached = self.cache_qinv and walkers.Qinv is not None
         qi_half = walkers.Qinv[ids_x] @ BK2inv if cached else None
+        qi_kin = qi_half @ BK2inv if cached else None
         ld_old = walkers.log_det_Q[ids_x] if cached else None
+        ld_kin = ld_old + 2.0 * dev.logdet_BK2 if cached else None
         log_d, Tmat = walkers.log_d[ids_x], walkers.Tmat[ids_x]
         log_s, green = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            BK2 @ q_half,
-            log_d,
-            Tmat,
-            self.guide_scale(step),
-            Qinv=qi_half @ BK2inv if cached else None,
-            log_det_Q=ld_old + 2.0 * dev.logdet_BK2 if cached else None,
+            q_kin, log_d, Tmat, self.guide_scale(step), Qinv=qi_kin, log_det_Q=ld_kin
         )
         good = xp.isfinite(log_s) & xp.isfinite(green).all(axis=(1, 2, 3))
         log_ovlp_old = xp.asarray(walkers.log_ovlp[ids])
-        change = principal_log_phase(log_s - log_ovlp_old)
-        log_weight = change.real + self.dt * self.energy_shift
+        completion = None
+        if two_guides:
+            # Sign constraint from the fixed guide; branching magnitude from the
+            # completion guide, of which only |S_c| is carried.
+            change = principal_log_phase(log_s - xp.asarray(walkers.log_ovlp_constraint[ids]))
+            log_s_imp, green_imp = trial.calc_log_overlap_and_greens_function_scaled_batched(
+                q_kin, log_d, Tmat, self._completion_scale(step), Qinv=qi_kin, log_det_Q=ld_kin
+            )
+            good &= xp.isfinite(log_s_imp) & xp.isfinite(green_imp).all(axis=(1, 2, 3))
+            log_weight = (log_s_imp - log_ovlp_old).real + self.dt * self.energy_shift
+            completion = (
+                xp.ascontiguousarray(BK2inv @ green_imp @ BK2),
+                xp.ascontiguousarray(log_s_imp.real, dtype=xp.complex128),
+            )
+        else:
+            change = principal_log_phase(log_s - log_ovlp_old)
+            log_weight = change.real + self.dt * self.energy_shift
         live = good & (xp.cos(change.imag) > 0.0)
         counts[0] += (~good).sum()
         counts[1] += good.sum()
@@ -577,6 +587,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             factors,
             record,
             self.real_tolerance,
+            completion=completion,
         )
 
         # Final kinetic half and the walker updates.
@@ -588,6 +599,8 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             & xp.isfinite(final_q).all(axis=(1, 2, 3))
             & xp.isfinite(log_s)
         )
+        if two_guides:
+            good_final &= xp.isfinite(completion[1])
         counts[0] += (live & ~good_final).sum()
         log_trace = None
         if self.trace_branching:
@@ -633,7 +646,11 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         else:
             sub_x, target_x = xp.asarray(sub), xp.asarray(target)
         walkers.Qmat[target_x] = final_q[sub_x]
-        walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
+        if two_guides:
+            walkers.log_ovlp[target] = to_host(completion[1][sub_x])
+            walkers.log_ovlp_constraint[target] = to_host(principal_log_phase(log_s[sub_x]))
+        else:
+            walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
         walkers.Ga[target_x] = I - final_g[sub_x, 0]
         walkers.Gb[target_x] = I - final_g[sub_x, 1]
         if self.trace_branching:

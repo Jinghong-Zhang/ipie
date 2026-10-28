@@ -180,8 +180,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
     sums are kept separately (ratio of means) with a log scale; blocks with a
     numerical weight guard event are refused. On the GPU (IPIE_USE_GPU=1) the
     walker matrices stay on the device and the measurements run on the host;
-    this needs discrete fields with importance_guide="same" and one process
-    per population.
+    this needs discrete fields.
 
     Parameters
     ----------

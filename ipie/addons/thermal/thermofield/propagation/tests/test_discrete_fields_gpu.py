@@ -15,6 +15,8 @@
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
 
+from types import SimpleNamespace
+
 import numpy
 import pytest
 
@@ -155,6 +157,85 @@ def test_kernel_matches_host_loop(kind, kmax):
         )
 
 
+def _completion_propagators():
+    ham, _, _ = build_hubbard_hamiltonian(2, 2, 4.0, 0.3, pbc_x=False)
+    fixed = dict(guide_mode="fixed", fixed_guide_time=1.0, importance_guide="completion")
+    pairs = [(0, 0, 1, 0, 4.0), (0, 0, 0, 1, 1.5), (1, 2, 1, 3, -0.8), (0, 3, 1, 2, 2.0)]
+    return {
+        "spin": ThermofieldHubbardDiscrete(ham.H1 + 2.0 * numpy.eye(4), 4.0, 0.05, 1.0, **fixed),
+        "pair": ThermofieldDensityDensityDiscrete(ham.H1, pairs, 0.05, 1.0, grouped=False, **fixed),
+    }
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("kmax", [0, 1, 3])
+@pytest.mark.parametrize("kind", ["spin", "pair"])
+def test_completion_kernel_matches_slice_fields(kind, kmax):
+    # The kernel against the propagator's own host loop, counters included.
+    numpy.random.seed(23)
+    prop = _completion_propagators()[kind]
+    prop.real_tolerance = 1.0
+    prop.record_fields = True
+    nwalkers, nfields = 64, prop.nfields
+    nbasis = prop.BK2.shape[-1]
+    green = _thermal_green(nbasis, nwalkers)
+    green[3, 1, 2, 0] = numpy.nan  # An invalid walker.
+    live = numpy.ones(nwalkers, dtype=bool)
+    live[5] = False  # A walker killed before the fields.
+    state = SimpleNamespace(
+        two_guides=True,
+        green=green,
+        live=live,
+        log_weight=numpy.zeros(nwalkers),
+        log_s=numpy.zeros(nwalkers, dtype=numpy.complex128),
+        factors=numpy.ones((nwalkers, 2, nbasis), dtype=numpy.complex128),
+        green_imp=_thermal_green(nbasis, nwalkers),
+        log_s_imp=numpy.zeros(nwalkers, dtype=numpy.complex128),
+    )
+    uniforms = numpy.random.random((nwalkers, nfields))
+    out = {k: cupy.asarray(v) for k, v in vars(state).items() if isinstance(v, numpy.ndarray)}
+    record = cupy.zeros((nwalkers, nfields))
+    dtypes = (numpy.int32, numpy.int32, numpy.complex128, numpy.complex128, numpy.complex128)
+    legs = tuple(
+        cupy.asarray(numpy.ascontiguousarray(a, dtype=t))
+        for a, t in zip(prop._field_legs(), dtypes)
+    )
+    counts = sample_discrete_fields(
+        out["green"],
+        cupy.asarray(uniforms),
+        legs,
+        out["live"],
+        out["log_weight"],
+        out["log_s"],
+        out["factors"],
+        record,
+        prop.real_tolerance,
+        kmax=kmax,
+        completion=(out["green_imp"], out["log_s_imp"]),
+    )
+    walkers = SimpleNamespace(field_hist=numpy.zeros((nwalkers, 1, nfields)))
+    with numpy.errstate(all="ignore"):
+        prop._slice_fields(walkers, 0, numpy.arange(nwalkers), uniforms, state)
+    expected = [
+        prop.invalid_weight_count,
+        prop.step_count,
+        prop.kill_count,
+        prop.forbidden_field_count,
+    ]
+    numpy.testing.assert_array_equal(cupy.asnumpy(counts), expected)
+    alive = state.live
+    numpy.testing.assert_array_equal(cupy.asnumpy(out["live"]), alive)
+    assert 0 < alive.sum() < nwalkers
+    for key, value in out.items():
+        if key != "live":
+            numpy.testing.assert_allclose(
+                cupy.asnumpy(value)[alive], getattr(state, key)[alive], rtol=1e-12, atol=1e-12
+            )
+    numpy.testing.assert_array_equal(cupy.asnumpy(record)[alive], walkers.field_hist[alive, 0])
+
+
 if __name__ == "__main__":
     for k in ("spin", "charge", "pair"):
         test_kernel_matches_host_loop(k, 3)
+    for k in ("spin", "pair"):
+        test_completion_kernel_matches_slice_fields(k, 3)
