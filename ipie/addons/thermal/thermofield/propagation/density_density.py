@@ -61,7 +61,7 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
 
     with E the accumulated diagonal change on A: a rank-|A| product instead of
     two rank-one updates of every entry per field. Both orders agree to
-    rounding. Grouping requires importance_guide "same".
+    rounding.
 
     Parameters
     ----------
@@ -85,10 +85,6 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
     """
 
     def __init__(self, h1, pairs, timestep, beta, rng=None, grouped=True, group_size=10, **kwargs):
-        if grouped and kwargs.get("importance_guide", "same") != "same":
-            raise ValueError(
-                "Grouped pair updates need importance_guide='same'; pass grouped=False."
-            )
         h1 = numpy.asarray(h1)
         if h1.ndim != 3 or h1.shape[0] != 2:
             raise ValueError("h1 must have shape (2, M, M).")

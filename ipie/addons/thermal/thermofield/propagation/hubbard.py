@@ -81,7 +81,6 @@ class ThermofieldHubbardCP(ThermofieldHubbardBase):
         )
         self.hs_type = "continuous_spin"
         self.field_proposal = "force_biased_gaussian"
-        self.importance_guide = "same"
         self.gamma = numpy.sqrt(timestep * U)
 
     def construct_slice_propagators(self, fields):

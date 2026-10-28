@@ -226,16 +226,6 @@ def test_charge_rejects_unsupported_models_and_trials():
     h_kin = numpy.array([hop, hop])
     with pytest.raises(ValueError, match="chemical potential"):
         ThermofieldHubbardCharge(h_kin + 0.1 * numpy.eye(2), 8, 0.1, 0.3)
-    with pytest.raises(ValueError, match="ordinary guide branching"):
-        ThermofieldHubbardCharge(
-            h_kin,
-            8,
-            0.1,
-            0.3,
-            guide_mode="fixed",
-            fixed_guide_time=0.3,
-            importance_guide="completion",
-        )
     triangle = numpy.ones((2, 3, 3)) - numpy.eye(3)
     with pytest.raises(ValueError, match="bipartite"):
         ThermofieldHubbardCharge(triangle, 8, 0.1, 0.3)

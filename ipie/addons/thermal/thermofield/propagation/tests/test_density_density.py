@@ -77,7 +77,7 @@ def _fock_model(h1, pairs):
     return one, inter, mz, num
 
 
-def _hubbard_objects(prop_cls, mode, importance_guide="same"):
+def _hubbard_objects(prop_cls, mode):
     # Pinned 2x2 lattice, open in x, with on-site spin Hirsch fields or the equivalent pairs.
     U = 4.0
     beta = 0.4
@@ -95,7 +95,6 @@ def _hubbard_objects(prop_cls, mode, importance_guide="same"):
         guide_mode=mode,
         fixed_guide_time=beta,
         energy_shift=-8.0,
-        importance_guide=importance_guide,
     )
     if prop_cls is ThermofieldHubbardDiscrete:
         prop = prop_cls(ham.H1 + U / 2 * numpy.eye(4), U, dt, beta, **kwargs)
@@ -165,14 +164,11 @@ def test_pair_hirsch_identity_all_local_states(V, dt, same_spin):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "mode,importance_guide",
-    [("fixed", "same"), ("completion", "same"), ("fixed", "completion")],
-)
-def test_onsite_pairs_reproduce_spin_hirsch_bitwise(mode, importance_guide):
+@pytest.mark.parametrize("mode", ["fixed", "completion"])
+def test_onsite_pairs_reproduce_spin_hirsch_bitwise(mode):
     runs = []
     for cls in (ThermofieldHubbardDiscrete, ThermofieldDensityDensityDiscrete):
-        trial, walkers, prop, driver, pcontrol = _hubbard_objects(cls, mode, importance_guide)
+        trial, walkers, prop, driver, pcontrol = _hubbard_objects(cls, mode)
         # The same numbers for the fields and population control of both runs.
         numpy.random.seed(713)
         propagate_population_cp(driver, walkers, trial, prop, 20, pcontrol)
@@ -410,23 +406,13 @@ def test_rejects_bad_pairs():
         ThermofieldDensityDensityDiscrete(h, [(0, 0, 0, 0, 1.0)], 0.1, 1.0)
     with pytest.raises(ValueError):
         ThermofieldDensityDensityDiscrete(h, [(0, 0, 1, 2, 1.0)], 0.1, 1.0)
-    with pytest.raises(ValueError):
-        ThermofieldDensityDensityDiscrete(
-            h,
-            [(0, 0, 1, 0, 1.0)],
-            0.1,
-            1.0,
-            guide_mode="fixed",
-            fixed_guide_time=1.0,
-            importance_guide="completion",
-        )
 
 
 if __name__ == "__main__":
     test_slater_d_matrices_sum_rules_and_t2g_kanamori()
     test_ising_pair_count_and_orbital_rows()
     test_pair_hirsch_identity_all_local_states(-1.5, 0.05, True)
-    test_onsite_pairs_reproduce_spin_hirsch_bitwise("fixed", "same")
+    test_onsite_pairs_reproduce_spin_hirsch_bitwise("fixed")
     test_pair_ratios_and_updates_against_dense_determinants()
     test_two_slice_partition_and_observables_against_fock_space()
     test_observable_moments_of_nonhermitian_gaussian()

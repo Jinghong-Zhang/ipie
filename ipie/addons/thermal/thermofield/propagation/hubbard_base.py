@@ -78,8 +78,8 @@ class ThermofieldHubbardBase(ABC):
     of the guide at the current theta, and a walker whose guide overlap ratio
     has a negative real part is killed (the constraint).
 
-    Subclasses set `discrete`, `gamma`, `hs_type`, `field_proposal` and
-    `importance_guide`, and sample the fields.
+    Subclasses set `discrete`, `gamma`, `hs_type` and `field_proposal`, and
+    sample the fields.
 
     Parameters
     ----------

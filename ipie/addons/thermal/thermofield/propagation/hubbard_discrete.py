@@ -70,14 +70,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         As in :class:`ThermofieldHubbardBase`.
     rng :
         Ignored: fields are drawn from `xp.random`, seeded by `set_rng_seed`.
-    importance_guide : str
-        "same": the guide sets both the constraint and the importance
-        function. "completion": the fixed guide sets the constraint (the sign
-        of every step and the allowed fields), while the allowed fields are
-        drawn and the walkers branched with the magnitude of the completion
-        guide :math:`|\det(I + e^{-(\beta - \theta) k_T} \Delta)|`, which is
-        :math:`|\det(I + \Delta)|` at the endpoint; the endpoint correction is then
-        the sign of the trace only. Requires guide_mode "fixed". Default "same".
     """
 
     discrete = True
@@ -95,7 +87,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         batched=True,
         cache_qinv=True,
         energy_shift=0.0,
-        importance_guide="same",
     ):
         super().__init__(
             h_kin,
@@ -122,21 +113,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         self.field_proposal = "site_conditional_guide"
         self.forbidden_field_count = 0
         self._device = None
-        # importance_guide="completion": keep the fixed guide as the path
-        # constraint (kinetic-step sign and allowed site fields) but draw the
-        # allowed fields and branch with the magnitude of the COMPLETION guide
-        # overlap |det(1 + e^{-(beta-theta) k_T} Delta)|, which equals
-        # |det(1 + Delta)| at the endpoint.  The endpoint correction Q is then
-        # the sign of the physical trace only, so its heavy-tailed magnitude
-        # never enters the population.  Exact for the same constrained
-        # ensemble: only the importance function changes.
-        if importance_guide not in ("same", "completion"):
-            raise ValueError("importance_guide must be 'same' or 'completion'.")
-        if importance_guide == "completion":
-            if guide_mode != "fixed":
-                raise ValueError("importance_guide='completion' requires guide_mode='fixed'.")
-            self.field_proposal = "site_conditional_completion_importance"
-        self.importance_guide = importance_guide
         # Relative size allowed for the rounding imaginary part of the
         # analytically real field probabilities.
         self.real_tolerance = 1e-10
@@ -166,44 +142,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         old_alive = walkers.weight != 0
         super().init_walker_cache(walkers, trial)
         self.invalid_weight_count += int((old_alive & (walkers.weight == 0)).sum())
-        if self.importance_guide == "completion":
-            # At theta = 0 the completion importance guide (time beta) and the
-            # fixed constraint guide coincide: both caches start from the same
-            # overlap; log_ovlp keeps only the magnitude from here on.
-            cache = walkers.log_ovlp.copy()
-            if "log_ovlp_constraint" not in walkers.buff_names:
-                walkers.add_walker_array("log_ovlp_constraint", cache)
-            else:
-                walkers.log_ovlp_constraint[:] = cache
-            walkers.log_ovlp[:] = cache.real
-
-    def _completion_scale(self, step):
-        """Guide time of the completion importance guide after slice ``step``."""
-        return max(0.0, self.beta - (step + 1) * self.dt)
-
-    def refresh_cache_after_stabilize(self, walkers, trial, l):
-        if self.importance_guide != "completion":
-            return super().refresh_cache_after_stabilize(walkers, trial, l)
-        alive = numpy.flatnonzero(walkers.weight != 0.0)
-        if alive.size == 0:
-            return
-        lo_f, G = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            walkers.Qmat[alive], walkers.log_d[alive], walkers.Tmat[alive], self.guide_scale(l)
-        )
-        lo_c, _ = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            walkers.Qmat[alive],
-            walkers.log_d[alive],
-            walkers.Tmat[alive],
-            self._completion_scale(l),
-        )
-        ok = numpy.isfinite(lo_f) & numpy.isfinite(lo_c) & numpy.isfinite(G).all(axis=(1, 2, 3))
-        walkers.weight[alive[~ok]] = 0.0
-        up = alive[ok]
-        eye = numpy.eye(walkers.nbasis)
-        walkers.log_ovlp_constraint[up] = principal_log_phase(lo_f[ok])
-        walkers.log_ovlp[up] = lo_c[ok].real
-        walkers.Ga[up] = eye - G[ok, 0]
-        walkers.Gb[up] = eye - G[ok, 1]
 
     def _site_probabilities(self, green, site, ids=None):
         density = green[:, :, site, site]
@@ -248,9 +186,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
 
     def _slice_start(self, walkers, trial, step, ids):
         """Kinetic step, guide contraction at the interaction cut, kill and weight set-up."""
-        log_s_imp = green_imp = None
         eye = numpy.eye(walkers.nbasis)
-        two_guides = self.importance_guide == "completion"
         q_old = walkers.Qmat[ids]
         q_kin = self.BK2 @ (self.BK2 @ q_old)
         cached = self.cache_qinv and walkers.Qinv is not None
@@ -258,7 +194,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         ld_old = walkers.log_det_Q[ids] if cached else None
         qi_kin = (qi_old @ self.BK2inv) @ self.BK2inv if cached else None
         ld_kin = ld_old + 2.0 * self.logdet_BK2 if cached else None
-        # Constraint guide (the guide selected by guide_mode).
         log_s, green = trial.calc_log_overlap_and_greens_function_scaled_batched(
             q_kin,
             walkers.log_d[ids],
@@ -268,27 +203,8 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             log_det_Q=ld_kin,
         )
         good = numpy.isfinite(log_s) & numpy.isfinite(green).all(axis=(1, 2, 3))
-        if two_guides:
-            # Sign constraint from the fixed guide (cache log_ovlp_constraint);
-            # branching magnitude from the completion guide (cache log_ovlp).
-            change = principal_log_phase(log_s - walkers.log_ovlp_constraint[ids])
-            log_s_imp, green_imp = trial.calc_log_overlap_and_greens_function_scaled_batched(
-                q_kin,
-                walkers.log_d[ids],
-                walkers.Tmat[ids],
-                self._completion_scale(step),
-                Qinv=qi_kin,
-                log_det_Q=ld_kin,
-            )
-            good &= numpy.isfinite(log_s_imp) & numpy.isfinite(green_imp).all(axis=(1, 2, 3))
-            log_weight = (log_s_imp - walkers.log_ovlp[ids]).real + self.dt * self.energy_shift
-            # Only |S_c| is carried: its sign is recovered at the endpoint as
-            # the sign of det(1 + Delta), which the driver evaluates as Q.
-            log_s_imp = log_s_imp.real.astype(numpy.complex128)
-            green_imp = self.BK2inv @ green_imp @ self.BK2
-        else:
-            change = principal_log_phase(log_s - walkers.log_ovlp[ids])
-            log_weight = change.real + self.dt * self.energy_shift
+        change = principal_log_phase(log_s - walkers.log_ovlp[ids])
+        log_weight = change.real + self.dt * self.energy_shift
         self.invalid_weight_count += int((~good).sum())
         live = good & (numpy.cos(change.imag) > 0.0)
         self.step_count += int(good.sum())
@@ -298,15 +214,12 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         factors = numpy.ones((len(ids), 2, walkers.nbasis), dtype=self.auxf.dtype)
         return SimpleNamespace(
             eye=eye,
-            two_guides=two_guides,
             q_old=q_old,
             cached=cached,
             qi_old=qi_old,
             ld_old=ld_old,
             log_s=log_s,
             green=green,
-            log_s_imp=log_s_imp,
-            green_imp=green_imp,
             log_weight=log_weight,
             live=live,
             factors=factors,
@@ -314,11 +227,8 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
 
     def _slice_fields(self, walkers, step, ids, uniforms, state):
         """Sequential heat-bath sampling of every field; arrays in ``state`` change in place."""
-        two_guides = state.two_guides
         log_s = state.log_s
         green = state.green
-        log_s_imp = state.log_s_imp
-        green_imp = state.green_imp
         log_weight = state.log_weight
         live = state.live
         factors = state.factors
@@ -328,31 +238,17 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
                 break
             with numpy.errstate(over="ignore", invalid="ignore"):
                 probabilities = self._field_probabilities(green, site, active)
-                if two_guides:
-                    prob_imp = self._field_probabilities(green_imp, site, active)
             good_p = numpy.isfinite(probabilities).all(axis=1) & (
                 numpy.abs(probabilities.imag)
                 <= self.real_tolerance * numpy.maximum(1.0, numpy.abs(probabilities.real))
             ).all(axis=1)
-            if two_guides:
-                good_p &= numpy.isfinite(prob_imp).all(axis=1) & (
-                    numpy.abs(prob_imp.imag)
-                    <= self.real_tolerance * numpy.maximum(1.0, numpy.abs(prob_imp.real))
-                ).all(axis=1)
             self.invalid_weight_count += int((~good_p).sum())
             live[active[~good_p]] = False
             probabilities = probabilities[good_p].real
-            if two_guides:
-                prob_imp = prob_imp[good_p].real
             active = active[good_p]
             self.step_count += len(active)
             self.forbidden_field_count += int((probabilities <= 0).sum())
-            if two_guides:
-                # Fields forbidden by the fixed constraint get zero probability;
-                # the allowed ones are drawn with the completion-guide magnitude.
-                positive = numpy.where(probabilities > 0.0, numpy.abs(prob_imp), 0.0)
-            else:
-                positive = numpy.maximum(probabilities, 0.0)
+            positive = numpy.maximum(probabilities, 0.0)
             with numpy.errstate(over="ignore", invalid="ignore"):
                 norm = positive.sum(axis=1)
             valid_norm = numpy.isfinite(norm)
@@ -372,17 +268,10 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             with numpy.errstate(divide="ignore", over="ignore", invalid="ignore"):
                 self._field_green_update(update, site, chosen)
             valid_g = numpy.isfinite(update).all(axis=(1, 2, 3))
-            if two_guides:
-                update_imp = green_imp if all_active else green_imp[active]
-                with numpy.errstate(divide="ignore", over="ignore", invalid="ignore"):
-                    self._field_green_update(update_imp, site, chosen)
-                valid_g &= numpy.isfinite(update_imp).all(axis=(1, 2, 3))
             self.invalid_weight_count += int((~valid_g).sum())
             live[active[~valid_g]] = False
             if not all_active:
                 green[active] = update
-                if two_guides:
-                    green_imp[active] = update_imp
             self._field_factors(factors, active, site, chosen)
             log_weight[active] += numpy.log(norm)
             sel = numpy.arange(len(chosen))
@@ -391,26 +280,18 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
                 + numpy.log(probabilities[accepted][sel, chosen])
                 - self._field_log_scalar(site, chosen)
             )
-            if two_guides:
-                log_s_imp[active] += (
-                    numpy.log(2.0)
-                    + numpy.log(positive[sel, chosen])
-                    - self._field_log_scalar(site, chosen).real
-                )
             if self.record_fields:
                 walkers.field_hist[ids[active], step, site] = 1 - 2 * chosen
 
     def _slice_finish(self, walkers, trial, step, ids, state):
         """Final kinetic half, weights, constraint caches and Q-inverse caches."""
         eye = state.eye
-        two_guides = state.two_guides
         q_old = state.q_old
         cached = state.cached
         qi_old = state.qi_old
         ld_old = state.ld_old
         log_s = state.log_s
         green = state.green
-        log_s_imp = state.log_s_imp
         log_weight = state.log_weight
         live = state.live
         factors = state.factors
@@ -426,8 +307,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             & numpy.isfinite(final_q).all(axis=(1, 2, 3))
             & numpy.isfinite(log_s[kept])
         )
-        if two_guides:
-            good_final &= numpy.isfinite(log_s_imp[kept])
         self.invalid_weight_count += int((~good_final).sum())
         finite_weight = good_final & numpy.isfinite(log_weight[kept])
         if finite_weight.any():
@@ -444,11 +323,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         target = ids[kept[surviving]]
         walkers.weight[ids[kept]] = updated
         walkers.Qmat[target] = final_q[surviving]
-        if two_guides:
-            walkers.log_ovlp[target] = log_s_imp[kept[surviving]]
-            walkers.log_ovlp_constraint[target] = principal_log_phase(log_s[kept[surviving]])
-        else:
-            walkers.log_ovlp[target] = principal_log_phase(log_s[kept[surviving]])
+        walkers.log_ovlp[target] = principal_log_phase(log_s[kept[surviving]])
         walkers.Ga[target] = eye - final_g[surviving, 0]
         walkers.Gb[target] = eye - final_g[surviving, 1]
         if cached:
@@ -517,7 +392,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         dev = self._device_arrays()
         BK2, BK2inv = dev.BK2, dev.BK2inv
         n, nb = len(ids), walkers.nbasis
-        two_guides = self.importance_guide == "completion"
         # With every walker live, views of the walker arrays instead of copies.
         everyone = n == walkers.nwalkers
         ids_x = slice(None) if everyone else xp.asarray(ids)
@@ -539,24 +413,8 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             q_kin, log_d, Tmat, self.guide_scale(step), Qinv=qi_kin, log_det_Q=ld_kin
         )
         good = xp.isfinite(log_s) & xp.isfinite(green).all(axis=(1, 2, 3))
-        log_ovlp_old = xp.asarray(walkers.log_ovlp[ids])
-        completion = None
-        if two_guides:
-            # Sign constraint from the fixed guide; branching magnitude from the
-            # completion guide, of which only |S_c| is carried.
-            change = principal_log_phase(log_s - xp.asarray(walkers.log_ovlp_constraint[ids]))
-            log_s_imp, green_imp = trial.calc_log_overlap_and_greens_function_scaled_batched(
-                q_kin, log_d, Tmat, self._completion_scale(step), Qinv=qi_kin, log_det_Q=ld_kin
-            )
-            good &= xp.isfinite(log_s_imp) & xp.isfinite(green_imp).all(axis=(1, 2, 3))
-            log_weight = (log_s_imp - log_ovlp_old).real + self.dt * self.energy_shift
-            completion = (
-                xp.ascontiguousarray(BK2inv @ green_imp @ BK2),
-                xp.ascontiguousarray(log_s_imp.real, dtype=xp.complex128),
-            )
-        else:
-            change = principal_log_phase(log_s - log_ovlp_old)
-            log_weight = change.real + self.dt * self.energy_shift
+        change = principal_log_phase(log_s - xp.asarray(walkers.log_ovlp[ids]))
+        log_weight = change.real + self.dt * self.energy_shift
         live = good & (xp.cos(change.imag) > 0.0)
         counts[0] += (~good).sum()
         counts[1] += good.sum()
@@ -578,7 +436,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             factors,
             record,
             self.real_tolerance,
-            completion=completion,
         )
 
         # Final kinetic half and the walker updates.
@@ -590,8 +447,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             & xp.isfinite(final_q).all(axis=(1, 2, 3))
             & xp.isfinite(log_s)
         )
-        if two_guides:
-            good_final &= xp.isfinite(completion[1])
         counts[0] += (live & ~good_final).sum()
 
         # Weights and counters on the host.
@@ -623,11 +478,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         else:
             sub_x, target_x = xp.asarray(sub), xp.asarray(target)
         walkers.Qmat[target_x] = final_q[sub_x]
-        if two_guides:
-            walkers.log_ovlp[target] = to_host(completion[1][sub_x])
-            walkers.log_ovlp_constraint[target] = to_host(principal_log_phase(log_s[sub_x]))
-        else:
-            walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
+        walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
         walkers.Ga[target_x] = I - final_g[sub_x, 0]
         walkers.Gb[target_x] = I - final_g[sub_x, 1]
         if cached:
@@ -684,8 +535,6 @@ class ThermofieldHubbardCharge(ThermofieldHubbardDiscrete):
 
     def __init__(self, h_kin, U, timestep, beta, rng=None, **kwargs):
         super().__init__(h_kin, U, timestep, beta, rng=rng, **kwargs)
-        if self.importance_guide != "same":
-            raise ValueError("Charge reference requires ordinary guide branching.")
         h = numpy.asarray(h_kin).real
         if not numpy.allclose(h[0], h[1], atol=1e-12, rtol=0) or not numpy.allclose(
             numpy.diag(h[0]), 0, atol=1e-12, rtol=0

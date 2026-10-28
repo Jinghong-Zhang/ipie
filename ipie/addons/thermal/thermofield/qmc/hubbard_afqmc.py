@@ -345,7 +345,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             hs_type=propagator.hs_type,
             hs_gamma=propagator.gamma,
             field_proposal=propagator.field_proposal,
-            importance_guide=propagator.importance_guide,
             energy_shift=propagator.energy_shift,
             fixed_guide_time=propagator.fixed_guide_time,
             wrap_stride=wrap_stride,
@@ -501,7 +500,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         _synchronize_error(comm, error, "Mixed observable failed")
         mixed_weights = numpy.zeros(walkers.nwalkers, dtype=numpy.complex128)
         mixed_weights[alive] = walkers.weight[alive]
-        if self.propagator.importance_guide == "same" and alive.any():
+        if alive.any():
             # The cached guide overlap must agree with the fresh contraction of the same guide.
             mixed_dev = float(
                 numpy.max(numpy.abs(numpy.exp(mixed_log[alive] - walkers.log_ovlp[alive]) - 1.0))

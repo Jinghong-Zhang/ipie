@@ -444,6 +444,6 @@ if __name__ == "__main__":
     test_one_rdm_signed_ratio_keeps_raw_nonhermitian_density()
     test_snapshots_reweight_to_mixed_estimator_and_leave_walk_unchanged()
     if comm.size > 1:
-        test_hubbard_mpi_histories_and_raw_reduction(True, "trace")
+        test_hubbard_mpi_histories_and_raw_reduction()
         with pytest.MonkeyPatch.context() as patcher:
             test_measurement_failure_is_synchronized_across_ranks(patcher)
