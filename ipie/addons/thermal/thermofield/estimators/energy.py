@@ -240,18 +240,8 @@ class ThermofieldTraceEstimator(ThermofieldMixedEstimator):
         Trial.
     filename : str
         Text file for the block data. Default None.
-    trace_branching : bool
-        The weights already carry :math:`|Q|`, so only its phase enters.
-        Default False.
     """
 
-    def __init__(self, hamiltonian=None, trial=None, filename=None, trace_branching=False):
+    def __init__(self, hamiltonian=None, trial=None, filename=None):
         super().__init__(0.0, hamiltonian=hamiltonian, trial=trial, filename=filename)
         self.label = "trace"
-        self.trace_branching = trace_branching
-
-    def calc_local_quantities(self, walkers, hamiltonian, trial):
-        log_factor, energy, nav = super().calc_local_quantities(walkers, hamiltonian, trial)
-        if self.trace_branching:
-            log_factor = 1j * log_factor.imag
-        return log_factor, energy, nav

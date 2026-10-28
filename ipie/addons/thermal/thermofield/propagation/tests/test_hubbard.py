@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import numpy
 import pytest
-from scipy.linalg import eigh, expm
+from scipy.linalg import expm
 
 from ipie.addons.thermal.thermofield.estimators.cyclic_average import cyclic_average_hubbard
 from ipie.addons.thermal.thermofield.estimators.hubbard import HubbardSpinObservables
@@ -27,10 +27,8 @@ from ipie.addons.thermal.thermofield.hamiltonians.hubbard import (
     build_hubbard_hamiltonian,
     hopping_matrix,
 )
-from ipie.addons.thermal.thermofield.propagation.hubbard import (
-    ThermofieldHubbardCP,
-    update_trace_weight,
-)
+from ipie.addons.thermal.thermofield.propagation.hubbard import ThermofieldHubbardCP
+from ipie.addons.thermal.thermofield.propagation.hubbard_base import update_trace_weight
 from ipie.addons.thermal.thermofield.qmc.hubbard_afqmc import propagate_population_cp
 from ipie.addons.thermal.thermofield.trial.hubbard import (
     fit_hubbard_density_trial,
@@ -40,7 +38,6 @@ from ipie.addons.thermal.thermofield.trial.hubbard import (
     thermal_uhf_scf,
     ThermofieldCPTrial,
 )
-from ipie.addons.thermal.thermofield.utils.testing import creation_operators
 from ipie.addons.thermal.thermofield.walkers.pop_controller import ThermofieldPopController
 from ipie.addons.thermal.thermofield.walkers.uhf_walkers import ThermofieldWalkers
 from ipie.utils.mpi import MPIHandler
@@ -54,7 +51,6 @@ def build_test_case(
     batched=True,
     cache=True,
     mode="fixed",
-    trace_branching=False,
     energy_shift=0.0,
 ):
     # Periodic 2x2 lattice at mu = 0.3 with a noninteracting guide at 3.6 electrons.
@@ -73,7 +69,6 @@ def build_test_case(
         fixed_guide_time=beta,
         batched=batched,
         cache_qinv=cache,
-        trace_branching=trace_branching,
         energy_shift=energy_shift,
     )
     afqmc = SimpleNamespace(
@@ -261,161 +256,13 @@ def test_trial_fit_records_scf_failures_and_rejects_all_failed():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("batched", [False, True])
-def test_trace_branching_unbranched_telescoping(batched):
-    # The same proposed paths have equal signed physical contributions. Direct
-    # per-slice calls omit branching and the population driver's broad
-    # numerical weight guard, so the actual telescoping identity is tested.
-    beta, dt, nslices = 2.0, 0.02, 100
-    paths = []
-    for trace_branching in (False, True):
-        trial, W, prop, _, _ = build_test_case(beta=beta, dt=dt, batched=batched)
-        prop.trace_branching = trace_branching
-        W.field_hist = numpy.zeros((W.nwalkers, nslices, prop.nfields))
-        prop.init_walker_cache(W, trial)
-        initial_guide = W.log_ovlp.copy()
-        initial_trace = trial.calc_log_trace_batched(W.Qmat, W.log_d, W.Tmat)
-        if batched:
-            prop.seed_qinv_cache(W)
-        numpy.random.seed(73)
-        for step in range(nslices):
-            prop.propagate_walkers(W, trial, step)
-            if (step + 1) % 5 == 0:
-                W.stabilize()
-                if batched:
-                    prop.refresh_qinv_after_stabilize(W)
-                else:
-                    prop.refresh_cache_after_stabilize(W, trial, step)
-        trace_log, trace_G = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            W.Qmat, W.log_d, W.Tmat, 0.0
-        )
-        assert numpy.all(W.weight > 0)
-        assert prop.trace_invalid_count == 0
-        assert prop.trace_log_weight_bound_count == 0
-        paths.append((W, initial_guide, initial_trace, trace_log, trace_G))
-    old, new = paths[0][0], paths[1][0]
-    numpy.testing.assert_array_equal(old.field_hist, new.field_hist)
-    numpy.testing.assert_array_equal(old.Qmat, new.Qmat)
-    numpy.testing.assert_array_equal(old.Ga, new.Ga)
-    numpy.testing.assert_array_equal(old.Gb, new.Gb)
-    logQ = paths[0][3] - old.log_ovlp
-    # Here w_trace / w_guide = |T_L / S_L| S_0 / T_0.
-    expected = logQ.real + (paths[0][1] - paths[0][2]).real
-    numpy.testing.assert_allclose(
-        numpy.log(new.weight) - numpy.log(old.weight), expected, atol=2e-10, rtol=1e-11
-    )
-    old_logs = numpy.log(old.weight) + logQ.real + paths[0][1].real
-    new_logs = numpy.log(new.weight) + paths[1][2].real
-    shift = max(old_logs.max(), new_logs.max())
-    signs = numpy.exp(1j * logQ.imag)
-    old_physical = signs * numpy.exp(old_logs - shift)
-    new_physical = signs * numpy.exp(new_logs - shift)
-    numpy.testing.assert_allclose(old_physical, new_physical, atol=2e-11)
-    obs = HubbardSpinObservables(hopping_matrix(2, 2), 4.0, 2, 2, (1, 2))
-    values = numpy.asarray([obs.measure(G) for G in paths[0][4]])
-    # The physical paths must differ.
-    assert numpy.std(values[:, 1].real) > 1e-6
-    numpy.testing.assert_allclose(
-        old_physical @ values / old_physical.sum(),
-        new_physical @ values / new_physical.sum(),
-        atol=2e-11,
-    )
-    numpy.testing.assert_allclose(new.log_tr, paths[1][3], atol=2e-11)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batched", [False, True])
-def test_trace_branching_allows_negative_trace_with_positive_guide(batched):
-    # A trace sign crossing must not introduce a second CP boundary. The
-    # positive-determinant real Gaussian starts with up-block eigenvalues
-    # (-1/2, -1/2, 1, 1). Multiplying by the positive B = diag(4, 1, 1, 1)
-    # changes the sign of the trace determinant while the guide Lambda = 0.1 I
-    # remains positive, which isolates the boundary decision exactly.
-    ham, _, _ = build_hubbard_hamiltonian(2, 2, 0.0, 0.0)
-    beta, dt = 1.0, 0.02
-    trial = ThermofieldCPTrial(
-        ham, beta, k_trial=numpy.tile(numpy.log(10.0) * numpy.eye(4), (2, 1, 1)), guide_time=beta
-    )
-    W = ThermofieldWalkers(trial, 4, 1)
-    W.Qmat[0, 0] = numpy.diag([-0.5, -0.5, 1.0, 1.0])
-    kinetic = numpy.zeros((2, 4, 4))
-    kinetic[0, 0, 0] = -numpy.log(4.0) / dt
-    prop = ThermofieldHubbardCP(
-        kinetic,
-        0.0,
-        dt,
-        beta,
-        guide_mode="fixed",
-        fixed_guide_time=beta,
-        batched=batched,
-        trace_branching=True,
-    )
-    prop.init_walker_cache(W, trial)
-    assert numpy.cos(W.log_tr[0].imag) > 0
-    if batched:
-        prop.seed_qinv_cache(W)
-    numpy.random.seed(1)
-    prop.propagate_walkers(W, trial, 0)
-    assert prop.kill_count == 0
-    assert prop.trace_invalid_count == 0
-    assert numpy.cos(W.log_ovlp[0].imag) > 0
-    assert numpy.cos(W.log_tr[0].imag) < 0
-    numpy.testing.assert_allclose(W.weight, [2.0], atol=1e-12)
-    assert numpy.exp(1j * (W.log_tr[0] - W.log_ovlp[0]).imag).real < 0
-
-
-@pytest.mark.unit
-def test_trace_cache_reset_and_population_buffer_clone():
-    trial, W, prop, afqmc, pc = build_test_case()
-    prop.trace_branching = True
-    W.log_tr[:] = 123.0 + 2.0j
-    W.reset(trial, compute_cache=False)
-    prop.init_walker_cache(W, trial)
-    numpy.testing.assert_allclose(W.log_tr, 2 * W.nbasis * numpy.log(2.0), atol=1e-12)
-    numpy.random.seed(73)
-    propagate_population_cp(afqmc, W, trial, prop, 20, pc)
-    fresh = trial.calc_log_trace_batched(W.Qmat, W.log_d, W.Tmat)
-    numpy.testing.assert_allclose(W.log_tr, fresh, atol=1e-11)
-    assert "log_tr" in W.buff_names
-    W.log_tr[1] = -999.0 + 1.0j
-    set_buffer(W, 1, get_buffer(W, 0).copy())
-    assert W.log_tr[1] == W.log_tr[0]
-    numpy.testing.assert_array_equal(W.field_hist[1], W.field_hist[0])
-    numpy.testing.assert_allclose(
-        W.log_tr[1],
-        trial.calc_log_trace_batched(W.Qmat[1:2], W.log_d[1:2], W.Tmat[1:2])[0],
-        atol=1e-11,
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("bad_trace", [-numpy.inf, numpy.nan])
-def test_trace_branching_zero_or_invalid_trace_kills_numerical_path(batched, bad_trace):
-    trial, W, prop, _, _ = build_test_case(batched=batched)
-    prop.trace_branching = True
-    prop.record_fields = False
-    prop.init_walker_cache(W, trial)
-    trial.calc_log_trace_batched = lambda Q, d, T: numpy.full(len(Q), bad_trace, dtype=complex)
-    if batched:
-        prop.seed_qinv_cache(W)
-    numpy.random.seed(73)
-    prop.propagate_walkers(W, trial, 0)
-    numpy.testing.assert_array_equal(W.weight, numpy.zeros(W.nwalkers))
-    assert prop.trace_invalid_count == W.nwalkers
-    assert prop.kill_count == 0
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("trace_branching", [False, True])
-def test_common_energy_reference_preserves_paths_and_normalized_weights(batched, trace_branching):
+def test_common_energy_reference_preserves_paths_and_normalized_weights(batched):
     paths = []
     for reference in (0.0, -5.0):
         trial, W, prop, afqmc, pc = build_test_case(
             beta=0.04,
             dt=0.02,
             batched=batched,
-            trace_branching=trace_branching,
             energy_shift=reference,
         )
         numpy.random.seed(73)
@@ -505,163 +352,6 @@ def test_trace_weight_update_ordinary_arithmetic_and_true_representation_failure
     actual, failures = update_trace_weight([1e300, 1e-300], [50.0, -50.0])
     assert failures == 1
     assert actual[0] == 0.0 and actual[1] > 0.0
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("increment", [-80.0, 80.0])
-def test_trace_propagation_large_compensated_increment_has_no_limiter(batched, increment):
-    trial, W, prop, _, _ = build_test_case(U=0.0, batched=batched, trace_branching=True)
-    prop.record_fields = False
-    prop.init_walker_cache(W, trial)
-    old_trace = W.log_tr[0]
-    W.weight[:] = numpy.exp(-increment)
-    W.weight[-1] = 0.0
-    dead_q = W.Qmat[-1].copy()
-    # A finite determinant ratio is imposed to isolate its weight arithmetic;
-    # U = 0 makes the field proposal correction identically zero.
-    trial.calc_log_trace_batched = lambda Q, d, T: numpy.full(len(Q), old_trace + increment)
-    if batched:
-        prop.seed_qinv_cache(W)
-    numpy.random.seed(73)
-    prop.propagate_walkers(W, trial, 0)
-    numpy.testing.assert_allclose(W.weight, [1.0, 1.0, 1.0, 0.0], atol=2e-14)
-    numpy.testing.assert_array_equal(W.Qmat[-1], dead_q)
-    assert prop.log_weight_bound_count == 0
-    assert prop.trace_log_weight_bound_count == 0
-    assert prop.trace_invalid_count == 0
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("increment", [-800.0, 800.0])
-def test_trace_propagation_true_unrepresentable_total_is_counted(batched, increment):
-    trial, W, prop, _, _ = build_test_case(U=0.0, batched=batched, trace_branching=True)
-    prop.record_fields = False
-    prop.init_walker_cache(W, trial)
-    old_trace = W.log_tr[0]
-    W.weight[-1] = 0.0
-    trial.calc_log_trace_batched = lambda Q, d, T: numpy.full(len(Q), old_trace + increment)
-    if batched:
-        prop.seed_qinv_cache(W)
-    numpy.random.seed(73)
-    prop.propagate_walkers(W, trial, 0)
-    numpy.testing.assert_array_equal(W.weight, numpy.zeros(4))
-    assert prop.log_weight_bound_count == 3
-    assert prop.trace_log_weight_bound_count == 3
-    assert prop.trace_invalid_count == 0
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("cache", [False, True])
-def test_trace_force_bias_matches_closed_trace_derivative(cache):
-    trial, walkers, prop, afqmc, pc = build_test_case(trace_branching=True, cache=cache)
-    numpy.random.seed(73)
-    propagate_population_cp(afqmc, walkers, trial, prop, 20, pc)
-    prop.force_bias_mode = "trace"
-    bias = prop.trace_force_bias(walkers, trial, numpy.arange(walkers.nwalkers))
-    step = 1e-5
-    expected = numpy.empty_like(bias)
-    for iw in range(walkers.nwalkers):
-        for site in range(walkers.nbasis):
-            logs = []
-            for sign in (-1, 1):
-                q = walkers.Qmat[iw].copy()
-                q[0, site] *= numpy.exp(sign * step * prop.gamma)
-                q[1, site] *= numpy.exp(-sign * step * prop.gamma)
-                logs.append(
-                    trial.calc_log_trace_batched(
-                        q[None], walkers.log_d[iw : iw + 1], walkers.Tmat[iw : iw + 1]
-                    )[0].real
-                )
-            expected[iw, site] = (logs[1] - logs[0]) / (2 * step)
-    numpy.testing.assert_allclose(bias, numpy.clip(expected, -1, 1), atol=2e-9, rtol=2e-9)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("cache", [False, True])
-def test_trace_force_bias_scalar_batched_parity(cache):
-    trial, scalar, sp, afqmc, _ = build_test_case(batched=False, cache=False, trace_branching=True)
-    _, batched, bp, _, _ = build_test_case(batched=True, cache=cache, trace_branching=True)
-    sp.force_bias_mode = bp.force_bias_mode = "trace"
-    afqmc.params.pop_control_freq = 1000
-    dummy_pc = SimpleNamespace(total_weight=4.0)
-    numpy.random.seed(73)
-    propagate_population_cp(afqmc, scalar, trial, sp, 20, dummy_pc)
-    numpy.random.seed(73)
-    propagate_population_cp(afqmc, batched, trial, bp, 20, dummy_pc)
-    for name in ("weight", "Qmat", "log_d", "Tmat", "Ga", "Gb", "field_hist"):
-        numpy.testing.assert_allclose(
-            getattr(batched, name), getattr(scalar, name), atol=5e-11, rtol=5e-11
-        )
-
-
-@pytest.mark.unit
-def test_trace_force_bias_leaves_noninteracting_propagation_unchanged():
-    outcomes = []
-    for mode in ("guide", "trace"):
-        trial, walkers, prop, afqmc, pc = build_test_case(U=0.0, trace_branching=True)
-        prop.force_bias_mode = mode
-        numpy.random.seed(73)
-        propagate_population_cp(afqmc, walkers, trial, prop, 20, pc)
-        outcomes.append((walkers.Qmat.copy(), walkers.weight.copy()))
-    for first, second in zip(*outcomes):
-        numpy.testing.assert_array_equal(first, second)
-
-
-@pytest.mark.driver
-@pytest.mark.parametrize(
-    "population,blocks,retain_normalization,force_mode",
-    [(64, 96, False, "trace"), (4, 384, True, "trace"), (4, 384, True, "guide")],
-)
-def test_trace_force_bias_sampling_against_interacting_fock_space(
-    population, blocks, retain_normalization, force_mode
-):
-    trial, _, prop, afqmc, _ = build_test_case(U=4.0, beta=1.0, dt=0.025, trace_branching=True)
-    prop.force_bias_mode = force_mode
-    prop.energy_shift = -8.0
-    handler = afqmc.mpi_handler
-    walkers = ThermofieldWalkers(trial, 4, population, mpi_handler=handler)
-    pc = ThermofieldPopController(population, 40, handler, "pair_branch")
-    afqmc.params.pop_control_freq = 1
-    hop = hopping_matrix(2, 2)
-    obs = HubbardSpinObservables(hop, 4.0, 2, 2, (1, 2))
-    cre = creation_operators(8)
-    number = [c @ c.T for c in cre]
-    kinetic = sum(
-        hop[i, j] * (cre[4 * s + i] @ cre[4 * s + j].T)
-        for s in range(2)
-        for i in range(4)
-        for j in range(4)
-    )
-    interaction = 4 * sum(number[i] @ number[4 + i] for i in range(4))
-    energy_op = kinetic + interaction
-    hamiltonian = energy_op + (0.3 - 2) * sum(number)
-    energies, vectors = eigh(hamiltonian)
-    probability = numpy.exp(-(energies - energies.min()))
-    probability /= probability.sum()
-    rho = (vectors * probability) @ vectors.T
-    exact_energy = numpy.trace(rho @ energy_op) / 4
-    spin = [number[i] - number[4 + i] for i in range(4)]
-    ii, jj = obs.pairs[1]
-    exact_spin = sum(numpy.trace(rho @ (spin[i] @ spin[j])) for i, j in zip(ii, jj)) / len(ii)
-    numerator, denominator, log_shifts = [], [], []
-    numpy.random.seed(1031 + handler.comm.rank)
-    for _ in range(blocks):
-        propagate_population_cp(afqmc, walkers, trial, prop, 40, pc, weight_cap=0.0)
-        logtrace, green = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            walkers.Qmat, walkers.log_d, walkers.Tmat, 0.0
-        )
-        weights = walkers.weight * numpy.cos((logtrace - walkers.log_ovlp).imag)
-        raw = numpy.array([obs.measure(g) for g in green])
-        numerator.append(handler.comm.allreduce(weights @ raw))
-        denominator.append(handler.comm.allreduce(weights.sum()))
-        log_shifts.append(afqmc.population_log_normalization if retain_normalization else 0.0)
-    result = obs.summary(numerator, denominator, log_shifts)
-    for name, exact in (("energy_per_site", exact_energy),):
-        assert abs(result["mean"][name] - exact) < 5 * result["error"][name] + 0.002
-    assert abs(result["mean"]["czz"]["1"] - exact_spin) < 5 * result["error"]["czz"]["1"] + 0.002
-    assert prop.log_weight_bound_count == prop.population_weight_bound_count == 0
 
 
 @pytest.mark.unit
@@ -806,20 +496,10 @@ if __name__ == "__main__":
     test_invalid_propagation_parameters("U", -1)
     test_trial_fit_recovers_noninteracting_temperature_and_preserves_operator()
     test_trial_fit_records_scf_failures_and_rejects_all_failed()
-    test_trace_branching_unbranched_telescoping(True)
-    test_trace_branching_allows_negative_trace_with_positive_guide(True)
-    test_trace_cache_reset_and_population_buffer_clone()
-    test_trace_branching_zero_or_invalid_trace_kills_numerical_path(True, numpy.nan)
-    test_common_energy_reference_preserves_paths_and_normalized_weights(True, True)
+    test_common_energy_reference_preserves_paths_and_normalized_weights(True)
     test_energy_reference_prevents_extensive_population_guard_hits(True)
     test_trace_weight_update_compensates_extreme_ratios_and_preserves_signs()
     test_trace_weight_update_ordinary_arithmetic_and_true_representation_failures()
-    test_trace_propagation_large_compensated_increment_has_no_limiter(True, 80.0)
-    test_trace_propagation_true_unrepresentable_total_is_counted(True, 800.0)
-    test_trace_force_bias_matches_closed_trace_derivative(True)
-    test_trace_force_bias_scalar_batched_parity(True)
-    test_trace_force_bias_leaves_noninteracting_propagation_unchanged()
-    test_trace_force_bias_sampling_against_interacting_fock_space(64, 96, False, "trace")
     test_multistart_thermal_uhf_density_and_stationarity()
     test_uhf_only_trials_reject_free_electron_candidate()
     test_uhf_feedback_fit_recovers_thermal_density_operator()

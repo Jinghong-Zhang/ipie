@@ -58,10 +58,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
 
     The constraint applies to the kinetic step and to every partial update.
     Recorded fields are exactly +1 or -1 and rebuild the same B for cyclic
-    averaging. With `trace_branching` the same proposal and constraint are
-    kept and each completed slice acquires :math:`|Q'/Q|` with
-    :math:`Q = \det(I + \Delta) / S`, so the endpoint keeps only the phase of Q.
-    No Gaussian force bias or weight clipping is applied.
+    averaging. No Gaussian force bias or weight clipping is applied.
 
     On the GPU one kernel per slice samples every field of every walker
     (:func:`sample_discrete_fields`).
@@ -69,7 +66,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
     Parameters
     ----------
     h_kin, U, timestep, beta, record_fields, guide_mode, fixed_guide_time,
-    batched, cache_qinv, energy_shift, trace_branching, trace_exponent :
+    batched, cache_qinv, energy_shift :
         As in :class:`ThermofieldHubbardBase`.
     rng :
         Ignored: fields are drawn from `xp.random`, seeded by `set_rng_seed`.
@@ -98,9 +95,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         batched=True,
         cache_qinv=True,
         energy_shift=0.0,
-        trace_branching=False,
         importance_guide="same",
-        trace_exponent=1.0,
     ):
         super().__init__(
             h_kin,
@@ -113,8 +108,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             batched=batched,
             cache_qinv=cache_qinv,
             energy_shift=energy_shift,
-            trace_branching=trace_branching,
-            trace_exponent=trace_exponent,
         )
         # Same two spin factors as construct_hirsch_auxiliaries, except for
         # its unshifted-Hamiltonian exp(-dt*U/2) factor (see module docstring).
@@ -127,7 +120,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         self.field_log_scalar = numpy.zeros(2, dtype=complex)
         self.hs_type = "discrete_spin"
         self.field_proposal = "site_conditional_guide"
-        self.force_bias_mode = "none"
         self.forbidden_field_count = 0
         self._device = None
         # importance_guide="completion": keep the fixed guide as the path
@@ -143,8 +135,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         if importance_guide == "completion":
             if guide_mode != "fixed":
                 raise ValueError("importance_guide='completion' requires guide_mode='fixed'.")
-            if self.trace_branching:
-                raise ValueError("importance_guide='completion' and trace_branching are exclusive.")
             self.field_proposal = "site_conditional_completion_importance"
         self.importance_guide = importance_guide
         # Relative size allowed for the rounding imaginary part of the
@@ -439,24 +429,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         if two_guides:
             good_final &= numpy.isfinite(log_s_imp[kept])
         self.invalid_weight_count += int((~good_final).sum())
-        log_trace = None
-        if self.trace_branching:
-            source = ids[kept]
-            log_trace = trial.calc_log_trace_batched(
-                final_q, walkers.log_d[source], walkers.Tmat[source]
-            )
-            finite_trace = numpy.isfinite(log_trace) & numpy.isfinite(walkers.log_tr[source])
-            self.trace_invalid_count += int((good_final & ~finite_trace).sum())
-            good_final &= finite_trace
-            # The site heat bath already includes the full guide/proposal
-            # factor. Replace only its telescoping magnitude, not the
-            # guide-based field probabilities or sub-slice constraints.
-            log_weight[kept] += self.trace_exponent * (
-                log_trace.real
-                - log_s[kept].real
-                - walkers.log_tr[source].real
-                + walkers.log_ovlp[source].real
-            )
         finite_weight = good_final & numpy.isfinite(log_weight[kept])
         if finite_weight.any():
             self.max_log_weight = max(
@@ -467,8 +439,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             )
         updated, failures = update_trace_weight(old_weights[kept], log_weight[kept])
         self.invalid_weight_count += failures
-        if self.trace_branching:
-            self.trace_weight_invalid_count += failures
         updated[~good_final] = 0.0
         surviving = updated != 0
         target = ids[kept[surviving]]
@@ -481,8 +451,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             walkers.log_ovlp[target] = principal_log_phase(log_s[kept[surviving]])
         walkers.Ga[target] = eye - final_g[surviving, 0]
         walkers.Gb[target] = eye - final_g[surviving, 1]
-        if self.trace_branching:
-            walkers.log_tr[target] = log_trace[surviving]
         if cached:
             subset = kept[surviving]
             walkers.Qinv[target] = (
@@ -625,16 +593,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         if two_guides:
             good_final &= xp.isfinite(completion[1])
         counts[0] += (live & ~good_final).sum()
-        log_trace = None
-        if self.trace_branching:
-            log_trace = trial.calc_log_trace_batched(final_q, log_d, Tmat)
-            log_tr_old = xp.asarray(walkers.log_tr[ids])
-            finite_trace = xp.isfinite(log_trace) & xp.isfinite(log_tr_old)
-            trace_bad = int((good_final & ~finite_trace).sum())
-            good_final &= finite_trace
-            log_weight = log_weight + self.trace_exponent * (
-                log_trace.real - log_s.real - log_tr_old.real + log_ovlp_old.real
-            )
 
         # Weights and counters on the host.
         counts = to_host(counts)
@@ -642,8 +600,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
         self.step_count += int(counts[1])
         self.kill_count += int(counts[2])
         self.forbidden_field_count += int(counts[3])
-        if self.trace_branching:
-            self.trace_invalid_count += trace_bad
         kept = numpy.flatnonzero(to_host(live))
         good_final_h = to_host(good_final)[kept]
         log_weight_h = to_host(log_weight)[kept]
@@ -657,8 +613,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             self.min_log_weight = min(self.min_log_weight, float(log_weight_h[finite_weight].min()))
         updated, failures = update_trace_weight(old_weights[kept], log_weight_h)
         self.invalid_weight_count += failures
-        if self.trace_branching:
-            self.trace_weight_invalid_count += failures
         updated[~good_final_h] = 0.0
         surviving = updated != 0
         walkers.weight[ids[kept]] = updated
@@ -676,8 +630,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardBase):
             walkers.log_ovlp[target] = to_host(principal_log_phase(log_s[sub_x]))
         walkers.Ga[target_x] = I - final_g[sub_x, 0]
         walkers.Gb[target_x] = I - final_g[sub_x, 1]
-        if self.trace_branching:
-            walkers.log_tr[target] = to_host(log_trace[sub_x])
         if cached:
             walkers.Qinv[target_x] = (qi_half[sub_x] / factors[sub_x, :, None, :]) @ BK2inv
             walkers.log_det_Q[target_x] = (
@@ -726,13 +678,13 @@ class ThermofieldHubbardCharge(ThermofieldHubbardDiscrete):
     exp(-t k_T): both are particle-hole symmetric, so every partial overlap
     stays a real square and the fixed-guide endpoint correction
     Q = Tr(B)/Tr(Lambda B) is real and nonnegative.
-    Doped, pinned and trace-branching uses are deliberately rejected rather
-    than extending this sign-free reference implicitly.
+    Doped and pinned uses are deliberately rejected rather than extending
+    this sign-free reference implicitly.
     """
 
     def __init__(self, h_kin, U, timestep, beta, rng=None, **kwargs):
         super().__init__(h_kin, U, timestep, beta, rng=rng, **kwargs)
-        if self.trace_branching or self.importance_guide != "same":
+        if self.importance_guide != "same":
             raise ValueError("Charge reference requires ordinary guide branching.")
         h = numpy.asarray(h_kin).real
         if not numpy.allclose(h[0], h[1], atol=1e-12, rtol=0) or not numpy.allclose(

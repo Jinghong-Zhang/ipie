@@ -250,10 +250,6 @@ class ThermofieldAFQMC(AFQMCBase):
         ft_setup = time.time()
         if walkers is not None:
             self.walkers = walkers
-        if self.propagator.trace_branching and len(self.eta_members) > 0:
-            raise ValueError(
-                "Mixed-estimator members need guide branching (trace_branching=False)."
-            )
         if config.get_option("use_gpu") and not isinstance(self.hamiltonian, UEGSparseChol):
             raise NotImplementedError(
                 "The thermofield GPU path supports the sparse plane-wave Hamiltonian only."
@@ -420,7 +416,6 @@ class ThermofieldAFQMC(AFQMCBase):
             self.trial,
             eta_members=self.eta_members,
             measure_trace=self.params.measure_trace,
-            trace_branching=self.propagator.trace_branching,
             walker_state=self.accumulators,
             verbose=(comm.rank == 0 and self.verbose),
             filename=filename,

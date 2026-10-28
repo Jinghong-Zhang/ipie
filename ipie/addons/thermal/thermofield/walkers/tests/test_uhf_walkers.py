@@ -67,7 +67,6 @@ def test_pop_control_clones_full_walker_state():
         numpy.testing.assert_allclose(walkers.Tmat[1], walkers.Tmat[0], atol=1e-14)
         numpy.testing.assert_allclose(walkers.Ga[1], walkers.Ga[0], atol=1e-14)
         numpy.testing.assert_allclose(walkers.Gb[1], walkers.Gb[0], atol=1e-14)
-        numpy.testing.assert_allclose(walkers.log_tr[1], walkers.log_tr[0], atol=1e-14)
         numpy.testing.assert_allclose(walkers.field_hist[1], walkers.field_hist[0], atol=1e-14)
         assert walkers.log_ovlp[1] == pytest.approx(walkers.log_ovlp[0], abs=1e-14)
         assert numpy.abs(walkers.log_d[0]).max() > 0.0
@@ -102,7 +101,6 @@ def test_population_control_matches_core_controller(method, low, high):
         walkers.weight = weight.copy()
         walkers.phase = phase.copy()
         walkers.Qmat[:] = Q
-        walkers.log_tr[:] = numpy.arange(nwalkers) + 1000 * comm.rank
         walkers.add_walker_array(
             "field_hist", numpy.arange(nwalkers * 5.0).reshape(nwalkers, 5) + 1000 * comm.rank
         )
@@ -132,12 +130,12 @@ def test_comb_population_copies_every_selected_walker():
     walkers.weight = weight.copy()
     walkers.Qmat[:] = Q
     # Global walker ids.
-    walkers.log_tr[:] = numpy.arange(nwalkers) + nwalkers * comm.rank
+    walkers.add_walker_array("walker_id", numpy.arange(nwalkers) + nwalkers * comm.rank + 0.0)
     pcontrol = ThermofieldPopController(nwalkers, 1, mpi_handler, "comb")
     numpy.random.seed(11)
     pcontrol.pop_control(walkers, comm)
     all_weights = numpy.concatenate(comm.allgather(weight))
-    source = numpy.concatenate(comm.allgather(walkers.log_tr.real)).astype(int)
+    source = numpy.concatenate(comm.allgather(walkers.walker_id)).astype(int)
     # A comb with one tooth per walker gives floor(n w / W) or ceil(n w / W) copies.
     copies = numpy.bincount(source, minlength=len(all_weights))
     expected = len(all_weights) * all_weights / all_weights.sum()

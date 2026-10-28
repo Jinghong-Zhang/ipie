@@ -45,8 +45,6 @@ class ThermofieldEstimatorHandler(EstimatorHandler):
         Trial times of the mixed estimators. Default ().
     measure_trace : bool
         Add the trace estimator. Default True.
-    trace_branching : bool
-        The walker weights carry the trace magnitude. Default False.
     walker_state : :class:`WalkerAccumulator` object
         WalkerAccumulator class.
     verbose : bool
@@ -63,7 +61,6 @@ class ThermofieldEstimatorHandler(EstimatorHandler):
         trial,
         eta_members=(),
         measure_trace: bool = True,
-        trace_branching: bool = False,
         walker_state=None,
         verbose: bool = False,
         filename=None,
@@ -89,9 +86,7 @@ class ThermofieldEstimatorHandler(EstimatorHandler):
             est = ThermofieldMixedEstimator(eta, hamiltonian=hamiltonian, trial=trial)
             self[est.label] = est
         if measure_trace:
-            est = ThermofieldTraceEstimator(
-                hamiltonian=hamiltonian, trial=trial, trace_branching=trace_branching
-            )
+            est = ThermofieldTraceEstimator(hamiltonian=hamiltonian, trial=trial)
             self[est.label] = est
         if verbose:
             print("# Finished settting up estimator object.")

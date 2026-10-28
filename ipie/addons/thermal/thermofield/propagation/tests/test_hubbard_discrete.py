@@ -84,9 +84,8 @@ def _normalized_energy(results):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("trace_branching", [False, True])
-def test_discrete_driver_smoke(trace_branching):
-    ham, hop, trial, walkers, prop, mpi = _build_objects(trace_branching=trace_branching)
+def test_discrete_driver_smoke():
+    ham, hop, trial, walkers, prop, mpi = _build_objects()
     driver = ThermofieldHubbardAFQMC(
         ham,
         hop,
@@ -110,78 +109,9 @@ def test_discrete_driver_smoke(trace_branching):
     assert out["max_wrapdev"] < 1e-10
     assert driver.observables.U == 4.0
     assert driver.metadata["hs_type"] == "discrete_spin"
-    assert driver.metadata["branching_mode"] == ("trace_magnitude" if trace_branching else "guide")
-    assert driver.metadata["force_bias_mode"] == "none"
     assert numpy.isin(walkers.field_hist[walkers.weight != 0], [-1.0, 1.0]).all()
     assert numpy.isfinite(driver.one_rdm_summary()["mean"]).all()
     assert numpy.isfinite(driver.results[0]["numer_endpoint_magnitude"]).all()
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("mode", ["fixed", "completion"])
-@pytest.mark.parametrize("batched", [False, True])
-def test_discrete_trace_branching_preserves_paths_and_endpoint_integrands(mode, batched):
-    # The same sampled fields give equal physical contributions before resampling.
-    paths = []
-    for trace_branching in (False, True):
-        _, _, trial, walkers, prop, mpi = _build_objects(
-            beta=1.0, guide_mode=mode, batched=batched, trace_branching=trace_branching
-        )
-        initial_trace = trial.calc_log_trace_batched(
-            walkers.Qmat, walkers.log_d, walkers.Tmat
-        ).copy()
-        initial_guide, _ = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            walkers.Qmat, walkers.log_d, walkers.Tmat, 1.0
-        )
-        numpy.random.seed(713)
-        propagate_population_cp(
-            _driver_stub(mpi), walkers, trial, prop, 50, SimpleNamespace(total_weight=4.0)
-        )
-        trace, green = trial.calc_log_overlap_and_greens_function_scaled_batched(
-            walkers.Qmat, walkers.log_d, walkers.Tmat, 0.0
-        )
-        assert numpy.all(walkers.weight > 0)
-        assert prop.trace_invalid_count == 0
-        assert prop.invalid_weight_count == 0
-        paths.append((walkers, trace, green, initial_trace, initial_guide))
-    a, b = paths
-    numpy.testing.assert_array_equal(a[0].field_hist, b[0].field_hist)
-    numpy.testing.assert_array_equal(a[0].Qmat, b[0].Qmat)
-    numpy.testing.assert_array_equal(a[0].log_ovlp, b[0].log_ovlp)
-    logq = a[1] - a[0].log_ovlp
-    expected = logq.real + (a[4] - a[3]).real
-    numpy.testing.assert_allclose(numpy.log(b[0].weight / a[0].weight), expected, atol=1e-10)
-    physical_a = a[0].weight * numpy.exp(logq + a[4])
-    physical_b = b[0].weight * numpy.exp(1j * logq.imag + b[3])
-    numpy.testing.assert_allclose(physical_b, physical_a, rtol=1e-10, atol=1e-10)
-    numpy.testing.assert_allclose(b[0].log_tr, b[1], atol=1e-10)
-    numpy.testing.assert_allclose(a[2], b[2], atol=1e-12)
-
-
-@pytest.mark.unit
-def test_discrete_trace_branching_keeps_negative_physical_trace():
-    # A positive fixed guide must not impose positivity of the physical trace.
-    ham, _, _, walkers, prop, _ = _build_objects(U=0.0, trace_branching=True)
-    trial = ThermofieldCPTrial(
-        ham, prop.beta, k_trial=numpy.tile(2 * numpy.eye(4), (2, 1, 1)), guide_time=prop.beta
-    )
-    delta = numpy.tile(numpy.eye(4), (2, 1, 1))
-    delta[0, 0, 0] = -2.0
-    for i in range(walkers.nwalkers):
-        walkers.set_delta(i, delta, trial=trial)
-    prop.BK2[:] = numpy.eye(4)
-    prop.BK2inv[:] = numpy.eye(4)
-    prop.logdet_BK2[:] = 0.0
-    walkers.field_hist = numpy.zeros((walkers.nwalkers, 20, 4))
-    prop.init_walker_cache(walkers, trial)
-    assert numpy.all(numpy.cos(walkers.log_ovlp.imag) > 0)
-    assert numpy.all(numpy.cos(walkers.log_tr.imag) < 0)
-    numpy.random.seed(713)
-    prop.propagate_walkers(walkers, trial, 0)
-    assert numpy.all(walkers.weight > 0)
-    assert numpy.all(numpy.cos(walkers.log_tr.imag) < 0)
-    assert prop.trace_invalid_count == 0
-    assert prop.kill_count == 0
 
 
 @pytest.mark.unit
@@ -303,11 +233,8 @@ def test_slice_weights_against_independent_dense_conditional_sampler(mode):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("mode", ["completion", "fixed"])
-@pytest.mark.parametrize("trace_branching", [False, True])
-def test_noninteracting_exact_trace(mode, trace_branching):
-    ham, hop, trial, walkers, prop, mpi = _build_objects(
-        U=0.0, guide_mode=mode, trace_branching=trace_branching
-    )
+def test_noninteracting_exact_trace(mode):
+    ham, hop, trial, walkers, prop, mpi = _build_objects(U=0.0, guide_mode=mode)
     driver = ThermofieldHubbardAFQMC(
         ham,
         hop,
@@ -357,9 +284,8 @@ def test_history_buffer_and_wrap_reconstruct_actual_discrete_path():
 
 @pytest.mark.skipif(comm.size < 2, reason="Requires at least two MPI ranks.")
 @pytest.mark.mpi
-@pytest.mark.parametrize("trace_branching", [False, True])
-def test_discrete_mpi_population_history_and_reduction(trace_branching):
-    ham, hop, trial, walkers, prop, mpi = _build_objects(trace_branching=trace_branching)
+def test_discrete_mpi_population_history_and_reduction():
+    ham, hop, trial, walkers, prop, mpi = _build_objects()
     driver = ThermofieldHubbardAFQMC(
         ham,
         hop,
@@ -556,17 +482,6 @@ def test_completion_importance_option_validation():
         )
     with pytest.raises(ValueError):
         ThermofieldHubbardDiscrete(
-            h,
-            4.0,
-            0.02,
-            1.0,
-            guide_mode="fixed",
-            fixed_guide_time=1.0,
-            importance_guide="completion",
-            trace_branching=True,
-        )
-    with pytest.raises(ValueError):
-        ThermofieldHubbardDiscrete(
             h, 4.0, 0.02, 1.0, guide_mode="fixed", fixed_guide_time=1.0, importance_guide="trace"
         )
 
@@ -735,158 +650,6 @@ def test_completion_importance_caches_survive_mpi_population_control():
 # ---------------------------------------------------------------------------
 # Tempered trace branching: importance S^(1 - eps) |T|^eps with the fixed constraint.
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_tempered_exponent_validation():
-    with pytest.raises(ValueError):
-        _build_objects(beta=1.0, trace_branching=True, trace_exponent=1.5)
-    with pytest.raises(ValueError):
-        _build_objects(beta=1.0, trace_branching=True, trace_exponent=-0.1)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batched", [False, True])
-def test_tempered_exponent_zero_is_guide_branching_bitwise(batched):
-    # Exponent 0 with trace branching reproduces plain guide branching: same fields, weights
-    # and endpoint numerators and denominators.
-    outs = []
-    for trace_branching, eps in ((False, 1.0), (True, 0.0)):
-        ham, hop, trial, walkers, prop, mpi = _build_objects(
-            beta=1.0,
-            nwalkers=8,
-            batched=batched,
-            trace_branching=trace_branching,
-            trace_exponent=eps,
-        )
-        driver = ThermofieldHubbardAFQMC(
-            ham,
-            hop,
-            trial,
-            walkers,
-            prop,
-            mpi,
-            2,
-            2,
-            nblocks=2,
-            wrap_stride=None,
-            shell_distances_squared=(),
-            seed=5,
-        )
-        driver.run(verbose=False)
-        outs.append(
-            (
-                walkers.Qmat.copy(),
-                walkers.weight.copy(),
-                numpy.array([r["numer_endpoint"] for r in driver.results]),
-                numpy.array([r["denom"] for r in driver.results]),
-            )
-        )
-    # The same sampled fields give the same final Q factors.
-    numpy.testing.assert_array_equal(outs[0][0], outs[1][0])
-    numpy.testing.assert_allclose(outs[0][1], outs[1][1], rtol=1e-12, atol=1e-14)
-    numpy.testing.assert_allclose(outs[0][2], outs[1][2], rtol=1e-10, atol=1e-12)
-    numpy.testing.assert_allclose(outs[0][3], outs[1][3], rtol=1e-10, atol=1e-12)
-
-
-@pytest.mark.unit
-def test_tempered_exponent_one_is_trace_branching_default():
-    ham, hop, trial, walkers, prop, mpi = _build_objects(beta=1.0, trace_branching=True)
-    assert prop.trace_exponent == 1.0 and prop.trace_branching
-    driver = ThermofieldHubbardAFQMC(
-        ham,
-        hop,
-        trial,
-        walkers,
-        prop,
-        mpi,
-        2,
-        2,
-        nblocks=1,
-        wrap_stride=None,
-        shell_distances_squared=(),
-    )
-    assert driver.metadata["trace_exponent"] == 1.0
-    assert driver.metadata["branching_mode"] == "trace_magnitude"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("eps", [0.3, 0.5])
-def test_tempered_noninteracting_exact(eps):
-    ham, hop, trial, walkers, prop, mpi = _build_objects(
-        U=0.0, beta=1.0, trace_branching=True, trace_exponent=eps
-    )
-    driver = ThermofieldHubbardAFQMC(
-        ham,
-        hop,
-        trial,
-        walkers,
-        prop,
-        mpi,
-        2,
-        2,
-        nblocks=2,
-        wrap_stride=None,
-        shell_distances_squared=(1, 2),
-    )
-    driver.run(verbose=False)
-    G = numpy.eye(4) - numpy.linalg.inv(numpy.eye(4) + expm(-prop.beta * ham.H1))
-    expected = driver.observables.measure(G)
-    for r in driver.results:
-        numpy.testing.assert_allclose(r["numer_endpoint"] / r["denom"], expected, atol=1e-12)
-
-
-@pytest.mark.unit
-def test_tempered_endpoint_weight_identity_without_resampling():
-    # Without population control, w sign(T) |T/S|^(1 - eps) is the same physical path weight
-    # for every eps up to the common constant f(Delta_0) of the importance function, so the
-    # relative weights across walkers agree.
-    phys, fields = [], []
-    for eps in (0.0, 0.5, 1.0):
-        _, _, trial, walkers, prop, mpi = _build_objects(
-            beta=1.0, nwalkers=6, trace_branching=True, trace_exponent=eps
-        )
-        # The same field stream for every eps.
-        numpy.random.seed(99)
-        propagate_population_cp(
-            _driver_stub(mpi), walkers, trial, prop, 50, SimpleNamespace(total_weight=6.0)
-        )
-        trace = trial.calc_log_trace_batched(walkers.Qmat, walkers.log_d, walkers.Tmat)
-        logq = trace - walkers.log_ovlp
-        phys.append(walkers.weight * numpy.exp((1.0 - eps) * logq.real + 1j * logq.imag))
-        fields.append(walkers.field_hist.copy())
-    for other in fields[1:]:
-        numpy.testing.assert_array_equal(other, fields[0])
-    ref = phys[0] / phys[0].sum()
-    numpy.testing.assert_allclose(phys[1] / phys[1].sum(), ref, rtol=1e-9, atol=1e-12)
-    numpy.testing.assert_allclose(phys[2] / phys[2].sum(), ref, rtol=1e-9, atol=1e-12)
-
-
-@pytest.mark.driver
-def test_tempered_matches_guide_branching_statistically():
-    out = {}
-    for eps in (0.0, 0.5):
-        ham, hop, trial, walkers, prop, mpi = _build_objects(
-            beta=1.0, nwalkers=256, trace_branching=True, trace_exponent=eps
-        )
-        driver = ThermofieldHubbardAFQMC(
-            ham,
-            hop,
-            trial,
-            walkers,
-            prop,
-            mpi,
-            2,
-            2,
-            nblocks=24,
-            wrap_stride=None,
-            shell_distances_squared=(),
-            seed=17,
-        )
-        driver.run(verbose=False)
-        out[eps] = _normalized_energy(driver.results)
-    (e0, s0), (e1, s1) = out[0.0], out[0.5]
-    assert abs(e0 - e1) < 4.0 * numpy.hypot(s0, s1), out
 
 
 # ---------------------------------------------------------------------------
@@ -1066,14 +829,12 @@ def test_mixed_estimator_guide_overlap_consistent_and_positive():
 
 
 if __name__ == "__main__":
-    test_discrete_driver_smoke(False)
-    test_discrete_trace_branching_preserves_paths_and_endpoint_integrands("fixed", True)
-    test_discrete_trace_branching_keeps_negative_physical_trace()
+    test_discrete_driver_smoke()
     test_hirsch_identity_all_local_fock_states(4.0, 0.02)
     test_site_ratios_and_updates_against_noncommuting_dense_determinants()
     test_scalar_batched_paths_and_caches("fixed", True)
     test_slice_weights_against_independent_dense_conditional_sampler("fixed")
-    test_noninteracting_exact_trace("fixed", False)
+    test_noninteracting_exact_trace("fixed")
     test_history_buffer_and_wrap_reconstruct_actual_discrete_path()
     test_two_slice_partition_and_energy_against_fock_space()
     test_beta80_prescribed_field_wrap_against_spectral_reference()
@@ -1084,12 +845,6 @@ if __name__ == "__main__":
     test_completion_importance_noninteracting_exact(True)
     test_completion_importance_endpoint_correction_is_a_sign(True)
     test_completion_importance_matches_guide_branching_statistically()
-    test_tempered_exponent_validation()
-    test_tempered_exponent_zero_is_guide_branching_bitwise(True)
-    test_tempered_exponent_one_is_trace_branching_default()
-    test_tempered_noninteracting_exact(0.5)
-    test_tempered_endpoint_weight_identity_without_resampling()
-    test_tempered_matches_guide_branching_statistically()
     test_mixed_estimator_exact_for_noninteracting_exact_trial()
     test_measure_mixed_false_keeps_endpoint_and_overlap_check()
     test_mixed_estimator_reduces_to_physical_with_identity_guide()

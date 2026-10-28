@@ -15,8 +15,6 @@
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
 
-from types import SimpleNamespace
-
 import numpy
 import pytest
 import scipy.linalg
@@ -176,91 +174,29 @@ def test_batched_propagation_matches_scalar_loop():
     hamiltonian = GenericRealChol(numpy.array([h1e, h1e]), chol)
 
     # The batched path reproduces the per-walker loop, including the
-    # free-projection phase and trace branching.
-    for trace_branching in (False, True):
-        for phaseless in (True, False):
-            results = []
-            for batched in (True, False):
-                trial = ThermofieldThermalTrial(hamiltonian, beta=beta, mu=mu)
-                walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
-                propagator = ThermofieldPhaseless(timestep, mu, phaseless=phaseless)
-                propagator.build(hamiltonian, trial=trial, walkers=walkers)
-                propagator.batched = batched
-                propagator.trace_branching = trace_branching
-                for t in range(nslices):
-                    numpy.random.seed(100 + t)
-                    propagator.propagate_walkers(walkers, hamiltonian, trial)
-                results.append(
-                    (
-                        walkers.weight.copy(),
-                        walkers.phase.copy(),
-                        walkers.Qmat.copy(),
-                        walkers.log_ovlp.copy(),
-                        walkers.Ga.copy(),
-                    )
+    # free-projection phase.
+    for phaseless in (True, False):
+        results = []
+        for batched in (True, False):
+            trial = ThermofieldThermalTrial(hamiltonian, beta=beta, mu=mu)
+            walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
+            propagator = ThermofieldPhaseless(timestep, mu, phaseless=phaseless)
+            propagator.build(hamiltonian, trial=trial, walkers=walkers)
+            propagator.batched = batched
+            for t in range(nslices):
+                numpy.random.seed(100 + t)
+                propagator.propagate_walkers(walkers, hamiltonian, trial)
+            results.append(
+                (
+                    walkers.weight.copy(),
+                    walkers.phase.copy(),
+                    walkers.Qmat.copy(),
+                    walkers.log_ovlp.copy(),
+                    walkers.Ga.copy(),
                 )
-            for a, b in zip(*results):
-                numpy.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-13)
-
-
-@pytest.mark.unit
-def test_trace_branching_preserves_complex_endpoint_contributions():
-    # Thermofield AFQMC params.
-    nwalkers = 5
-    nslices = 5
-    seed = 93
-    numpy.random.seed(seed)
-
-    # Changing only the sampling magnitude must telescope, even with a cosine.
-    # A synthetic complex path without resampling or clipping isolates the
-    # importance weights and detects applying the endpoint phase of Q twice.
-    shape = (nslices + 1, nwalkers)
-    guide = numpy.random.normal(size=shape)
-    guide = numpy.cumsum(0.1 * guide + 0.15j * numpy.random.normal(size=shape), axis=0)
-    trace = numpy.random.normal(size=shape)
-    trace = numpy.cumsum(0.2 * trace + 0.1j * numpy.random.normal(size=shape), axis=0)
-    guide[0] = 2.0
-    trace[0] = 1.0
-    shape = (nslices, nwalkers)
-    cfb = 0.02 * numpy.random.normal(size=shape)
-    cfb = cfb + 0.04j * numpy.random.normal(size=shape)
-    cmf = 0.01j * numpy.random.normal(size=shape)
-    for phaseless in (False, True):
-        for batched in (False, True):
-            endpoints = []
-            for tb in (False, True):
-                w = SimpleNamespace(
-                    weight=numpy.ones(nwalkers),
-                    phase=numpy.ones(nwalkers, dtype=complex),
-                    log_ovlp=guide[0].copy(),
-                    log_tr=trace[0].copy(),
-                )
-                prop = ThermofieldPhaseless(0.05, 0.0, phaseless=phaseless)
-                prop.mf_const_fac = numpy.exp(-0.03 + 0.02j)
-                for t in range(1, nslices + 1):
-                    if batched:
-                        prop.update_walker_weights_batched(
-                            w, guide[t], cfb[t - 1], cmf[t - 1], log_tr_new=trace[t] if tb else None
-                        )
-                    else:
-                        for iw in range(nwalkers):
-                            prop.update_walker_weight(
-                                w,
-                                iw,
-                                guide[t, iw],
-                                cfb[t - 1, iw],
-                                cmf[t - 1, iw],
-                                log_tr_new=trace[t, iw] if tb else None,
-                            )
-                    w.log_ovlp[:] = guide[t]
-                    w.log_tr[:] = trace[t]
-                logq = trace[-1] - guide[-1]
-                if tb:
-                    correction = numpy.exp(1j * logq.imag) * numpy.exp(trace[0] - guide[0])
-                else:
-                    correction = numpy.exp(logq)
-                endpoints.append(w.weight * w.phase * correction)
-            numpy.testing.assert_allclose(endpoints[0], endpoints[1], rtol=1e-13, atol=1e-13)
+            )
+        for a, b in zip(*results):
+            numpy.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-13)
 
 
 @pytest.mark.unit
@@ -375,6 +311,5 @@ if __name__ == "__main__":
     test_stabilization_preserves_physical_state()
     test_propagation_reuses_overlap_factorization()
     test_batched_propagation_matches_scalar_loop()
-    test_trace_branching_preserves_complex_endpoint_contributions()
     test_force_bias_sign_finite_difference_real_chol()
     test_force_bias_sign_finite_difference_complex_chol()

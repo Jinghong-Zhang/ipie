@@ -78,15 +78,8 @@ class ThermofieldHubbardBase(ABC):
     of the guide at the current theta, and a walker whose guide overlap ratio
     has a negative real part is killed (the constraint).
 
-    With `trace_branching` only the branching magnitude changes, to
-    :math:`|T'/T|^\epsilon |S'/S|^{1 - \epsilon}` with :math:`T = \det(I + \Delta)` and
-    :math:`\epsilon` = `trace_exponent`; the field proposal and the constraint
-    still use the guide, so the endpoint correction is
-    :math:`\mathrm{sign}(T/S) |T/S|^{1 - \epsilon}`. Negative traces stay alive;
-    zero or non-finite ones kill the walker and are counted separately.
-
-    Subclasses set `discrete`, `gamma`, `hs_type`, `field_proposal`,
-    `force_bias_mode` and `importance_guide`, and sample the fields.
+    Subclasses set `discrete`, `gamma`, `hs_type`, `field_proposal` and
+    `importance_guide`, and sample the fields.
 
     Parameters
     ----------
@@ -112,14 +105,10 @@ class ThermofieldHubbardBase(ABC):
         Keep the Q inverses and log determinants of the walkers in
         `walkers.Qinv` and `walkers.log_det_Q`, updated by products instead of
         inversions. Default True.
-    trace_branching : bool
-        Branch on the closed trace (see above). Default False.
     energy_shift : float
         Energy reference added as timestep * energy_shift to every log weight
         update. It cancels from normalized observables and keeps the weights
         away from the numerical guards. Default 0.0.
-    trace_exponent : float
-        Exponent epsilon of the trace branching, in [0, 1]. Default 1.0.
 
     Attributes
     ----------
@@ -142,9 +131,7 @@ class ThermofieldHubbardBase(ABC):
         fixed_guide_time=None,
         batched=True,
         cache_qinv=True,
-        trace_branching=False,
         energy_shift=0.0,
-        trace_exponent=1.0,
     ):
         h_kin = numpy.asarray(h_kin)
         if (
@@ -174,14 +161,6 @@ class ThermofieldHubbardBase(ABC):
         self.min_log_weight = numpy.inf
         self.batched = bool(batched)
         self.cache_qinv = bool(cache_qinv)
-        self.trace_branching = bool(trace_branching)
-        if not numpy.isfinite(trace_exponent) or not 0.0 <= trace_exponent <= 1.0:
-            raise ValueError("trace_exponent must lie in [0, 1].")
-        self.trace_exponent = float(trace_exponent)
-        self.trace_invalid_count = 0
-        self.trace_log_weight_bound_count = 0
-        self.trace_population_bound_count = 0
-        self.trace_weight_invalid_count = 0
         self.dt = timestep
         self.beta = beta
         self.U = float(U)
@@ -241,17 +220,10 @@ class ThermofieldHubbardBase(ABC):
         return max(0.0, self.beta - (l + 1) * self.dt)
 
     def init_walker_cache(self, walkers, trial):
-        """Set the guide overlaps and Green's functions at theta = 0 and the closed traces.
+        """Set the guide overlaps and Green's functions at theta = 0.
 
         Walkers whose cache is not finite get zero weight.
         """
-        if self.trace_branching:
-            walkers.log_tr[:] = to_host(
-                trial.calc_log_trace_batched(walkers.Qmat, walkers.log_d, walkers.Tmat)
-            )
-            good_trace = numpy.isfinite(walkers.log_tr)
-            self.trace_invalid_count += int((~good_trace).sum())
-            walkers.weight[~good_trace] = 0.0
         scale0 = self.fixed_guide_time if self.guide_mode == "fixed" else self.beta
         if self.batched:
             lo, G = trial.calc_log_overlap_and_greens_function_scaled_batched(

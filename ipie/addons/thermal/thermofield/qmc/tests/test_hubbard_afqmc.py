@@ -137,13 +137,8 @@ def test_density_tuner_uses_measured_density_and_positive_mu_convention():
 
 @pytest.mark.skipif(comm.size < 2, reason="Requires at least two MPI ranks.")
 @pytest.mark.mpi
-@pytest.mark.parametrize(
-    "trace_branching,force_bias_mode", [(False, "guide"), (True, "guide"), (True, "trace")]
-)
-def test_hubbard_mpi_histories_and_raw_reduction(trace_branching, force_bias_mode):
+def test_hubbard_mpi_histories_and_raw_reduction():
     driver = _build_driver(nblocks=2)
-    driver.propagator.trace_branching = trace_branching
-    driver.propagator.force_bias_mode = force_bias_mode
     driver.propagator.energy_shift = -20.0
     driver.run(verbose=False)
     assert driver.finalise(verbose=False)["max_recdev"] < 1e-10
@@ -196,7 +191,6 @@ def test_target_lattice_noninteracting_smoke():
         beta,
         guide_mode="fixed",
         fixed_guide_time=beta,
-        trace_branching=True,
         energy_shift=energy_shift,
     )
     driver = ThermofieldHubbardAFQMC(
@@ -236,7 +230,6 @@ def test_target_hubbard_interacting_half_filling():
         beta,
         guide_mode="fixed",
         fixed_guide_time=beta,
-        trace_branching=True,
         energy_shift=energy_shift,
     )
     driver = ThermofieldHubbardAFQMC(
@@ -250,36 +243,9 @@ def test_target_hubbard_interacting_half_filling():
 
 
 @pytest.mark.unit
-def test_trace_branching_endpoint_uses_phase_without_reapplying_magnitude():
-    driver = _build_driver(wrap_stride=None)
-    driver.propagator.trace_branching = True
-    walkers = driver.walkers
-    trace_log, greens = driver.trial.calc_log_overlap_and_greens_function_scaled_batched(
-        walkers.Qmat, walkers.log_d, walkers.Tmat, 0.0
-    )
-    # Give the paths different guide and trace magnitude corrections; trace branching has
-    # already sampled these magnitudes.
-    walkers.log_ovlp = trace_log - numpy.log(numpy.arange(1, 5))
-    trace_log[0] += 1j * numpy.pi
-
-    def contraction(*args, **kwargs):
-        return trace_log, greens
-
-    driver.trial.calc_log_overlap_and_greens_function_scaled_batched = contraction
-    row = driver._measure_block()
-    assert row["log_shift"] == 0
-    assert row["denom"].real == pytest.approx(2.0 * comm.size)
-    assert row["absolute_weight"] == pytest.approx(4.0 * comm.size)
-    exact = driver.observables.measure(greens[0])
-    numpy.testing.assert_allclose(row["numer"] / row["denom"], exact, atol=1e-13)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("trace_branching", [False, True])
-def test_paired_magnitude_only_measurement_retains_observable_signs(trace_branching):
+def test_paired_magnitude_only_measurement_retains_observable_signs():
     driver = _build_driver(wrap_stride=None)
     driver.measure_magnitude_only = True
-    driver.propagator.trace_branching = trace_branching
     walkers = driver.walkers
     trace, greens = driver.trial.calc_log_overlap_and_greens_function_scaled_batched(
         walkers.Qmat, walkers.log_d, walkers.Tmat, 0.0
@@ -299,7 +265,7 @@ def test_paired_magnitude_only_measurement_retains_observable_signs(trace_branch
     driver.trial.calc_log_overlap_and_greens_function_scaled_batched = contraction
     row = driver._measure_block()
     values = numpy.array([driver.observables.measure(g) for g in greens])
-    absolute = walkers.weight * (1.0 if trace_branching else magnitudes / magnitudes.max())
+    absolute = walkers.weight * magnitudes / magnitudes.max()
     signed = absolute * numpy.array([-1.0, 1.0, 1.0, 1.0])
     nranks = comm.size
     numpy.testing.assert_allclose(row["numer_endpoint"], nranks * (signed @ values), atol=1e-12)
@@ -315,19 +281,6 @@ def test_paired_magnitude_only_measurement_retains_observable_signs(trace_branch
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("guide_mode", ["fixed", "completion"])
-def test_noninteracting_trace_branching_driver(guide_mode):
-    driver = _build_driver(U=0, guide_mode=guide_mode)
-    driver.propagator.trace_branching = True
-    driver.run(verbose=False)
-    green = _exact_free_green(driver)
-    exact = driver.observables.measure(numpy.array([green, green]))
-    for row in driver.results:
-        assert row["log_shift"] == 0
-        numpy.testing.assert_allclose(row["numer"] / row["denom"], exact, atol=2e-12)
-
-
-@pytest.mark.unit
 def test_driver_refuses_numerically_limited_block():
     driver = _build_driver(nblocks=1)
     # A recorded limiter event must prevent publication of any block.
@@ -337,38 +290,17 @@ def test_driver_refuses_numerically_limited_block():
     assert driver.results == []
 
 
-@pytest.mark.skipif(comm.size < 2, reason="Requires at least two MPI ranks.")
-@pytest.mark.mpi
-def test_trace_force_bias_failure_is_synchronized():
-    driver = _build_driver(nblocks=2)
-    driver.propagator.trace_branching = True
-    driver.propagator.force_bias_mode = "trace"
-    if comm.rank == 1:
-
-        def fail(*args, **kwargs):
-            raise numpy.linalg.LinAlgError("injected trace force bias failure")
-
-        driver.propagator.trace_force_bias = fail
-    with pytest.raises(RuntimeError, match="rank 1.*injected trace force bias"):
-        driver.run(verbose=False)
-
-
 @pytest.mark.unit
-@pytest.mark.parametrize("trace_branching", [False, True])
 @pytest.mark.parametrize("pop_frequency", [1, 3, 10, 100])
-def test_retained_population_normalization_matches_exact_free_trace(trace_branching, pop_frequency):
+def test_retained_population_normalization_matches_exact_free_trace(pop_frequency):
     driver = _build_driver(U=0.0, nblocks=2, wrap_stride=None)
-    driver.propagator.trace_branching = trace_branching
     driver.propagator.energy_shift = -20.0
     driver.preserve_population_normalization = True
     driver.params.pop_control_freq = pop_frequency
     beta = driver.propagator.beta
-    if trace_branching:
-        initial_log = 2 * driver.walkers.nbasis * numpy.log(2.0)
-    else:
-        initial_log = driver.trial.calc_log_overlap_and_greens_function_scaled_batched(
-            driver.walkers.Qmat, driver.walkers.log_d, driver.walkers.Tmat, beta
-        )[0][0].real
+    initial_log = driver.trial.calc_log_overlap_and_greens_function_scaled_batched(
+        driver.walkers.Qmat, driver.walkers.log_d, driver.walkers.Tmat, beta
+    )[0][0].real
     energies = numpy.linalg.eigvalsh(driver.hamiltonian.H1[0])
     expected = 2 * numpy.logaddexp(0.0, -beta * energies).sum() - initial_log + beta * (-20.0)
     driver.run(verbose=False)
@@ -504,11 +436,9 @@ if __name__ == "__main__":
     test_density_tuner_uses_measured_density_and_positive_mu_convention()
     test_target_lattice_noninteracting_smoke()
     test_target_hubbard_interacting_half_filling()
-    test_trace_branching_endpoint_uses_phase_without_reapplying_magnitude()
-    test_paired_magnitude_only_measurement_retains_observable_signs(True)
-    test_noninteracting_trace_branching_driver("fixed")
+    test_paired_magnitude_only_measurement_retains_observable_signs()
     test_driver_refuses_numerically_limited_block()
-    test_retained_population_normalization_matches_exact_free_trace(True, 3)
+    test_retained_population_normalization_matches_exact_free_trace(3)
     test_one_rdm_smoke_and_checkpoint()
     test_one_rdm_exact_thermal_density_and_passive_measurement(2)
     test_one_rdm_signed_ratio_keeps_raw_nonhermitian_density()
@@ -517,4 +447,3 @@ if __name__ == "__main__":
         test_hubbard_mpi_histories_and_raw_reduction(True, "trace")
         with pytest.MonkeyPatch.context() as patcher:
             test_measurement_failure_is_synchronized_across_ranks(patcher)
-        test_trace_force_bias_failure_is_synchronized()

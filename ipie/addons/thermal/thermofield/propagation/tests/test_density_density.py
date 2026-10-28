@@ -77,7 +77,7 @@ def _fock_model(h1, pairs):
     return one, inter, mz, num
 
 
-def _hubbard_objects(prop_cls, mode, importance_guide="same", trace_branching=False):
+def _hubbard_objects(prop_cls, mode, importance_guide="same"):
     # Pinned 2x2 lattice, open in x, with on-site spin Hirsch fields or the equivalent pairs.
     U = 4.0
     beta = 0.4
@@ -96,7 +96,6 @@ def _hubbard_objects(prop_cls, mode, importance_guide="same", trace_branching=Fa
         fixed_guide_time=beta,
         energy_shift=-8.0,
         importance_guide=importance_guide,
-        trace_branching=trace_branching,
     )
     if prop_cls is ThermofieldHubbardDiscrete:
         prop = prop_cls(ham.H1 + U / 2 * numpy.eye(4), U, dt, beta, **kwargs)
@@ -167,20 +166,13 @@ def test_pair_hirsch_identity_all_local_states(V, dt, same_spin):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "mode,importance_guide,trace_branching",
-    [
-        ("fixed", "same", False),
-        ("completion", "same", False),
-        ("fixed", "completion", False),
-        ("fixed", "same", True),
-    ],
+    "mode,importance_guide",
+    [("fixed", "same"), ("completion", "same"), ("fixed", "completion")],
 )
-def test_onsite_pairs_reproduce_spin_hirsch_bitwise(mode, importance_guide, trace_branching):
+def test_onsite_pairs_reproduce_spin_hirsch_bitwise(mode, importance_guide):
     runs = []
     for cls in (ThermofieldHubbardDiscrete, ThermofieldDensityDensityDiscrete):
-        trial, walkers, prop, driver, pcontrol = _hubbard_objects(
-            cls, mode, importance_guide, trace_branching
-        )
+        trial, walkers, prop, driver, pcontrol = _hubbard_objects(cls, mode, importance_guide)
         # The same numbers for the fields and population control of both runs.
         numpy.random.seed(713)
         propagate_population_cp(driver, walkers, trial, prop, 20, pcontrol)
@@ -360,8 +352,7 @@ def test_driver_noninteracting_exact_and_wrap_reconstruction():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("mode", ["fixed", "completion"])
-@pytest.mark.parametrize("trace_branching", [False, True])
-def test_grouped_updates_match_sequential(mode, trace_branching):
+def test_grouped_updates_match_sequential(mode):
     # The same fields, weights and caches to rounding, with forbidden fields and kills.
     # System params.
     beta = 1.0
@@ -391,7 +382,6 @@ def test_grouped_updates_match_sequential(mode, trace_branching):
             guide_mode=mode,
             fixed_guide_time=beta,
             energy_shift=-1.0,
-            trace_branching=trace_branching,
             grouped=grouped,
             group_size=4,
         )
@@ -436,10 +426,10 @@ if __name__ == "__main__":
     test_slater_d_matrices_sum_rules_and_t2g_kanamori()
     test_ising_pair_count_and_orbital_rows()
     test_pair_hirsch_identity_all_local_states(-1.5, 0.05, True)
-    test_onsite_pairs_reproduce_spin_hirsch_bitwise("fixed", "same", False)
+    test_onsite_pairs_reproduce_spin_hirsch_bitwise("fixed", "same")
     test_pair_ratios_and_updates_against_dense_determinants()
     test_two_slice_partition_and_observables_against_fock_space()
     test_observable_moments_of_nonhermitian_gaussian()
     test_driver_noninteracting_exact_and_wrap_reconstruction()
-    test_grouped_updates_match_sequential("fixed", False)
+    test_grouped_updates_match_sequential("fixed")
     test_rejects_bad_pairs()

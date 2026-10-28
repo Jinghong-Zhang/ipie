@@ -87,28 +87,23 @@ def propagate_population_cp(
     if prop.batched and prop.cache_qinv:
         prop.seed_qinv_cache(walkers)
     for t in range(nslices):
-        if prop.force_bias_mode == "trace" or prop.discrete:
-            # These paths can fail on one process; all fail together.
+        if prop.discrete:
+            # This path can fail on one process; all fail together.
             failure = None
             try:
                 prop.propagate_walkers(walkers, trial, t)
             except (ValueError, ArithmeticError, numpy.linalg.LinAlgError) as exc:
                 failure = f"{type(exc).__name__}: {exc}"
-            context = "Discrete-field" if prop.discrete else "Trace-force-bias"
-            _synchronize_error(comm, failure, f"{context} propagation failed")
+            _synchronize_error(comm, failure, "Discrete-field propagation failed")
         else:
             prop.propagate_walkers(walkers, trial, t)
         if t > 0:
             invalid_count = int((~numpy.isfinite(walkers.weight)).sum())
             prop.invalid_weight_count += invalid_count
-            if prop.trace_branching:
-                prop.trace_weight_invalid_count += invalid_count
             numpy.nan_to_num(walkers.weight, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
             wbound = pcontrol.total_weight * (weight_cap if weight_cap > 0 else 1.0e6)
             population_hits = int((numpy.abs(walkers.weight) > wbound).sum())
             prop.population_weight_bound_count += population_hits
-            if prop.trace_branching:
-                prop.trace_population_bound_count += population_hits
             numpy.clip(walkers.weight, a_min=-wbound, a_max=wbound, out=walkers.weight)
         if t > 0 and (t + 1) % afqmc.params.num_stblz == 0:
             walkers.stabilize()
@@ -350,9 +345,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             hs_type=propagator.hs_type,
             hs_gamma=propagator.gamma,
             field_proposal=propagator.field_proposal,
-            branching_mode="trace_magnitude" if propagator.trace_branching else "guide",
-            trace_exponent=propagator.trace_exponent if propagator.trace_branching else 0.0,
-            force_bias_mode=propagator.force_bias_mode,
             importance_guide=propagator.importance_guide,
             energy_shift=propagator.energy_shift,
             fixed_guide_time=propagator.fixed_guide_time,
@@ -456,23 +448,12 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         if comm.allreduce(int(bad.sum())):
             raise FloatingPointError("Nonfinite trace measurement on a live walker")
         logq = trace_log - walkers.log_ovlp
-        # Trace-magnitude branching already sampled |Tr Delta| rather than
-        # the guide overlap magnitude. Only the signed endpoint correction
-        # remains. The original guide still defines every prefix constraint
-        # and force bias; applying |Q| again would double count it.
-        if self.propagator.trace_branching:
-            # Branching followed S^(1-eps) |T|^eps, so the remaining endpoint
-            # correction is sign(T) |T/S|^(1-eps) (eps = 1: the sign alone).
-            eps = self.propagator.trace_exponent
-            sampling_logq = (1.0 - eps) * logq.real + 1j * principal_log_phase(logq).imag
-        else:
-            sampling_logq = logq
-        shift = float(numpy.max(sampling_logq.real[alive])) if alive.any() else -numpy.inf
+        shift = float(numpy.max(logq.real[alive])) if alive.any() else -numpy.inf
         shift = comm.allreduce(shift, op=MPI.MAX)
         if not numpy.isfinite(shift):
             raise RuntimeError("All Hubbard walkers died; increase population or revise guide")
         weights = numpy.zeros(walkers.nwalkers, dtype=numpy.complex128)
-        weights[alive] = walkers.weight[alive] * numpy.exp(sampling_logq[alive] - shift)
+        weights[alive] = walkers.weight[alive] * numpy.exp(logq[alive] - shift)
         endpoint = numpy.zeros((walkers.nwalkers, len(self.observables.names)), dtype=complex)
         error = None
         try:
@@ -752,7 +733,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
                 "log_weight_bound_count",
                 "population_weight_bound_count",
                 "invalid_weight_count",
-                "trace_invalid_count",
             )
             local_counts = numpy.array(
                 [getattr(self.propagator, name) for name in names], dtype=numpy.int64
