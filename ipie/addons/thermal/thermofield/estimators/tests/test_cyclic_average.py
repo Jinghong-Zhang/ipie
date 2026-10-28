@@ -20,7 +20,7 @@ import pytest
 
 from ipie.addons.thermal.thermofield.estimators.cyclic_average import (
     cyclic_average_coarse,
-    cyclic_average_full_path,
+    cyclic_average_engine,
 )
 from ipie.addons.thermal.thermofield.utils.testing import build_noninteracting_test_case_handlers
 from ipie.utils.backend import arraylib as xp
@@ -65,7 +65,16 @@ def collect_fine(weight, B, stride, stab_every=20):
     def measure_walker(iw, G, w):
         out[(iw, w)] = G.copy()
 
-    dev, ld0 = cyclic_average_full_path(weight, B, stride, measure_walker, stab_every=stab_every)
+    dev, ld0 = cyclic_average_engine(
+        weight,
+        B.shape[1],
+        B.shape[-1],
+        stride,
+        lambda l, ids: B[ids, l],
+        measure_walker,
+        stab_every=stab_every,
+        spin_shared_fn=lambda ids: numpy.array_equal(B[ids, :, 0], B[ids, :, 1]),
+    )
     return dev, ld0, out
 
 
@@ -183,7 +192,7 @@ def test_coarse_engine_matches_direct_inverse():
 
 
 @pytest.mark.unit
-def test_propagator_group_accumulator_matches_recorded_slices():
+def test_propagator_group_accumulator_matches_applied_slices():
     # System params.
     nbasis = 4
 
@@ -201,19 +210,18 @@ def test_propagator_group_accumulator_matches_recorded_slices():
     walkers = objs["walkers"]
     propagator = objs["propagator"]
 
-    # The group accumulator collects exactly the applied slice propagators, B_t ... B_1.
+    # The group accumulator collects exactly the applied slice propagators, B_t ... B_1:
+    # without stabilization the Q factors of walkers started at the identity are that product.
+    numpy.testing.assert_array_equal(
+        walkers.Qmat, numpy.broadcast_to(numpy.eye(nbasis), walkers.Qmat.shape)
+    )
     acc = numpy.tile(numpy.eye(nbasis, dtype=numpy.complex128), (nwalkers, 2, 1, 1))
     propagator.group_accum = acc
-    rec = numpy.empty((nslices, nwalkers, 2, nbasis, nbasis), dtype=numpy.complex128)
-    ref = numpy.tile(numpy.eye(nbasis, dtype=numpy.complex128), (nwalkers, 2, 1, 1))
     numpy.random.seed(seed)
-    for t in range(nslices):
-        propagator.record_B_slice = rec[t]
+    for _ in range(nslices):
         propagator.propagate_walkers(walkers, hamiltonian, trial)
-        ref = rec[t] @ ref
-    propagator.record_B_slice = None
     propagator.group_accum = None
-    assert numpy.array_equal(acc, ref)
+    assert numpy.array_equal(acc, walkers.Qmat)
     assert not propagator.group_accum_spin_mismatch
 
 
@@ -221,4 +229,4 @@ if __name__ == "__main__":
     test_coarse_engine_reproduces_fine_engine_slice_by_slice()
     test_group_products_match_fine_cuts()
     test_coarse_engine_matches_direct_inverse()
-    test_propagator_group_accumulator_matches_recorded_slices()
+    test_propagator_group_accumulator_matches_applied_slices()

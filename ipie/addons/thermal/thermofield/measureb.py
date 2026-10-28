@@ -18,11 +18,8 @@
 
 # pylint: disable=unused-import
 from ipie.addons.thermal.thermofield.estimators.cyclic_average import (
-    build_slice_propagators,
     cyclic_average_coarse,
     cyclic_average_engine,
-    cyclic_average_fields,
-    cyclic_average_full_path,
 )
 from ipie.addons.thermal.thermofield.utils.linalg import (
     _floor_scales,
@@ -37,8 +34,6 @@ from ipie.addons.thermal.thermofield.utils.linalg import (
 )
 
 _wrap_engine = cyclic_average_engine
-wrap_measure_fullpath_batched = cyclic_average_full_path
-wrap_measure_fullpath_fields = cyclic_average_fields
 wrap_measure_coarse = cyclic_average_coarse
 
 
