@@ -100,7 +100,6 @@ def test_discrete_driver_smoke():
         wrap_stride=5,
         measure_one_rdm=True,
         shell_distances_squared=(1, 2),
-        measure_magnitude_only=True,
         preserve_population_normalization=True,
     )
     driver.run(verbose=False)
@@ -111,7 +110,6 @@ def test_discrete_driver_smoke():
     assert driver.metadata["hs_type"] == "discrete_spin"
     assert numpy.isin(walkers.field_hist[walkers.weight != 0], [-1.0, 1.0]).all()
     assert numpy.isfinite(driver.one_rdm_summary()["mean"]).all()
-    assert numpy.isfinite(driver.results[0]["numer_endpoint_magnitude"]).all()
 
 
 @pytest.mark.unit
@@ -299,16 +297,12 @@ def test_discrete_mpi_population_history_and_reduction():
         wrap_stride=3,
         pop_control_freq=1,
         shell_distances_squared=(1, 2),
-        measure_magnitude_only=True,
         preserve_population_normalization=True,
     )
     driver.run(verbose=False)
     all_rows = comm.allgather(driver.results[0]["numer"])
     for row in all_rows:
         numpy.testing.assert_array_equal(row, all_rows[0])
-    all_magnitude = comm.allgather(driver.results[0]["numer_endpoint_magnitude"])
-    for row in all_magnitude:
-        numpy.testing.assert_array_equal(row, all_magnitude[0])
     assert driver.finalise(verbose=False)["max_recdev"] < 1e-10
 
 

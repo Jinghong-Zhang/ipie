@@ -243,44 +243,6 @@ def test_target_hubbard_interacting_half_filling():
 
 
 @pytest.mark.unit
-def test_paired_magnitude_only_measurement_retains_observable_signs():
-    driver = _build_driver(wrap_stride=None)
-    driver.measure_magnitude_only = True
-    walkers = driver.walkers
-    trace, greens = driver.trial.calc_log_overlap_and_greens_function_scaled_batched(
-        walkers.Qmat, walkers.log_d, walkers.Tmat, 0.0
-    )
-    greens = greens.copy()
-    for i, occupancy in enumerate([0.2, 0.4, 0.6, 0.8]):
-        greens[i] = occupancy * numpy.eye(walkers.nbasis)
-    magnitudes = numpy.array([1.0, 2.0, 3.0, 4.0])
-    walkers.weight[:] = [1.0, 2.0, 1.0, 1.0]
-    walkers.log_ovlp = trace - numpy.log(magnitudes)
-    trace = trace.copy()
-    trace[0] += 1j * numpy.pi
-
-    def contraction(*args, **kwargs):
-        return trace, greens
-
-    driver.trial.calc_log_overlap_and_greens_function_scaled_batched = contraction
-    row = driver._measure_block()
-    values = numpy.array([driver.observables.measure(g) for g in greens])
-    absolute = walkers.weight * magnitudes / magnitudes.max()
-    signed = absolute * numpy.array([-1.0, 1.0, 1.0, 1.0])
-    nranks = comm.size
-    numpy.testing.assert_allclose(row["numer_endpoint"], nranks * (signed @ values), atol=1e-12)
-    numpy.testing.assert_allclose(
-        row["numer_endpoint_magnitude"], nranks * (absolute @ values), atol=1e-12
-    )
-    assert row["absolute_weight"] == pytest.approx(nranks * absolute.sum())
-    assert row["denom"].real == pytest.approx(nranks * signed.sum())
-    assert not numpy.isclose(
-        row["numer_endpoint"][0].real / row["denom"].real,
-        row["numer_endpoint_magnitude"][0].real / row["absolute_weight"],
-    )
-
-
-@pytest.mark.unit
 def test_driver_refuses_numerically_limited_block():
     driver = _build_driver(nblocks=1)
     # A recorded limiter event must prevent publication of any block.
@@ -436,7 +398,6 @@ if __name__ == "__main__":
     test_density_tuner_uses_measured_density_and_positive_mu_convention()
     test_target_lattice_noninteracting_smoke()
     test_target_hubbard_interacting_half_filling()
-    test_paired_magnitude_only_measurement_retains_observable_signs()
     test_driver_refuses_numerically_limited_block()
     test_retained_population_normalization_matches_exact_free_trace(3)
     test_one_rdm_smoke_and_checkpoint()

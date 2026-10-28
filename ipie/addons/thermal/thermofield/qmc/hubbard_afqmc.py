@@ -216,9 +216,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         Accumulate the one-body density matrix. Default False.
     shell_distances_squared : tuple
         Correlation shells of the default observables. Default (1, 2, 4, 5).
-    measure_magnitude_only : bool
-        Also accumulate the endpoint numerator with absolute weights, for
-        paired sign-quenched diagnostics. Default False.
     wrap_stabilize_freq : int
         Restratification interval of the cyclic averaging. Default 20.
     measure_mixed : bool
@@ -257,7 +254,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         preserve_population_normalization=False,
         measure_one_rdm=False,
         shell_distances_squared=(1, 2, 4, 5),
-        measure_magnitude_only=False,
         wrap_stabilize_freq=20,
         measure_mixed=True,
         observables=None,
@@ -316,7 +312,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         self.wrap_stabilize_freq = int(wrap_stabilize_freq)
         self.reconstruction_tolerance = reconstruction_tolerance
         self.preserve_population_normalization = bool(preserve_population_normalization)
-        self.measure_magnitude_only = bool(measure_magnitude_only)
         self.measure_mixed = bool(measure_mixed)
         self.population_log_normalization = 0.0
         self.measure_one_rdm = bool(measure_one_rdm)
@@ -356,7 +351,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             estimator="signed trace; ratio of means; connected after ensemble averaging",
             mixed_estimator="guide bra: Tr[Lambda H B]/Tr[Lambda B], Lambda=exp(-fixed_guide_time k_T), plain weights",
             measure_one_rdm=self.measure_one_rdm,
-            measure_magnitude_only=self.measure_magnitude_only,
             measure_mixed=self.measure_mixed,
             one_rdm_convention="G[s,i,j]=<c_j^dag c_i>; signed trace ROM",
             rng_seeds=comm.allgather(int(self._parallel_rng_seed)),
@@ -591,15 +585,6 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
             result.update(
                 numer_mixed=total[2 * nobs + 3 : 3 * nobs + 3], denom_mixed=total[3 * nobs + 3].real
             )
-        if self.measure_magnitude_only:
-            # Both estimators use the same paths and the same population
-            # normalizers. Their covariance is preserved in saved block sums.
-            local_magnitude = numpy.abs(weights) @ endpoint
-            magnitude_numer = numpy.empty_like(local_magnitude)
-            comm.Allreduce(local_magnitude, magnitude_numer)
-            if not numpy.isfinite(magnitude_numer).all():
-                raise FloatingPointError("Nonfinite magnitude-only endpoint accumulation")
-            result["numer_endpoint_magnitude"] = magnitude_numer
         if self.measure_one_rdm:
             # Use the identical endpoint weights for every cyclic cut. Never
             # diagonalize or Hermitize a walker's transition density here.
