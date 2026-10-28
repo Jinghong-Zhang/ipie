@@ -73,15 +73,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         guide :math:`|\det(I + e^{-(\beta - \theta) k_T} \Delta)|`, which is
         :math:`|\det(I + \Delta)|` at the endpoint; the endpoint correction is then
         the sign of the trace only. Requires guide_mode "fixed". Default "same".
-    bridge_lambda : float
-        Weight lambda in [0, 1] of the exact bridge dressing of the importance
-        function (Wan and Zhang, arXiv:2507.08937),
-        :math:`I = S [(1 - \lambda) + \lambda / (2M) \sum_{k, x} r_k(x)]`, a sum of
-        extra sign-free fields of coupling `bridge_theta` on every site at the
-        interaction cut. It lifts the zeros of the guide overlap, and the
-        dressing is removed from the weight after the last slice. Default 0.0.
-    bridge_theta : float
-        Coupling of the bridge fields, in (0, pi). Default 1.0.
     """
 
     discrete = True
@@ -102,8 +93,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         trace_branching=False,
         importance_guide="same",
         trace_exponent=1.0,
-        bridge_lambda=0.0,
-        bridge_theta=1.0,
     ):
         super().__init__(
             h_kin,
@@ -149,92 +138,14 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
                 raise ValueError("importance_guide='completion' and trace_branching are exclusive.")
             self.field_proposal = "site_conditional_completion_importance"
         self.importance_guide = importance_guide
-        # Exact bridge (Wan and Zhang, arXiv:2507.08937) placed in the importance
-        # function: I = S * dress, with the positive dressing
-        #     dress = (1 - lambda) + lambda/(2M) sum_{k, x} <extra HS field x of
-        #             coupling bridge_theta on site k, at the interaction cut>,
-        # each term the same sign-free field type as the propagation.  I vanishes
-        # only where all 2M + 1 terms vanish, which lifts the guide-overlap zeros
-        # that the field proposals otherwise avoid.  The dressing is removed from
-        # the weight after the last slice, so the endpoint Q = Tr(B)/S in the
-        # driver becomes Tr(B)/I, bounded by 1/(1 - lambda) for a completion guide.
-        if not (numpy.isfinite(bridge_lambda) and 0.0 <= bridge_lambda <= 1.0):
-            raise ValueError("bridge_lambda must lie in [0, 1].")
-        if not (numpy.isfinite(bridge_theta) and 0.0 < bridge_theta < numpy.pi):
-            raise ValueError("bridge_theta must lie in (0, pi).")
-        self.bridge_lambda = float(bridge_lambda)
-        self.bridge_theta = float(bridge_theta)
-        # Which bridge check rejected a walker, and the largest relative imaginary
-        # part seen in the (analytically real) dressing and dressed probabilities.
-        self.bridge_rejections = dict(
-            kinetic_dress=0, site_probability=0, zero_overlap=0, site_dress=0
-        )
-        self.bridge_max_relative_imag = 0.0
-        # Relative size allowed for the rounding imaginary part of the analytically
-        # real field probabilities and dressing. The dressed walk visits states near
-        # guide-overlap zeros, where the cut Green function is large and rounding
-        # reaches ~1e-9; a genuine error would be O(1).
-        self.real_tolerance = 1e-6 if self.bridge_lambda > 0.0 else 1e-10
-        if self.bridge_lambda > 0.0:
-            if self.trace_branching or importance_guide != "same":
-                raise ValueError("The bridge dressing requires ordinary guide branching.")
-            self.bridge_nslices = int(round(beta / timestep))
-            if abs(self.bridge_nslices * timestep - beta) > 1e-9 * max(1.0, beta):
-                raise ValueError("The bridge dressing needs beta to be a whole number of slices.")
-        self._set_bridge_factors()
-
-    def _set_bridge_factors(self):
-        """Bridge terms exp(theta x (n_up - n_dn)): real spin fields, a positive weight each."""
-        signs = numpy.array([1.0, -1.0])
-        self.bridge_delta = numpy.exp(self.bridge_theta * numpy.outer(signs, [1.0, -1.0])) - 1.0
-        self.bridge_scalar = numpy.ones(2, dtype=complex)
-
-    def _bridge_dress(self, green):
-        """dress = I/S at the interaction cut; green is (walkers, 2, M, M)."""
-        gkk = numpy.diagonal(green, axis1=2, axis2=3)
-        terms = numpy.prod(1.0 + self.bridge_delta[None, :, :, None] * gkk[:, None], axis=2)
-        lam = self.bridge_lambda
-        return (1.0 - lam) + lam * numpy.einsum("nym,y->n", terms, self.bridge_scalar) / (
-            2 * self.nfields
-        )
-
-    def _site_bridge_probabilities(self, green, site, ids, dress):
-        """Dressed field probabilities: (1/2) scalar(x) I(x) / I, from exact rank-two ratios.
-
-        For field x on `site` and bridge x' on mode k, per spin the determinant
-        ratio is (1 + d G_jj)(1 + e G_kk) - d e G_jk G_kj (k != j), and
-        1 + ((1 + d)(1 + e) - 1) G_jj for k = j, with G the cut Green function.
-        """
-        g = green[ids]
-        gjj = g[:, :, site, site]
-        gkk = numpy.diagonal(g, axis1=2, axis2=3)
-        d = self.delta[None, :, None, :, None]
-        e = self.bridge_delta[None, None, :, :, None]
-        ratios = (1.0 + d * gjj[:, None, None, :, None]) * (
-            1.0 + e * gkk[:, None, None]
-        ) - d * e * (g[:, :, site, :] * g[:, :, :, site])[:, None, None]
-        combined = (1.0 + self.delta)[:, None, :] * (1.0 + self.bridge_delta)[None, :, :] - 1.0
-        ratios[..., site] = 1.0 + combined[None] * gjj[:, None, None, :]
-        bridged = numpy.einsum("nxym,y->nx", numpy.prod(ratios, axis=3), self.bridge_scalar) / (
-            2 * self.nfields
-        )
-        bare = numpy.prod(1.0 + self.delta[None] * gjj[:, None, :], axis=2)
-        lam = self.bridge_lambda
-        importance = (1.0 - lam) * bare + lam * bridged
-        return 0.5 * numpy.exp(self.field_log_scalar)[None, :] * importance / dress[:, None]
+        # Relative size allowed for the rounding imaginary part of the
+        # analytically real field probabilities.
+        self.real_tolerance = 1e-10
 
     def init_walker_cache(self, walkers, trial):
         old_alive = walkers.weight != 0
         super().init_walker_cache(walkers, trial)
         self.invalid_weight_count += int((old_alive & (walkers.weight == 0)).sum())
-        if self.bridge_lambda > 0.0:
-            # log(I/S) at the last interaction cut; zero on a fresh path (I = S at theta = 0).
-            if "log_dress" not in walkers.buff_names:
-                walkers.add_walker_array(
-                    "log_dress", numpy.zeros(walkers.nwalkers, dtype=numpy.complex128)
-                )
-            else:
-                walkers.log_dress[:] = 0.0
         if self.importance_guide == "completion":
             # At theta = 0 the completion importance guide (time beta) and the
             # fixed constraint guide coincide: both caches start from the same
@@ -314,7 +225,7 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
 
     def _slice_start(self, walkers, trial, step, ids):
         """Kinetic step, guide contraction at the interaction cut, kill and weight set-up."""
-        log_s_imp = green_imp = dress = None
+        log_s_imp = green_imp = None
         eye = numpy.eye(walkers.nbasis)
         two_guides = self.importance_guide == "completion"
         q_old = walkers.Qmat[ids]
@@ -361,27 +272,10 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         self.kill_count += int((good & ~live).sum())
         # The contraction at D, with the final K folded into the left guide.
         green = self.BK2inv @ green @ self.BK2
-        bridge = self.bridge_lambda > 0.0
-        if bridge:
-            # The kinetic step moves the cut: I_new/I_old = (S_new/S_old)(dress_new/dress_old).
-            with numpy.errstate(over="ignore", invalid="ignore"):
-                dress = self._bridge_dress(green)
-            rel = numpy.abs(dress.imag) / numpy.maximum(1.0, numpy.abs(dress.real))
-            good_d = numpy.isfinite(dress) & (dress.real > 0.0) & (rel <= self.real_tolerance)
-            if numpy.isfinite(rel[live]).any():
-                self.bridge_max_relative_imag = max(
-                    self.bridge_max_relative_imag, float(numpy.nanmax(rel[live]))
-                )
-            self.bridge_rejections["kinetic_dress"] += int((live & ~good_d).sum())
-            self.invalid_weight_count += int((live & ~good_d).sum())
-            live &= good_d
-            dress = numpy.where(good_d, dress.real, 1.0)
-            log_weight = log_weight + numpy.log(dress) - walkers.log_dress[ids].real
         factors = numpy.ones((len(ids), 2, walkers.nbasis), dtype=self.auxf.dtype)
         return SimpleNamespace(
             eye=eye,
             two_guides=two_guides,
-            bridge=bridge,
             q_old=q_old,
             cached=cached,
             qi_old=qi_old,
@@ -392,21 +286,18 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             green_imp=green_imp,
             log_weight=log_weight,
             live=live,
-            dress=dress,
             factors=factors,
         )
 
     def _slice_fields(self, walkers, step, ids, uniforms, state):
         """Sequential heat-bath sampling of every field; arrays in ``state`` change in place."""
         two_guides = state.two_guides
-        bridge = state.bridge
         log_s = state.log_s
         green = state.green
         log_s_imp = state.log_s_imp
         green_imp = state.green_imp
         log_weight = state.log_weight
         live = state.live
-        dress = state.dress
         factors = state.factors
         for site in range(self.nfields):
             active = numpy.flatnonzero(live)
@@ -416,25 +307,10 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
                 probabilities = self._field_probabilities(green, site, active)
                 if two_guides:
                     prob_imp = self._field_probabilities(green_imp, site, active)
-                if bridge:
-                    prob_bridge = self._site_bridge_probabilities(
-                        green, site, active, dress[active]
-                    )
             good_p = numpy.isfinite(probabilities).all(axis=1) & (
                 numpy.abs(probabilities.imag)
                 <= self.real_tolerance * numpy.maximum(1.0, numpy.abs(probabilities.real))
             ).all(axis=1)
-            if bridge:
-                rel = (
-                    numpy.abs(prob_bridge.imag) / numpy.maximum(1.0, numpy.abs(prob_bridge.real))
-                ).max(axis=1)
-                if numpy.isfinite(rel).any():
-                    self.bridge_max_relative_imag = max(
-                        self.bridge_max_relative_imag, float(numpy.nanmax(rel))
-                    )
-                good_b = numpy.isfinite(prob_bridge).all(axis=1) & (rel <= self.real_tolerance)
-                self.bridge_rejections["site_probability"] += int((good_p & ~good_b).sum())
-                good_p &= good_b
             if two_guides:
                 good_p &= numpy.isfinite(prob_imp).all(axis=1) & (
                     numpy.abs(prob_imp.imag) <= 1e-10 * numpy.maximum(1.0, numpy.abs(prob_imp.real))
@@ -444,19 +320,15 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             probabilities = probabilities[good_p].real
             if two_guides:
                 prob_imp = prob_imp[good_p].real
-            if bridge:
-                prob_bridge = prob_bridge[good_p].real
             active = active[good_p]
             self.step_count += len(active)
-            self.forbidden_field_count += int(
-                ((prob_bridge if bridge else probabilities) <= 0).sum()
-            )
+            self.forbidden_field_count += int((probabilities <= 0).sum())
             if two_guides:
                 # Fields forbidden by the fixed constraint get zero probability;
                 # the allowed ones are drawn with the completion-guide magnitude.
                 positive = numpy.where(probabilities > 0.0, numpy.abs(prob_imp), 0.0)
             else:
-                positive = numpy.maximum(prob_bridge if bridge else probabilities, 0.0)
+                positive = numpy.maximum(probabilities, 0.0)
             with numpy.errstate(over="ignore", invalid="ignore"):
                 norm = positive.sum(axis=1)
             valid_norm = numpy.isfinite(norm)
@@ -476,17 +348,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             with numpy.errstate(divide="ignore", over="ignore", invalid="ignore"):
                 self._field_green_update(update, site, chosen)
             valid_g = numpy.isfinite(update).all(axis=(1, 2, 3))
-            if bridge:
-                # The undressed overlap must stay nonzero; the dressing follows the updated cut.
-                nonzero = probabilities[accepted][numpy.arange(len(chosen)), chosen] > 0.0
-                self.bridge_rejections["zero_overlap"] += int((valid_g & ~nonzero).sum())
-                valid_g &= nonzero
-                with numpy.errstate(over="ignore", invalid="ignore"):
-                    dress_new = self._bridge_dress(update)
-                good_new = numpy.isfinite(dress_new) & (dress_new.real > 0.0)
-                self.bridge_rejections["site_dress"] += int((valid_g & ~good_new).sum())
-                valid_g &= good_new
-                dress[active] = numpy.where(valid_g, dress_new.real, 1.0)
             if two_guides:
                 update_imp = green_imp if all_active else green_imp[active]
                 with numpy.errstate(divide="ignore", over="ignore", invalid="ignore"):
@@ -519,7 +380,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         """Final kinetic half, weights, constraint caches and Q-inverse caches."""
         eye = state.eye
         two_guides = state.two_guides
-        bridge = state.bridge
         q_old = state.q_old
         cached = state.cached
         qi_old = state.qi_old
@@ -529,7 +389,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
         log_s_imp = state.log_s_imp
         log_weight = state.log_weight
         live = state.live
-        dress = state.dress
         factors = state.factors
         kept = numpy.flatnonzero(live)
         old_weights = walkers.weight[ids].copy()
@@ -564,12 +423,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
                 - walkers.log_tr[source].real
                 + walkers.log_ovlp[source].real
             )
-        if bridge:
-            final_dress = dress[kept]
-            if step == self.bridge_nslices - 1:
-                # Endpoint reweighting 1/dress: the driver's Q = Tr(B)/S then gives Tr(B)/I.
-                log_weight[kept] -= numpy.log(final_dress)
-                final_dress = numpy.ones_like(final_dress)
         finite_weight = good_final & numpy.isfinite(log_weight[kept])
         if finite_weight.any():
             self.max_log_weight = max(
@@ -594,8 +447,6 @@ class ThermofieldHubbardDiscrete(ThermofieldHubbardCP):
             walkers.log_ovlp[target] = principal_log_phase(log_s[kept[surviving]])
         walkers.Ga[target] = eye - final_g[surviving, 0]
         walkers.Gb[target] = eye - final_g[surviving, 1]
-        if bridge:
-            walkers.log_dress[target] = numpy.log(final_dress[surviving])
         if self.trace_branching:
             walkers.log_tr[target] = log_trace[surviving]
         if cached:
@@ -687,7 +538,6 @@ class ThermofieldHubbardCharge(ThermofieldHubbardDiscrete):
         self.field_log_scalar = 0.5 * timestep * U - 1j * self.gamma * signs
         self.hs_type = "discrete_charge"
         self.field_proposal = "site_conditional_charge_guide"
-        self._set_bridge_factors()
 
     def construct_slice_propagators(self, fields):
         r"""Slice propagators :math:`B(x)` for recorded charge fields.
@@ -709,14 +559,6 @@ class ThermofieldHubbardCharge(ThermofieldHubbardDiscrete):
         B[:, 0] = self.BK2[0] @ (dv[:, :, None] * self.BK2[0])
         B[:, 1] = self.BK2[1] @ (dv[:, :, None] * self.BK2[1])
         return B
-
-    def _set_bridge_factors(self):
-        """Bridge terms exp(i theta x (N - 1)): extra charge fields, each a real square here."""
-        signs = numpy.array([1.0, -1.0])
-        self.bridge_delta = (
-            numpy.repeat(numpy.exp(1j * self.bridge_theta * signs)[:, None], 2, axis=1) - 1.0
-        )
-        self.bridge_scalar = numpy.exp(-1j * self.bridge_theta * signs)
 
     def init_walker_cache(self, walkers, trial):
         k = numpy.array([(trial.C_T[s] * trial.eps_T[s]) @ trial.C_T[s].conj().T for s in range(2)])

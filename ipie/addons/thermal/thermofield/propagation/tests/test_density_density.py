@@ -414,14 +414,12 @@ def test_grouped_updates_match_sequential(mode, trace_branching):
 
 
 @pytest.mark.unit
-def test_rejects_bridge_and_bad_pairs():
+def test_rejects_bad_pairs():
     h = numpy.zeros((2, 2, 2))
     with pytest.raises(ValueError):
         ThermofieldDensityDensityDiscrete(h, [(0, 0, 0, 0, 1.0)], 0.1, 1.0)
     with pytest.raises(ValueError):
         ThermofieldDensityDensityDiscrete(h, [(0, 0, 1, 2, 1.0)], 0.1, 1.0)
-    with pytest.raises(ValueError):
-        ThermofieldDensityDensityDiscrete(h, [(0, 0, 1, 0, 1.0)], 0.1, 1.0, bridge_lambda=0.5)
     with pytest.raises(ValueError):
         ThermofieldDensityDensityDiscrete(
             h,
@@ -444,4 +442,4 @@ if __name__ == "__main__":
     test_observable_moments_of_nonhermitian_gaussian()
     test_driver_noninteracting_exact_and_wrap_reconstruction()
     test_grouped_updates_match_sequential("fixed", False)
-    test_rejects_bridge_and_bad_pairs()
+    test_rejects_bad_pairs()

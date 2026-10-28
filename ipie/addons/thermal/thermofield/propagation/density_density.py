@@ -48,7 +48,7 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
 
     at the interaction cut and two sequential rank-one updates. The single
     pair (up i, down i, U) per site reproduces the spin Hirsch propagator with
-    :math:`h + U/2`. The bridge dressing is not implemented for pair fields.
+    :math:`h + U/2`.
 
     With `grouped`, consecutive fields whose spin-orbitals A fit in
     `group_size` are sampled on the local block :math:`G_{AA}` only, and the
@@ -84,8 +84,6 @@ class ThermofieldDensityDensityDiscrete(ThermofieldHubbardDiscrete):
     """
 
     def __init__(self, h1, pairs, timestep, beta, rng=None, grouped=True, group_size=10, **kwargs):
-        if kwargs.get("bridge_lambda", 0.0) != 0.0:
-            raise ValueError("The exact bridge is implemented for site fields only.")
         if grouped and kwargs.get("importance_guide", "same") != "same":
             raise ValueError(
                 "Grouped pair updates need importance_guide='same'; pass grouped=False."
