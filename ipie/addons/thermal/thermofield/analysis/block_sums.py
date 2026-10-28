@@ -181,13 +181,12 @@ def _ratio(numer, denom):
     return value.real
 
 
-def summarize_blocks(blocks, nboot=4000, seed=1729, winsor_factor=5.0):
+def summarize_blocks(blocks, nboot=4000, seed=1729):
     """Ratio of means with paired block bootstrap and jackknife errors.
 
     Blocks are independent walks over [0, beta], so they are the resampling
     units; complex sums are kept throughout, and the bootstrap samples keep
-    the energy-number covariance for later fits. The winsorized estimate is a
-    biased diagnostic only.
+    the energy-number covariance for later fits.
 
     Parameters
     ----------
@@ -197,9 +196,6 @@ def summarize_blocks(blocks, nboot=4000, seed=1729, winsor_factor=5.0):
         Bootstrap replicates. Default 4000.
     seed : int
         Seed of the bootstrap. Default 1729.
-    winsor_factor : float
-        Blocks heavier than this multiple of the median mass are clipped in
-        the diagnostic. Default 5.0.
 
     Returns
     -------
@@ -209,8 +205,8 @@ def summarize_blocks(blocks, nboot=4000, seed=1729, winsor_factor=5.0):
     d = blocks.denom
     x = numpy.column_stack((blocks.numer, blocks.navnum))
     nb = len(d)
-    if nb < 2 or nboot < 2 or winsor_factor <= 0:
-        raise ValueError("Need at least two blocks and bootstrap draws and a positive cap.")
+    if nb < 2 or nboot < 2:
+        raise ValueError("Need at least two blocks and bootstrap draws.")
     total_x, total_d = x.sum(axis=0), d.sum()
     estimate = _ratio(total_x, total_d)
     individual = _ratio(x, d[:, None])
@@ -235,8 +231,6 @@ def summarize_blocks(blocks, nboot=4000, seed=1729, winsor_factor=5.0):
     mass_fraction = mass / mass.sum()
     neff = mass.sum() ** 2 / numpy.sum(mass**2)
     coherence = abs(total_d) / mass.sum()
-    factors = numpy.minimum(1.0, winsor_factor * numpy.median(mass) / mass)
-    clipped = _ratio((x * factors[:, None]).sum(axis=0), numpy.sum(d * factors))
     endpoints = numpy.unique(numpy.linspace(2, nb, min(200, nb - 1), dtype=int))
     cumulative = _ratio(
         numpy.cumsum(x, axis=0)[endpoints - 1], numpy.cumsum(d)[endpoints - 1, None]
@@ -289,14 +283,6 @@ def summarize_blocks(blocks, nboot=4000, seed=1729, winsor_factor=5.0):
         mean_neff=float(finite_eff.mean()) if len(finite_eff) else None,
         median_effective_walkers=(
             float(numpy.median(finite_eff) * walkers) if len(finite_eff) else None
-        ),
-        winsor_diagnostic=dict(
-            factor=winsor_factor,
-            biased=True,
-            energy=float(clipped[0]),
-            nav=float(clipped[1]),
-            shift=(clipped - estimate).tolist(),
-            clipped_blocks=int(numpy.count_nonzero(factors < 1)),
         ),
         convergence=dict(
             blocks=endpoints.tolist(),
