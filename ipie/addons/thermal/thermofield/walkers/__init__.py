@@ -17,5 +17,4 @@
 
 # Names of the earlier flat module `walkers`.
 # pylint: disable=unused-import
-from ipie.addons.thermal.thermofield.walkers.pop_controller import _PopControlProxy
 from ipie.addons.thermal.thermofield.walkers.uhf_walkers import ThermofieldWalkers

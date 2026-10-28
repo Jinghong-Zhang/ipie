@@ -74,7 +74,11 @@ def test_pop_control_clones_full_walker_state():
 
 
 @pytest.mark.unit
-def test_pair_branch_population_matches_core_controller():
+@pytest.mark.parametrize(
+    "method, low, high",
+    [("pair_branch", -5.0, 4.0), ("stochastic_reconfiguration", -5.0, 4.0), ("comb", -0.6, 0.6)],
+)
+def test_population_control_matches_core_controller(method, low, high):
     nbasis, nwalkers = 3, 40
     numpy.random.seed(3)
     h1e = numpy.random.standard_normal((nbasis, nbasis))
@@ -82,10 +86,12 @@ def test_pair_branch_population_matches_core_controller():
     trial = ThermofieldThermalTrial(hamiltonian, beta=1.0, mu=0.1)
     mpi_handler = MPIHandler()
     comm = mpi_handler.comm
-    # Distinct walkers on every process; weights over four decades, so that
-    # many pairs branch, also across processes.
+    # Distinct walkers on every process. Pair branching and reconfiguration get
+    # weights over four decades, so that many walkers move, also across
+    # processes; comb gets a narrow spread, where the core controller copies a
+    # walker at most twice.
     rng = numpy.random.RandomState(100 + comm.rank)
-    weight = numpy.exp(rng.uniform(-5.0, 4.0, nwalkers))
+    weight = numpy.exp(rng.uniform(low, high, nwalkers))
     phase = numpy.exp(1j * rng.uniform(0, 2 * numpy.pi, nwalkers))
     Q = rng.standard_normal((nwalkers, 2, nbasis, nbasis))
     states = []
@@ -100,7 +106,7 @@ def test_pair_branch_population_matches_core_controller():
         walkers.add_walker_array(
             "field_hist", numpy.arange(nwalkers * 5.0).reshape(nwalkers, 5) + 1000 * comm.rank
         )
-        pcontrol = controller(nwalkers, 1, mpi_handler, "pair_branch")
+        pcontrol = controller(nwalkers, 1, mpi_handler, method)
         numpy.random.seed(11)
         pcontrol.pop_control(walkers, comm)
         states.append(walkers)
@@ -110,6 +116,40 @@ def test_pair_branch_population_matches_core_controller():
         numpy.testing.assert_array_equal(getattr(new, name), getattr(core, name))
 
 
+@pytest.mark.unit
+def test_comb_population_copies_every_selected_walker():
+    nbasis, nwalkers = 2, 30
+    numpy.random.seed(5)
+    h1e = numpy.random.standard_normal((nbasis, nbasis))
+    hamiltonian = build_noninteracting_hamiltonian(0.5 * (h1e + h1e.T))
+    trial = ThermofieldThermalTrial(hamiltonian, beta=1.0, mu=0.1)
+    mpi_handler = MPIHandler()
+    comm = mpi_handler.comm
+    rng = numpy.random.RandomState(200 + comm.rank)
+    weight = numpy.exp(rng.uniform(-5.0, 4.0, nwalkers))
+    Q = rng.standard_normal((nwalkers, 2, nbasis, nbasis))
+    walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
+    walkers.weight = weight.copy()
+    walkers.Qmat[:] = Q
+    # Global walker ids.
+    walkers.log_tr[:] = numpy.arange(nwalkers) + nwalkers * comm.rank
+    pcontrol = ThermofieldPopController(nwalkers, 1, mpi_handler, "comb")
+    numpy.random.seed(11)
+    pcontrol.pop_control(walkers, comm)
+    all_weights = numpy.concatenate(comm.allgather(weight))
+    source = numpy.concatenate(comm.allgather(walkers.log_tr.real)).astype(int)
+    # A comb with one tooth per walker gives floor(n w / W) or ceil(n w / W) copies.
+    copies = numpy.bincount(source, minlength=len(all_weights))
+    expected = len(all_weights) * all_weights / all_weights.sum()
+    assert copies.max() > 2
+    assert numpy.all(numpy.floor(expected - 1e-9) <= copies)
+    assert numpy.all(copies <= numpy.ceil(expected + 1e-9))
+    mine = source[comm.rank * nwalkers : (comm.rank + 1) * nwalkers]
+    numpy.testing.assert_array_equal(walkers.Qmat, numpy.concatenate(comm.allgather(Q))[mine])
+    numpy.testing.assert_array_equal(walkers.weight, 1.0)
+
+
 if __name__ == "__main__":
     test_pop_control_clones_full_walker_state()
-    test_pair_branch_population_matches_core_controller()
+    test_population_control_matches_core_controller("pair_branch", -5.0, 4.0)
+    test_comb_population_copies_every_selected_walker()

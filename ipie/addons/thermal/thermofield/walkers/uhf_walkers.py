@@ -19,7 +19,7 @@ import numpy
 
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
 from ipie.addons.thermal.thermofield.utils.linalg import pivoted_qr, qr_batched, SCALE_FLOOR
-from ipie.addons.thermal.thermofield.walkers.pop_controller import reorder_population
+from ipie.addons.thermal.thermofield.walkers.pop_controller import population_control
 from ipie.config import config
 from ipie.utils.backend import arraylib as xp
 from ipie.utils.backend import to_host
@@ -424,7 +424,5 @@ class ThermofieldWalkers(BaseWalkers):
         return self
 
     def pop_control_inplace(self, pcontrol, comm):
-        """Population control on one MPI process. Use :class:`ThermofieldPopController`."""
-        if comm.size != 1:
-            raise ValueError("pop_control_inplace supports a single MPI process.")
-        reorder_population(pcontrol, self, comm)
+        """Population control by reordering the walkers. Use :class:`ThermofieldPopController`."""
+        population_control(pcontrol, self, comm)
