@@ -17,11 +17,3 @@
 
 # Names of the earlier flat module `estimators`.
 # pylint: disable=unused-import
-from ipie.addons.thermal.thermofield.estimators.energy import (
-    local_energy_thermofield_mixed,
-    ThermofieldEnergyEstimator,
-)
-from ipie.addons.thermal.thermofield.estimators.particle_number import (
-    particle_number_thermofield_mixed,
-    ThermofieldNumberEstimator,
-)

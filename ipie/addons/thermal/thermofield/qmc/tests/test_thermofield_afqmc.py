@@ -18,12 +18,13 @@
 import numpy
 import pytest
 
+from ipie.addons.thermal.estimators.generic import local_energy_generic_cholesky
+from ipie.addons.thermal.estimators.thermal import one_rdm_from_G
 from ipie.addons.thermal.thermofield.analysis.thermofield_analysis import (
     extrapolate_eta,
     pooled_ratio,
     summarize,
 )
-from ipie.addons.thermal.thermofield.estimators.energy import local_energy_thermofield_mixed
 from ipie.addons.thermal.thermofield.qmc.thermofield_afqmc import ThermofieldAFQMC
 from ipie.addons.thermal.thermofield.trial.thermofield import ThermofieldThermalTrial
 from ipie.addons.thermal.thermofield.utils.testing import (
@@ -198,7 +199,15 @@ def test_guide_member_is_the_mixed_estimator():
     # those of the member slice.
     walkers = afqmc.walkers
     weights = walkers.weight * walkers.phase
-    energies = local_energy_thermofield_mixed(hamiltonian, walkers)[:, 0]
+    # Mixed energies from the cached guide Green's functions.
+    energies = numpy.array(
+        [
+            local_energy_generic_cholesky(
+                hamiltonian, one_rdm_from_G(numpy.array([walkers.Ga[iw], walkers.Gb[iw]]))
+            )[0]
+            for iw in range(walkers.nwalkers)
+        ]
+    )
     e_cached = numpy.sum(weights * energies) / numpy.sum(weights)
     assert results["e_mix"][0, 0] == pytest.approx(e_cached.real, abs=1e-10)
 
