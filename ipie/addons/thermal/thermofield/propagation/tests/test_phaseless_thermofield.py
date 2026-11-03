@@ -200,6 +200,89 @@ def test_batched_propagation_matches_scalar_loop():
 
 
 @pytest.mark.unit
+def test_growth_bound_clips_log_growth():
+    # Thermofield AFQMC params.
+    mu = 0.1
+    timestep = 0.05
+    growth_bound = 0.5
+    growth_center = 0.02
+
+    propagator = ThermofieldPhaseless(timestep, mu)
+    propagator.mf_const_fac = 0.9
+    propagator.growth_bound = growth_bound
+    propagator.growth_center = growth_center
+    lmin, lmax = propagator.growth_bound_range()
+    assert lmax - lmin == pytest.approx(2.0 * growth_bound * numpy.sqrt(2.0 * timestep))
+
+    # Walkers above, inside and below the range, a dead walker above it, and a
+    # walker with an infinite log growth.
+    log_R = numpy.array([1.0 + 0.3j, 0.05 - 0.2j, -1.0 + 0.1j, 2.0, numpy.inf])
+    weight = numpy.array([1.0, 1.0, 1.0, 0.0, 1.0])
+    with numpy.errstate(over="ignore", invalid="ignore"):
+        magn = numpy.abs(propagator.mf_const_fac * numpy.exp(log_R))
+    ref = magn.copy()
+    propagator.apply_bound_growth(magn, log_R, weight)
+    assert magn[0] == numpy.exp(lmax)
+    assert magn[1] == ref[1]
+    assert magn[2] == numpy.exp(lmin)
+    assert magn[3] == numpy.exp(lmax)
+    assert numpy.isinf(magn[4])
+    assert propagator.ngrowth_trig == 2
+
+
+@pytest.mark.unit
+def test_growth_bound_batched_matches_scalar_loop():
+    # System params.
+    nbasis = 4
+
+    # Thermofield AFQMC params.
+    mu = 0.1
+    beta = 1.0
+    timestep = 0.05
+    nwalkers = 3
+    nslices = 6
+    seed = 5
+    numpy.random.seed(seed)
+
+    h1e = numpy.random.standard_normal((nbasis, nbasis))
+    h1e = 0.5 * (h1e + h1e.T)
+    L = numpy.random.standard_normal((nbasis, nbasis))
+    L = 0.5 * (L + L.T)
+    chol = 0.3 * L.ravel()[:, None]
+    hamiltonian = GenericRealChol(numpy.array([h1e, h1e]), chol)
+
+    # A bound too wide to act leaves the walk bitwise unchanged; a tight bound
+    # acts on the batched and the per-walker paths alike.
+    runs = {}
+    for growth_bound, batched in ((0.0, True), (1e6, True), (0.05, True), (0.05, False)):
+        trial = ThermofieldThermalTrial(hamiltonian, beta=beta, mu=mu)
+        walkers = ThermofieldWalkers(trial, nbasis, nwalkers)
+        propagator = ThermofieldPhaseless(timestep, mu)
+        propagator.build(hamiltonian, trial=trial, walkers=walkers)
+        propagator.batched = batched
+        propagator.growth_bound = growth_bound
+        for t in range(nslices):
+            numpy.random.seed(100 + t)
+            propagator.propagate_walkers(walkers, hamiltonian, trial)
+        runs[(growth_bound, batched)] = (
+            propagator.ngrowth_trig,
+            walkers.weight.copy(),
+            walkers.Qmat.copy(),
+            walkers.log_ovlp.copy(),
+        )
+    off, wide = runs[(0.0, True)], runs[(1e6, True)]
+    assert off[0] == 0 and wide[0] == 0
+    for a, b in zip(off[1:], wide[1:]):
+        numpy.testing.assert_array_equal(a, b)
+    tight, tight_scalar = runs[(0.05, True)], runs[(0.05, False)]
+    assert tight[0] > 0
+    assert tight[0] == tight_scalar[0]
+    assert not numpy.array_equal(tight[1], off[1])
+    for a, b in zip(tight[1:], tight_scalar[1:]):
+        numpy.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-13)
+
+
+@pytest.mark.unit
 def test_force_bias_sign_finite_difference_real_chol():
     # System params.
     nbasis = 3

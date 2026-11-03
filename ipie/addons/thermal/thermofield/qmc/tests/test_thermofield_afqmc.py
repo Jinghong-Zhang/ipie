@@ -288,6 +288,47 @@ def test_driver_hubbard_atom_phaseless():
 
 
 @pytest.mark.driver
+def test_driver_growth_bound():
+    # System params.
+    eps = 0.1
+    U = 2.0
+
+    # Thermofield AFQMC params.
+    mu = 0.5
+    beta = 2.0
+    timestep = 0.05
+    nwalkers = 16
+    nblocks = 2
+    seed = 7
+
+    # The bound reaches the propagator; a bound too wide to act leaves the
+    # results bitwise unchanged, and the clips are counted per block.
+    hamiltonian = build_hubbard_atom_hamiltonian(eps, U)
+    results = {}
+    for growth_bound in (0.0, 1e6, 0.05):
+        afqmc = ThermofieldAFQMC.build(
+            mu,
+            beta,
+            hamiltonian,
+            nwalkers=nwalkers,
+            nblocks=nblocks,
+            timestep=timestep,
+            seed=seed,
+            growth_bound=growth_bound,
+            growth_center=0.01,
+        )
+        assert afqmc.propagator.growth_bound == growth_bound
+        results[growth_bound] = afqmc.run(verbose=0)
+    off, wide, tight = results[0.0], results[1e6], results[0.05]
+    assert numpy.all(off["ngrowth_trig"] == 0) and numpy.all(wide["ngrowth_trig"] == 0)
+    assert numpy.all(tight["ngrowth_trig"] > 0)
+    for key in ("numer_mix", "denom_mix", "numer_trace", "denom_trace", "log_scale_trace"):
+        numpy.testing.assert_array_equal(off[key], wide[key])
+    assert not numpy.array_equal(off["denom_trace"], tight["denom_trace"])
+    assert numpy.all(numpy.isfinite(tight["e_trace"]))
+
+
+@pytest.mark.driver
 def test_driver_random_two_orbital_vs_ed():
     # System params.
     nbasis = 2

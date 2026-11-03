@@ -136,6 +136,8 @@ class ThermofieldAFQMC(AFQMCBase):
         eta_members=None,
         measure_trace: bool = True,
         weight_cap: float = 0.10,
+        growth_bound: float = 0.0,
+        growth_center: float = 0.0,
         mpi_handler=None,
         verbose: int = 0,
     ) -> "ThermofieldAFQMC":
@@ -175,6 +177,13 @@ class ThermofieldAFQMC(AFQMCBase):
             Measure the closed trace at the end of the walk. Default True.
         weight_cap : float
             Weight cap as a fraction of the total weight. Default 0.10.
+        growth_bound : float
+            Bound on the log growth of a walker weight per slice in units of
+            sqrt(2 timestep), see :class:`ThermofieldPhaseless`. Default 0: no
+            bound.
+        growth_center : float
+            Centre of the bound, the mean log growth of the weights per slice.
+            Default 0.
         verbose : int
             Log verbosity. Default 0.
         """
@@ -208,6 +217,8 @@ class ThermofieldAFQMC(AFQMCBase):
         propagator = Propagator[type(hamiltonian)](
             timestep, mu, phaseless=phaseless, verbose=verbose
         )
+        propagator.growth_bound = growth_bound
+        propagator.growth_center = growth_center
         propagator.build(
             hamiltonian, trial=trial, walkers=walkers, mpi_handler=mpi_handler, verbose=verbose
         )
@@ -241,9 +252,10 @@ class ThermofieldAFQMC(AFQMCBase):
             ``numer_mix``, ``navnum_mix``, ``denom_mix`` (complex, shape
             (nblocks, nmembers)), ``log_scale_mix`` (shift plus population
             normalization), the same with ``_trace`` (shape (nblocks,)) when the
-            trace is measured, and the block ratios ``e_mix``, ``nav_mix``,
-            ``e_trace``, ``nav_trace``. Combine blocks with `summarize`, not by
-            averaging the ratios.
+            trace is measured, the block ratios ``e_mix``, ``nav_mix``,
+            ``e_trace``, ``nav_trace``, and ``ngrowth_trig``, the walker slices
+            clipped by the growth bound in each block (shape (nblocks,)).
+            Combine blocks with `summarize`, not by averaging the ratios.
         """
         # Setup.
         self.setup_timers()
@@ -283,6 +295,7 @@ class ThermofieldAFQMC(AFQMCBase):
             results[f"{name}_trace"] = numpy.zeros(nblocks, dtype=numpy.complex128)
         results["log_scale_mix"] = numpy.zeros((nblocks, nmembers))
         results["log_scale_trace"] = numpy.zeros(nblocks)
+        results["ngrowth_trig"] = numpy.zeros(nblocks, dtype=numpy.int64)
 
         # Propagate.
         for block in range(nblocks):
@@ -290,6 +303,7 @@ class ThermofieldAFQMC(AFQMCBase):
             start_step = time.time()
             self.walkers.reset(self.trial)
             pop_log_norm = 0.0
+            ngrowth_trig = self.propagator.ngrowth_trig
             for t in range(self.nwalk):
                 if self.verbosity >= 2 and comm.rank == 0:
                     print(f" # Timeslice {t} of {self.nwalk}.")
@@ -342,6 +356,9 @@ class ThermofieldAFQMC(AFQMCBase):
 
             # Measure the trace and write the block.
             start = time.time()
+            results["ngrowth_trig"][block] = comm.allreduce(
+                self.propagator.ngrowth_trig - ngrowth_trig, op=MPI.SUM
+            )
             if self.params.measure_trace:
                 est = self.estimators["trace"]
                 est.measure(self.walkers, self.hamiltonian, self.trial, comm, log_norm=pop_log_norm)

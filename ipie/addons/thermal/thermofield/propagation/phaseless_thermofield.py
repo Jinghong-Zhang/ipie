@@ -75,6 +75,20 @@ class ThermofieldPhaseless(PhaselessGeneric):
         products of consecutive slices for cyclic averaging. With nspin 1 the
         spin-1 propagator must equal spin 0; a slice where it does not sets
         `group_accum_spin_mismatch`.
+    growth_bound : float
+        Bound on the log growth of a walker weight per slice, in units of
+        :math:`\sqrt{2\Delta\tau}`: :math:`\ln|I|` of the importance factor is
+        clipped to `growth_center` :math:`\pm` `growth_bound`
+        :math:`\sqrt{2\Delta\tau}`. This is the zero temperature bound on the
+        hybrid energy, :math:`E_{shift} \pm \sqrt{2/\Delta\tau}`, with
+        :math:`-\Delta\tau E_{shift}` replaced by `growth_center`. Phaseless
+        walk only; 0 disables the bound. Default 0.
+    growth_center : float
+        Centre of the bound: the mean log growth of the weights per slice, i.e.
+        the log of the factor removed by population control, per slice.
+        Default 0.
+    ngrowth_trig : int
+        Number of walker slices with nonzero weight clipped by the bound.
     """
 
     def __init__(self, time_step, mu, exp_nmax=6, phaseless=True, verbose=False):
@@ -85,6 +99,9 @@ class ThermofieldPhaseless(PhaselessGeneric):
         self.real_chol_gemm = True
         self.group_accum = None
         self.group_accum_spin_mismatch = False
+        self.growth_bound = 0.0
+        self.growth_center = 0.0
+        self.ngrowth_trig = 0
         self._kernels_ready = False
         self._rc_L = None
         self._rc_Lt = None
@@ -598,7 +615,8 @@ class ThermofieldPhaseless(PhaselessGeneric):
     def update_walker_weights_batched(self, walkers, log_ovlp_new, cfb, cmf):
         """Update the weights of all walkers, as :meth:`update_walker_weight`.
 
-        A walker whose importance factor is not finite gets zero weight.
+        A walker whose importance factor is not finite gets zero weight. In the
+        phaseless walk the magnitude is bounded with `growth_bound`.
 
         Parameters
         ----------
@@ -613,6 +631,8 @@ class ThermofieldPhaseless(PhaselessGeneric):
         with numpy.errstate(over="ignore", invalid="ignore", divide="ignore"):
             expQ = self.mf_const_fac * numpy.exp(log_R)
             magn = numpy.abs(expQ)
+            if self.phaseless and self.growth_bound > 0.0:
+                self.apply_bound_growth(magn, log_R, walkers.weight)
             bad = numpy.isinf(magn) | numpy.isnan(magn)
             good = ~bad
             if self.phaseless:
@@ -626,6 +646,34 @@ class ThermofieldPhaseless(PhaselessGeneric):
                 nz = good & (magn > 0.0)
                 walkers.phase[nz] *= expQ[nz] / magn[nz]
         walkers.weight[bad] = 0.0
+
+    def growth_bound_range(self):
+        """Range of the log growth of a walker weight per slice allowed by the bound."""
+        bound = self.growth_bound * math.sqrt(2.0 * self.dt)
+        return self.growth_center - bound, self.growth_center + bound
+
+    def apply_bound_growth(self, magn, log_R, weight):
+        """Clip the log growth of the walker weights to `growth_bound_range`.
+
+        Walkers inside the range keep their magnitude unchanged. A walker with a
+        log growth that is not finite is left to the caller.
+
+        Parameters
+        ----------
+        magn : :class:`numpy.ndarray`
+            Magnitudes of the importance factors, shape (nwalkers,), updated in
+            place.
+        log_R : :class:`numpy.ndarray`
+            Log importance factors without the mean-field constant factor.
+        weight : :class:`numpy.ndarray`
+            Walker weights before the update; only walkers with nonzero weight
+            are counted in `ngrowth_trig`.
+        """
+        lmin, lmax = self.growth_bound_range()
+        log_magn = numpy.log(numpy.abs(self.mf_const_fac)) + log_R.real
+        clip = numpy.isfinite(log_magn) & ((log_magn > lmax) | (log_magn < lmin))
+        magn[clip] = numpy.exp(numpy.clip(log_magn[clip], lmin, lmax))
+        self.ngrowth_trig += int(numpy.count_nonzero(clip & (weight != 0.0)))
 
     def _propagate_walkers_scalar(self, walkers, trial, VHS, cfb, cmf):
         """Per-walker reference implementation (`batched` False)."""
@@ -652,7 +700,8 @@ class ThermofieldPhaseless(PhaselessGeneric):
         :math:`S_T(\Delta')/S_T(\Delta)` in log space times
         :math:`e^{-\Delta\tau E_{mf}}`,
         :math:`E_{mf} = E_{core} + \bar{v} \cdot \bar{v} / 2`, as in
-        `PhaselessBase.update_weight_legacy`.
+        `PhaselessBase.update_weight_legacy`. In the phaseless walk the
+        magnitude is bounded with `growth_bound`.
 
         Parameters
         ----------
@@ -673,6 +722,15 @@ class ThermofieldPhaseless(PhaselessGeneric):
             magn = abs(expQ)
         except OverflowError:
             magn = math.inf
+
+        if self.phaseless and self.growth_bound > 0.0:
+            # As apply_bound_growth.
+            lmin, lmax = self.growth_bound_range()
+            log_magn = math.log(abs(self.mf_const_fac)) + log_R.real
+            if math.isfinite(log_magn) and (log_magn > lmax or log_magn < lmin):
+                magn = math.exp(min(max(log_magn, lmin), lmax))
+                if walkers.weight[iw] != 0.0:
+                    self.ngrowth_trig += 1
 
         if math.isinf(magn) or math.isnan(magn):
             walkers.weight[iw] = 0.0
