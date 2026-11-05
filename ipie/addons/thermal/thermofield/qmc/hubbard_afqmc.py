@@ -62,8 +62,8 @@ def propagate_population_cp(
     pcontrol : :class:`ThermofieldPopController`
         Population controller.
     weight_cap : float
-        Walker weights are clipped at this multiple of the current total
-        weight; 0 uses 1e6, which never binds. Default 0.0.
+        Walker weights are clipped at this multiple of the total weight
+        before each slice; 0 disables the cap. Default 0.0.
     on_slice : callable
         Called with t + 1 after slice t, after stabilization and before
         population control. Default None.
@@ -87,6 +87,12 @@ def propagate_population_cp(
     if prop.batched and prop.cache_qinv:
         prop.seed_qinv_cache(walkers)
     for t in range(nslices):
+        if t > 0 and weight_cap > 0:
+            # A multiple of the total weight before the slice, which follows the
+            # drift between population controls but not the growth of a walker
+            # within the slice.
+            total = comm.allreduce(float(numpy.abs(walkers.weight).sum()), op=MPI.SUM)
+            wbound = total * weight_cap
         if prop.discrete:
             # This path can fail on one process; all fail together.
             failure = None
@@ -101,10 +107,7 @@ def propagate_population_cp(
             invalid_count = int((~numpy.isfinite(walkers.weight)).sum())
             prop.invalid_weight_count += invalid_count
             numpy.nan_to_num(walkers.weight, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-            # A multiple of the current total weight, which drifts between
-            # population controls; the controller's total_weight is the target.
-            total = comm.allreduce(float(numpy.abs(walkers.weight).sum()), op=MPI.SUM)
-            wbound = total * (weight_cap if weight_cap > 0 else 1.0e6)
+        if t > 0 and weight_cap > 0:
             population_hits = int((numpy.abs(walkers.weight) > wbound).sum())
             prop.population_weight_bound_count += population_hits
             numpy.clip(walkers.weight, a_min=-wbound, a_max=wbound, out=walkers.weight)

@@ -176,7 +176,8 @@ class ThermofieldAFQMC(AFQMCBase):
         measure_trace : bool
             Measure the closed trace at the end of the walk. Default True.
         weight_cap : float
-            Weight cap as a fraction of the total weight. Default 0.10.
+            Weight cap as a fraction of the total weight before each slice.
+            Default 0.10.
         growth_bound : float
             Bound on the log growth of a walker weight per slice in units of
             sqrt(2 timestep), see :class:`ThermofieldPhaseless`. Default 0: no
@@ -309,6 +310,14 @@ class ThermofieldAFQMC(AFQMCBase):
                     print(f" # Timeslice {t} of {self.nwalk}.")
 
                 start = time.time()
+                if phaseless and t > 0 and self.params.weight_cap > 0.0:
+                    # A fraction of the total weight before the slice, after the last
+                    # clipping and population control. It follows the drift of the total
+                    # between population controls (there is no energy shift), but not the
+                    # growth of a walker within the slice.
+                    total = comm.allreduce(float(numpy.abs(self.walkers.weight).sum()), op=MPI.SUM)
+                    wbound = total * self.params.weight_cap
+                    self.tprop_clip += time.time() - start
                 self.propagator.propagate_walkers(self.walkers, self.hamiltonian, self.trial)
                 self.tprop_fbias = self.propagator.timer.tfbias
                 self.tprop_update = self.propagator.timer.tupdate
@@ -322,11 +331,6 @@ class ThermofieldAFQMC(AFQMCBase):
                         self.walkers.weight, copy=False, nan=0.0, posinf=0.0, neginf=0.0
                     )
                 if phaseless and t > 0 and self.params.weight_cap > 0.0:
-                    # A fraction of the current total weight. Without an energy shift
-                    # the total drifts between population controls, after which the
-                    # controller's total_weight is the target.
-                    total = comm.allreduce(float(numpy.abs(self.walkers.weight).sum()), op=MPI.SUM)
-                    wbound = total * self.params.weight_cap
                     numpy.clip(
                         self.walkers.weight, a_min=-wbound, a_max=wbound, out=self.walkers.weight
                     )  # In-place clipping.

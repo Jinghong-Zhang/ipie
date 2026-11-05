@@ -36,6 +36,7 @@ from ipie.addons.thermal.thermofield.utils.testing import (
     hubbard_atom_member_exact,
     noninteracting_exact,
 )
+from ipie.config import MPI
 
 
 def tolerance(err, floor):
@@ -341,27 +342,91 @@ def test_driver_weight_cap_follows_total_weight():
     nwalkers = 16
     nblocks = 2
     seed = 7
+    weight_cap = 0.5
+    growth = 2.0
 
-    # The cap is a fraction of the current total weight, so multiplying every
-    # weight by 64 after each slice (exact in floating point) changes only the
-    # normalization. A cap from the target weight would clip the grown walkers.
+    # The cap is a fraction of the total weight before each slice, so
+    # multiplying every weight by 2 after each slice (exact in floating point)
+    # changes only the normalization while no walker grows past weight_cap / 2
+    # of that total. A cap from the target weight would clip the grown walkers
+    # before population control.
     hamiltonian = build_hubbard_atom_hamiltonian(eps, U)
     results = {}
-    for growth in (1.0, 64.0):
+    shares = []
+    for g in (1.0, growth):
         afqmc = ThermofieldAFQMC.build(
-            mu, beta, hamiltonian, nwalkers=nwalkers, nblocks=nblocks, timestep=timestep, seed=seed
+            mu,
+            beta,
+            hamiltonian,
+            nwalkers=nwalkers,
+            nblocks=nblocks,
+            timestep=timestep,
+            seed=seed,
+            weight_cap=weight_cap,
         )
-        assert afqmc.params.weight_cap > 0.0 and afqmc.propagator.phaseless
+        assert afqmc.propagator.phaseless
+        comm = afqmc.mpi_handler.comm
         propagate = afqmc.propagator.propagate_walkers
 
-        def propagate_grown(walkers, *args, propagate=propagate, growth=growth, **kwargs):
+        def propagate_grown(walkers, *args, propagate=propagate, g=g, comm=comm, **kwargs):
+            total = comm.allreduce(float(numpy.abs(walkers.weight).sum()), op=MPI.SUM)
             propagate(walkers, *args, **kwargs)
-            walkers.weight *= growth
+            walkers.weight *= g
+            share = comm.allreduce(float(numpy.abs(walkers.weight).max()), op=MPI.MAX)
+            shares.append(share / (g * total))
 
         afqmc.propagator.propagate_walkers = propagate_grown
-        results[growth] = afqmc.run(verbose=0)
+        results[g] = afqmc.run(verbose=0)
+    assert max(shares) < weight_cap / growth
     for key in ("e_mix", "e_trace"):
-        numpy.testing.assert_allclose(results[64.0][key], results[1.0][key], rtol=1e-12, atol=0.0)
+        numpy.testing.assert_allclose(results[growth][key], results[1.0][key], rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.driver
+def test_driver_weight_cap_holds_an_exploding_walker():
+    # System params.
+    eps = 0.1
+    U = 2.0
+
+    # Thermofield AFQMC params.
+    mu = 0.5
+    beta = 2.0
+    timestep = 0.05
+    nwalkers = 16
+    nblocks = 1
+    seed = 7
+    explode_slice = 3  # No population control after it.
+
+    # One walker grows by 1e30 in a slice. The cap is a fraction of the total
+    # weight before the slice, so the walker is clipped to it; a cap from the
+    # total after the slice would grow with the walker.
+    hamiltonian = build_hubbard_atom_hamiltonian(eps, U)
+    afqmc = ThermofieldAFQMC.build(
+        mu, beta, hamiltonian, nwalkers=nwalkers, nblocks=nblocks, timestep=timestep, seed=seed
+    )
+    assert explode_slice % afqmc.params.pop_control_freq != 0
+    comm = afqmc.mpi_handler.comm
+    propagate = afqmc.propagator.propagate_walkers
+    totals = []
+    exploded = {}
+
+    def propagate_exploding(walkers, *args, **kwargs):
+        t = len(totals)
+        totals.append(comm.allreduce(float(numpy.abs(walkers.weight).sum()), op=MPI.SUM))
+        if t == explode_slice + 1 and comm.rank == 0:
+            exploded["weight"] = walkers.weight[exploded["walker"]]
+        propagate(walkers, *args, **kwargs)
+        if t == explode_slice and comm.rank == 0:
+            exploded["walker"] = int(numpy.argmax(numpy.abs(walkers.weight)))
+            walkers.weight[exploded["walker"]] *= 1e30
+
+    afqmc.propagator.propagate_walkers = propagate_exploding
+    results = afqmc.run(verbose=0)
+    if comm.rank == 0:
+        numpy.testing.assert_allclose(
+            exploded["weight"], afqmc.params.weight_cap * totals[explode_slice], rtol=1e-12
+        )
+    assert numpy.all(numpy.isfinite(results["e_trace"]))
 
 
 @pytest.mark.driver

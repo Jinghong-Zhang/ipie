@@ -36,8 +36,8 @@ class ThermofieldQMCParams(ThermalQMCParams):
         Measure the closed trace at the end of the walk. With False the walk
         stops at the last member, beta - min(eta). Default True.
     weight_cap : float
-        Walker weights are clipped at this fraction of the total weight in the
-        phaseless walk; 0 disables the cap. Default 0.10.
+        Walker weights are clipped at this fraction of the total weight before
+        each slice in the phaseless walk; 0 disables the cap. Default 0.10.
     """
 
     eta_members: Optional[Tuple[float, ...]] = None

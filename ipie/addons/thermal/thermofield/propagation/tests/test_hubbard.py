@@ -40,6 +40,7 @@ from ipie.addons.thermal.thermofield.trial.hubbard import (
 )
 from ipie.addons.thermal.thermofield.walkers.pop_controller import ThermofieldPopController
 from ipie.addons.thermal.thermofield.walkers.uhf_walkers import ThermofieldWalkers
+from ipie.config import MPI
 from ipie.utils.mpi import MPIHandler
 from ipie.walkers.pop_controller import get_buffer, set_buffer
 
@@ -282,12 +283,47 @@ def test_common_energy_reference_preserves_paths_and_normalized_weights(batched)
 
 
 @pytest.mark.unit
+def test_population_cap_holds_an_exploding_walker():
+    # One walker grows by 1e30 in slice 3. The cap is a multiple of the total
+    # weight before the slice, so the walker is clipped to it; a cap from the
+    # total after the slice would grow with the walker.
+    weight_cap = 0.5
+    trial, walkers, prop, afqmc, pc = build_test_case()
+    comm = afqmc.mpi_handler.comm
+    propagate = prop.propagate_walkers
+    totals = []
+    exploded = {}
+
+    def propagate_exploding(W, trial, t):
+        totals.append(comm.allreduce(float(numpy.abs(W.weight).sum()), op=MPI.SUM))
+        propagate(W, trial, t)
+        if t == 3 and comm.rank == 0:
+            exploded["walker"] = int(numpy.argmax(numpy.abs(W.weight)))
+            W.weight[exploded["walker"]] *= 1e30
+
+    def after_slice(n):
+        if n == 4 and comm.rank == 0:
+            exploded["weight"] = walkers.weight[exploded["walker"]]
+
+    prop.propagate_walkers = propagate_exploding
+    numpy.random.seed(73)
+    propagate_population_cp(
+        afqmc, walkers, trial, prop, 20, pc, weight_cap=weight_cap, on_slice=after_slice
+    )
+    hits = comm.allreduce(prop.population_weight_bound_count, op=MPI.SUM)
+    if comm.rank == 0:
+        numpy.testing.assert_allclose(exploded["weight"], weight_cap * totals[3], rtol=1e-12)
+    assert hits >= 1
+    assert numpy.isfinite(walkers.weight).all()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("batched", [False, True])
 def test_energy_reference_removes_deterministic_growth(batched):
     # A soluble occupied-level model without branching. For eight spin orbitals
     # at energy -100 the trace grows as (1 + exp(100 theta))^8; a reference of
-    # -800 removes that deterministic growth. The broad cap is a multiple of the
-    # current total weight, so the common growth never reaches it.
+    # -800 removes that deterministic growth. weight_cap 0 disables the
+    # population cap, so the common growth is never clipped.
     ham, _, _ = build_hubbard_hamiltonian(2, 2, 0.0, -100.0, t=0.0)
     beta, dt = 0.1, 0.01
     trial = ThermofieldCPTrial(ham, beta, k_trial=numpy.zeros((2, 4, 4)), guide_time=beta)
