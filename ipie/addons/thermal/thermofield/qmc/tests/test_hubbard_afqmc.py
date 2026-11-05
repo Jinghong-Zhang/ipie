@@ -95,10 +95,21 @@ def test_hubbard_driver_smoke(guide_mode):
         assert summary["max_recdev"] < 1e-10
         assert summary["max_wrapdev"] < 1e-10
         assert driver.results[0]["numer"].shape == (len(driver.observables.names),)
+        # Every block records the triggers of the bounds.
+        names = (
+            "log_weight_bound_count",
+            "population_weight_bound_count",
+            "invalid_weight_count",
+            "force_bias_bound_count",
+        )
+        total = comm.allreduce(driver.propagator.force_bias_bound_count, op=MPI.SUM)
+        assert sum(row["force_bias_bound_count"] for row in driver.results) == total
         if comm.rank == 0:
             with numpy.load(path) as saved:
                 assert saved["numer"].shape[0] == 3
                 assert saved["numer"].dtype == numpy.complex128
+                for name in names:
+                    assert saved[name].shape == (3,)
 
 
 @pytest.mark.unit

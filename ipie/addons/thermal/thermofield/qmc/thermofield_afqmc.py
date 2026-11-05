@@ -254,8 +254,12 @@ class ThermofieldAFQMC(AFQMCBase):
             (nblocks, nmembers)), ``log_scale_mix`` (shift plus population
             normalization), the same with ``_trace`` (shape (nblocks,)) when the
             trace is measured, the block ratios ``e_mix``, ``nav_mix``,
-            ``e_trace``, ``nav_trace``, and ``ngrowth_trig``, the walker slices
-            clipped by the growth bound in each block (shape (nblocks,)).
+            ``e_trace``, ``nav_trace``, and the triggers of the bounds in each
+            block (shape (nblocks,)): ``ngrowth_trig``, walker slices clipped by
+            the growth bound; ``nfb_trig``, force-bias components rescaled to
+            the bound; ``ninvalid_trig``, walker slices set to zero because the
+            importance factor or the weight was not finite; ``ncap_trig``,
+            walker slices clipped by the weight cap.
             Combine blocks with `summarize`, not by averaging the ratios.
         """
         # Setup.
@@ -296,7 +300,9 @@ class ThermofieldAFQMC(AFQMCBase):
             results[f"{name}_trace"] = numpy.zeros(nblocks, dtype=numpy.complex128)
         results["log_scale_mix"] = numpy.zeros((nblocks, nmembers))
         results["log_scale_trace"] = numpy.zeros(nblocks)
-        results["ngrowth_trig"] = numpy.zeros(nblocks, dtype=numpy.int64)
+        prop_trig = ("ngrowth_trig", "nfb_trig", "ninvalid_trig")
+        for name in prop_trig + ("ncap_trig",):
+            results[name] = numpy.zeros(nblocks, dtype=numpy.int64)
 
         # Propagate.
         for block in range(nblocks):
@@ -304,7 +310,9 @@ class ThermofieldAFQMC(AFQMCBase):
             start_step = time.time()
             self.walkers.reset(self.trial)
             pop_log_norm = 0.0
-            ngrowth_trig = self.propagator.ngrowth_trig
+            # The propagator counters are cumulative (on the device for nfb_trig).
+            trig_start = [int(getattr(self.propagator, name)) for name in prop_trig]
+            ncap_trig = 0
             for t in range(self.nwalk):
                 if self.verbosity >= 2 and comm.rank == 0:
                     print(f" # Timeslice {t} of {self.nwalk}.")
@@ -327,10 +335,14 @@ class ThermofieldAFQMC(AFQMCBase):
 
                 start_clip = time.time()
                 if t > 0:
+                    self.propagator.ninvalid_trig += int(
+                        numpy.count_nonzero(~numpy.isfinite(self.walkers.weight))
+                    )
                     numpy.nan_to_num(
                         self.walkers.weight, copy=False, nan=0.0, posinf=0.0, neginf=0.0
                     )
                 if phaseless and t > 0 and self.params.weight_cap > 0.0:
+                    ncap_trig += int(numpy.count_nonzero(numpy.abs(self.walkers.weight) > wbound))
                     numpy.clip(
                         self.walkers.weight, a_min=-wbound, a_max=wbound, out=self.walkers.weight
                     )  # In-place clipping.
@@ -364,9 +376,11 @@ class ThermofieldAFQMC(AFQMCBase):
 
             # Measure the trace and write the block.
             start = time.time()
-            results["ngrowth_trig"][block] = comm.allreduce(
-                self.propagator.ngrowth_trig - ngrowth_trig, op=MPI.SUM
-            )
+            for name, count in zip(prop_trig, trig_start):
+                results[name][block] = comm.allreduce(
+                    int(getattr(self.propagator, name)) - count, op=MPI.SUM
+                )
+            results["ncap_trig"][block] = comm.allreduce(ncap_trig, op=MPI.SUM)
             if self.params.measure_trace:
                 est = self.estimators["trace"]
                 est.measure(self.walkers, self.hamiltonian, self.trial, comm, log_norm=pop_log_norm)

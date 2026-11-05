@@ -378,6 +378,8 @@ def test_driver_weight_cap_follows_total_weight():
         afqmc.propagator.propagate_walkers = propagate_grown
         results[g] = afqmc.run(verbose=0)
     assert max(shares) < weight_cap / growth
+    for g in (1.0, growth):
+        assert numpy.all(results[g]["ncap_trig"] == 0)
     for key in ("e_mix", "e_trace"):
         numpy.testing.assert_allclose(results[growth][key], results[1.0][key], rtol=1e-12, atol=0.0)
 
@@ -426,7 +428,59 @@ def test_driver_weight_cap_holds_an_exploding_walker():
         numpy.testing.assert_allclose(
             exploded["weight"], afqmc.params.weight_cap * totals[explode_slice], rtol=1e-12
         )
+    assert results["ncap_trig"][0] >= 1
     assert numpy.all(numpy.isfinite(results["e_trace"]))
+
+
+@pytest.mark.driver
+def test_driver_counts_bound_triggers():
+    # System params.
+    eps = 0.1
+    U = 2.0
+
+    # Thermofield AFQMC params.
+    mu = 0.5
+    beta = 2.0
+    timestep = 0.05
+    nwalkers = 16
+    nblocks = 2
+    seed = 7
+    invalid_slice = 3
+
+    # Every block reports the triggers of each bound. A weight set to NaN in
+    # block 0 is one invalid walker slice. One force-bias trigger added on every
+    # process after every slice shows that the counts are per block and global.
+    hamiltonian = build_hubbard_atom_hamiltonian(eps, U)
+    results = {}
+    for marked in (False, True):
+        afqmc = ThermofieldAFQMC.build(
+            mu, beta, hamiltonian, nwalkers=nwalkers, nblocks=nblocks, timestep=timestep, seed=seed
+        )
+        comm = afqmc.mpi_handler.comm
+        propagator = afqmc.propagator
+        propagate = propagator.propagate_walkers
+        calls = []
+
+        def propagate_marked(
+            walkers, *args, propagate=propagate, prop=propagator, rank=comm.rank, calls=calls, **kw
+        ):
+            propagate(walkers, *args, **kw)
+            if len(calls) == invalid_slice and rank == 0:
+                walkers.weight[int(numpy.argmax(walkers.weight))] = numpy.nan
+            prop.nfb_trig += 1
+            calls.append(None)
+
+        if marked:
+            propagator.propagate_walkers = propagate_marked
+        results[marked] = afqmc.run(verbose=0)
+        for name in ("ngrowth_trig", "nfb_trig", "ninvalid_trig", "ncap_trig"):
+            assert results[marked][name].shape == (nblocks,)
+            assert results[marked][name].dtype == numpy.int64
+        total = comm.allreduce(int(propagator.nfb_trig), op=MPI.SUM)
+        assert results[marked]["nfb_trig"].sum() == total
+    assert numpy.all(results[False]["ninvalid_trig"] == 0)
+    numpy.testing.assert_array_equal(results[True]["ninvalid_trig"], [1, 0])
+    assert numpy.all(results[True]["nfb_trig"] >= afqmc.nwalk * comm.size)
 
 
 @pytest.mark.driver

@@ -89,6 +89,11 @@ class ThermofieldPhaseless(PhaselessGeneric):
         Default 0.
     ngrowth_trig : int
         Number of walker slices with nonzero weight clipped by the bound.
+    ninvalid_trig : int
+        Number of walker slices with nonzero weight set to zero because the
+        importance factor or the weight was not finite.
+    nfb_trig : int
+        Number of force-bias components rescaled to `fbbound`.
     """
 
     def __init__(self, time_step, mu, exp_nmax=6, phaseless=True, verbose=False):
@@ -102,6 +107,7 @@ class ThermofieldPhaseless(PhaselessGeneric):
         self.growth_bound = 0.0
         self.growth_center = 0.0
         self.ngrowth_trig = 0
+        self.ninvalid_trig = 0
         self._kernels_ready = False
         self._rc_L = None
         self._rc_Lt = None
@@ -645,6 +651,7 @@ class ThermofieldPhaseless(PhaselessGeneric):
                 walkers.weight[good] *= magn[good]
                 nz = good & (magn > 0.0)
                 walkers.phase[nz] *= expQ[nz] / magn[nz]
+        self.ninvalid_trig += int(numpy.count_nonzero(bad & (walkers.weight != 0.0)))
         walkers.weight[bad] = 0.0
 
     def growth_bound_range(self):
@@ -733,6 +740,8 @@ class ThermofieldPhaseless(PhaselessGeneric):
                     self.ngrowth_trig += 1
 
         if math.isinf(magn) or math.isnan(magn):
+            if walkers.weight[iw] != 0.0:
+                self.ninvalid_trig += 1
             walkers.weight[iw] = 0.0
             return
 

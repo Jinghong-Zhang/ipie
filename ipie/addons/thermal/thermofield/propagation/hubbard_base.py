@@ -118,6 +118,8 @@ class ThermofieldHubbardBase(ABC):
         Walkers killed by the constraint and walker steps taken.
     log_weight_bound_count, invalid_weight_count : int
         Numerical guard events; a driver should refuse a block that has any.
+    force_bias_bound_count : int
+        Force-bias components clipped to [-1, 1] (continuous fields).
     """
 
     def __init__(
@@ -157,6 +159,7 @@ class ThermofieldHubbardBase(ABC):
         self.log_weight_bound_count = 0
         self.population_weight_bound_count = 0
         self.invalid_weight_count = 0
+        self.force_bias_bound_count = 0
         self.max_log_weight = -numpy.inf
         self.min_log_weight = numpy.inf
         self.batched = bool(batched)

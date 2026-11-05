@@ -15,6 +15,8 @@
 # Authors: Jinghong Zhang <jinghongzhang@fas.harvard.edu>
 #
 
+from types import SimpleNamespace
+
 import numpy
 import pytest
 import scipy.linalg
@@ -228,6 +230,35 @@ def test_growth_bound_clips_log_growth():
     assert magn[3] == numpy.exp(lmax)
     assert numpy.isinf(magn[4])
     assert propagator.ngrowth_trig == 2
+
+
+@pytest.mark.unit
+def test_invalid_importance_factor_is_counted():
+    # Thermofield AFQMC params.
+    mu = 0.1
+    timestep = 0.05
+
+    # Live walkers with an infinite and a NaN guide overlap are set to zero and
+    # counted; a dead walker with an infinite overlap is not counted.
+    log_ovlp_new = numpy.array([0.1 + 0.2j, numpy.inf, numpy.nan, numpy.inf])
+    zeros = numpy.zeros(4, dtype=numpy.complex128)
+    for batched in (True, False):
+        propagator = ThermofieldPhaseless(timestep, mu)
+        propagator.mf_const_fac = 0.9
+        walkers = SimpleNamespace(
+            weight=numpy.array([1.0, 1.0, 1.0, 0.0]),
+            log_ovlp=zeros.copy(),
+            phase=numpy.ones(4, dtype=numpy.complex128),
+        )
+        with numpy.errstate(over="ignore", invalid="ignore"):
+            if batched:
+                propagator.update_walker_weights_batched(walkers, log_ovlp_new, zeros, zeros)
+            else:
+                for iw in range(4):
+                    propagator.update_walker_weight(walkers, iw, log_ovlp_new[iw], 0.0, 0.0)
+        assert propagator.ninvalid_trig == 2
+        assert walkers.weight[0] > 0.0
+        numpy.testing.assert_array_equal(walkers.weight[1:], 0.0)
 
 
 @pytest.mark.unit

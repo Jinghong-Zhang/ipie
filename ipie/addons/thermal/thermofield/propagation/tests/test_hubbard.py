@@ -133,6 +133,8 @@ def test_cp_scalar_batched_same_random_fields(mode, cache):
             getattr(batched, name), getattr(scalar, name), atol=3e-11, rtol=3e-11
         )
     assert bp.kill_count == sp.kill_count
+    assert bp.force_bias_bound_count == sp.force_bias_bound_count
+    assert bp.invalid_weight_count == sp.invalid_weight_count
 
 
 @pytest.mark.unit
@@ -280,6 +282,20 @@ def test_common_energy_reference_preserves_paths_and_normalized_weights(batched)
         paths[0].weight / paths[0].weight.sum(),
         atol=1e-13,
     )
+
+
+@pytest.mark.unit
+def test_force_bias_bound_is_counted():
+    # gamma = sqrt(dt U) = 2, so a local moment |n_up - n_dn| > 1/2 reaches the
+    # bound of the force bias; the per-walker and batched paths count alike.
+    counts = []
+    for batched in (False, True):
+        trial, walkers, prop, afqmc, pc = build_test_case(U=8.0, beta=2.0, dt=0.5, batched=batched)
+        numpy.random.seed(73)
+        propagate_population_cp(afqmc, walkers, trial, prop, 4, pc)
+        counts.append(prop.force_bias_bound_count)
+    assert counts[0] > 0
+    assert counts[0] == counts[1]
 
 
 @pytest.mark.unit

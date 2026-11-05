@@ -114,7 +114,9 @@ class ThermofieldHubbardCP(ThermofieldHubbardBase):
             # P[s] = (I - G[s])^T and xbar_i = gamma (P_up,ii - P_down,ii).
             nup = 1.0 - numpy.diagonal(walkers.Ga[iw]).real
             ndn = 1.0 - numpy.diagonal(walkers.Gb[iw]).real
-            xbar = numpy.clip(self.gamma * (nup - ndn), -1.0, 1.0)
+            xbar = self.gamma * (nup - ndn)
+            self.force_bias_bound_count += int((numpy.abs(xbar) > 1.0).sum())
+            xbar = numpy.clip(xbar, -1.0, 1.0)
             x = xbar + xp.random.standard_normal(self.nfields)
 
             if self.record_fields:
@@ -129,10 +131,12 @@ class ThermofieldHubbardCP(ThermofieldHubbardBase):
                     Q_new, walkers.log_d[iw], walkers.Tmat[iw], scale=scale_new
                 )
             except (ZeroDivisionError, numpy.linalg.LinAlgError):
+                self.invalid_weight_count += 1
                 walkers.weight[iw] = 0.0
                 continue
 
             if not numpy.isfinite(log_ovlp_new) or not numpy.isfinite(G_new).all():
+                self.invalid_weight_count += 1
                 walkers.weight[iw] = 0.0
                 continue
 
@@ -172,7 +176,9 @@ class ThermofieldHubbardCP(ThermofieldHubbardBase):
             return
         nup = 1.0 - numpy.diagonal(walkers.Ga[idx], axis1=1, axis2=2).real
         ndn = 1.0 - numpy.diagonal(walkers.Gb[idx], axis1=1, axis2=2).real
-        xbar = numpy.clip(self.gamma * (nup - ndn), -1.0, 1.0)
+        xbar = self.gamma * (nup - ndn)
+        self.force_bias_bound_count += int((numpy.abs(xbar) > 1.0).sum())
+        xbar = numpy.clip(xbar, -1.0, 1.0)
         x = xbar + xp.random.standard_normal((idx.size, self.nfields))
         if self.record_fields:
             walkers.field_hist[idx, l] = x
@@ -202,6 +208,7 @@ class ThermofieldHubbardCP(ThermofieldHubbardBase):
         ok = numpy.isfinite(lo_new) & numpy.isfinite(G_new).all(axis=(1, 2, 3))
         dlo = lo_new - walkers.log_ovlp[idx]
         sgn_new = numpy.cos(dlo.imag)
+        self.invalid_weight_count += int((~ok).sum())
         self.step_count += int(ok.sum())
         self.kill_count += int((ok & (sgn_new <= 0.0)).sum())
         log_w = (

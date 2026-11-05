@@ -689,7 +689,8 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         Returns
         -------
         results : list
-            Block results, one dict of global sums per block.
+            Block results, one dict of global sums per block, with the
+            triggers of the bounds in the block (the ``*_count`` entries).
         """
         self.setup_timers()
         start = time.time()
@@ -708,6 +709,7 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
         for block in range(len(self.results), self.params.num_blocks):
             start_step = time.time()
             self._snaps = {}
+            force_bias_start = self.propagator.force_bias_bound_count
             propagate_population_cp(
                 self,
                 self.walkers,
@@ -737,6 +739,11 @@ class ThermofieldHubbardAFQMC(AFQMCBase):
                 )
             start = time.time()
             result = self._measure_block()
+            # Triggers of the bounds; the guards above are zero in every kept block.
+            result.update(zip(names, map(int, counts)))
+            result["force_bias_bound_count"] = comm.allreduce(
+                self.propagator.force_bias_bound_count - force_bias_start, op=MPI.SUM
+            )
             for k, snap in self._snaps.items():
                 for key, value in snap.items():
                     result[f"snap{k}_{key}"] = value
