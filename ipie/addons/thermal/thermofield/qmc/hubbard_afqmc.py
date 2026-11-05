@@ -62,8 +62,8 @@ def propagate_population_cp(
     pcontrol : :class:`ThermofieldPopController`
         Population controller.
     weight_cap : float
-        Walker weights are clipped at this multiple of the total weight; 0
-        uses 1e6. Default 0.0.
+        Walker weights are clipped at this multiple of the current total
+        weight; 0 uses 1e6, which never binds. Default 0.0.
     on_slice : callable
         Called with t + 1 after slice t, after stabilization and before
         population control. Default None.
@@ -101,7 +101,10 @@ def propagate_population_cp(
             invalid_count = int((~numpy.isfinite(walkers.weight)).sum())
             prop.invalid_weight_count += invalid_count
             numpy.nan_to_num(walkers.weight, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-            wbound = pcontrol.total_weight * (weight_cap if weight_cap > 0 else 1.0e6)
+            # A multiple of the current total weight, which drifts between
+            # population controls; the controller's total_weight is the target.
+            total = comm.allreduce(float(numpy.abs(walkers.weight).sum()), op=MPI.SUM)
+            wbound = total * (weight_cap if weight_cap > 0 else 1.0e6)
             population_hits = int((numpy.abs(walkers.weight) > wbound).sum())
             prop.population_weight_bound_count += population_hits
             numpy.clip(walkers.weight, a_min=-wbound, a_max=wbound, out=walkers.weight)

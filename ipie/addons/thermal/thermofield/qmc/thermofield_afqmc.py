@@ -322,7 +322,11 @@ class ThermofieldAFQMC(AFQMCBase):
                         self.walkers.weight, copy=False, nan=0.0, posinf=0.0, neginf=0.0
                     )
                 if phaseless and t > 0 and self.params.weight_cap > 0.0:
-                    wbound = self.pcontrol.total_weight * self.params.weight_cap
+                    # A fraction of the current total weight. Without an energy shift
+                    # the total drifts between population controls, after which the
+                    # controller's total_weight is the target.
+                    total = comm.allreduce(float(numpy.abs(self.walkers.weight).sum()), op=MPI.SUM)
+                    wbound = total * self.params.weight_cap
                     numpy.clip(
                         self.walkers.weight, a_min=-wbound, a_max=wbound, out=self.walkers.weight
                     )  # In-place clipping.

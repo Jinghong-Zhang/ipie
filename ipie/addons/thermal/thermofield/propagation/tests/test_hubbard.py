@@ -283,10 +283,11 @@ def test_common_energy_reference_preserves_paths_and_normalized_weights(batched)
 
 @pytest.mark.unit
 @pytest.mark.parametrize("batched", [False, True])
-def test_energy_reference_prevents_extensive_population_guard_hits(batched):
-    # A soluble occupied-level model exposes the broad cap before branching.
-    # For eight spin orbitals at energy -100 the trace grows as
-    # (1 + exp(100 theta))^8; a reference of -800 removes that deterministic growth.
+def test_energy_reference_removes_deterministic_growth(batched):
+    # A soluble occupied-level model without branching. For eight spin orbitals
+    # at energy -100 the trace grows as (1 + exp(100 theta))^8; a reference of
+    # -800 removes that deterministic growth. The broad cap is a multiple of the
+    # current total weight, so the common growth never reaches it.
     ham, _, _ = build_hubbard_hamiltonian(2, 2, 0.0, -100.0, t=0.0)
     beta, dt = 0.1, 0.01
     trial = ThermofieldCPTrial(ham, beta, k_trial=numpy.zeros((2, 4, 4)), guide_time=beta)
@@ -294,7 +295,6 @@ def test_energy_reference_prevents_extensive_population_guard_hits(batched):
     afqmc = SimpleNamespace(
         mpi_handler=handler, params=SimpleNamespace(num_stblz=5, pop_control_freq=1000)
     )
-    hits = []
     for reference in (0.0, -800.0):
         W = ThermofieldWalkers(trial, 4, 4, mpi_handler=handler)
         prop = ThermofieldHubbardCP(
@@ -311,13 +311,11 @@ def test_energy_reference_prevents_extensive_population_guard_hits(batched):
         propagate_population_cp(
             afqmc, W, trial, prop, 10, SimpleNamespace(total_weight=4.0), weight_cap=0.0
         )
-        hits.append(prop.population_weight_bound_count)
+        assert prop.population_weight_bound_count == 0
         assert prop.log_weight_bound_count == 0
-        if reference != 0.0:
-            exact = numpy.exp(8 * numpy.log1p(numpy.exp(-100 * beta)) - 8 * numpy.log(2.0))
-            numpy.testing.assert_allclose(W.weight, exact, atol=1e-12)
-    assert hits[0] > 0
-    assert hits[1] == 0
+        log_growth = 8 * numpy.log1p(numpy.exp(100 * beta)) + reference * beta
+        exact = numpy.exp(log_growth - 8 * numpy.log(2.0))
+        numpy.testing.assert_allclose(W.weight, exact, rtol=1e-10)
 
 
 @pytest.mark.unit

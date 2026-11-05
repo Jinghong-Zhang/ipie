@@ -329,6 +329,42 @@ def test_driver_growth_bound():
 
 
 @pytest.mark.driver
+def test_driver_weight_cap_follows_total_weight():
+    # System params.
+    eps = 0.1
+    U = 2.0
+
+    # Thermofield AFQMC params.
+    mu = 0.5
+    beta = 2.0
+    timestep = 0.05
+    nwalkers = 16
+    nblocks = 2
+    seed = 7
+
+    # The cap is a fraction of the current total weight, so multiplying every
+    # weight by 64 after each slice (exact in floating point) changes only the
+    # normalization. A cap from the target weight would clip the grown walkers.
+    hamiltonian = build_hubbard_atom_hamiltonian(eps, U)
+    results = {}
+    for growth in (1.0, 64.0):
+        afqmc = ThermofieldAFQMC.build(
+            mu, beta, hamiltonian, nwalkers=nwalkers, nblocks=nblocks, timestep=timestep, seed=seed
+        )
+        assert afqmc.params.weight_cap > 0.0 and afqmc.propagator.phaseless
+        propagate = afqmc.propagator.propagate_walkers
+
+        def propagate_grown(walkers, *args, propagate=propagate, growth=growth, **kwargs):
+            propagate(walkers, *args, **kwargs)
+            walkers.weight *= growth
+
+        afqmc.propagator.propagate_walkers = propagate_grown
+        results[growth] = afqmc.run(verbose=0)
+    for key in ("e_mix", "e_trace"):
+        numpy.testing.assert_allclose(results[64.0][key], results[1.0][key], rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.driver
 def test_driver_random_two_orbital_vs_ed():
     # System params.
     nbasis = 2
